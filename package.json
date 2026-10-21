@@ -1,6 +1,6 @@
 {
   "name": "@ybbmm/dsh-session-delete",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Permanently delete a DeepSeek Harness conversation from the sidebar session menu: removes the session log, its projection cache and its workspace accounting. | 在 DeepSeek Harness 侧边栏永久删除对话，清除会话日志、投影缓存与工作区记账。",
   "license": "MIT",
@@ -25,6 +25,9 @@
   ],
   "engines": {
     "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test"
   },
   "exports": {
     ".": "./index.js",
@@ -54,6 +57,7 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-workspace",
         "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-primitives",
         "@deepseek-ai/dsh-client-locale"
       ]
     }

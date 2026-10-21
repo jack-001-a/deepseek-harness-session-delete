@@ -30,6 +30,9 @@ jobs:
         run: |
           node -e "const p=require('./package.json'); if (p.private) throw new Error('package.json must not be private'); if (!p.repository?.url) throw new Error('repository.url is required for trusted publishing'); console.log(p.name, p.version)"
 
+      - name: Run the test suite
+        run: npm test
+
       - name: Inspect the tarball contents
         run: npm pack --dry-run
 
