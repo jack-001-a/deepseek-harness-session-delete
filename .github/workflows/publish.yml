@@ -1,7 +1,8 @@
 name: publish
 
-# Publishing does not have to happen on your machine. Push a version tag (or
-# run this manually) and GitHub's runner publishes to npm.
+# Publishes through npm Trusted Publishing (OIDC): no long-lived token, no
+# one-time password. The trusted publisher is bound to this exact workflow
+# filename and repository, so neither may be renamed without reconfiguring it.
 on:
   push:
     tags:
@@ -9,6 +10,8 @@ on:
   workflow_dispatch:
 
 permissions:
+  # Required for the OIDC identity GitHub exchanges with npm.
+  id-token: write
   contents: read
 
 jobs:
@@ -21,14 +24,14 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
       - name: Verify the package manifest
-        run: node -e "const p=require('./package.json'); if (p.private) throw new Error('package.json must not be private'); console.log(p.name, p.version)"
+        run: |
+          node -e "const p=require('./package.json'); if (p.private) throw new Error('package.json must not be private'); if (!p.repository?.url) throw new Error('repository.url is required for trusted publishing'); console.log(p.name, p.version)"
 
       - name: Inspect the tarball contents
         run: npm pack --dry-run
 
       - name: Publish
         run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
