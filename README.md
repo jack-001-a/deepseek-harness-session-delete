@@ -1,4 +1,4 @@
-# deepseek-harness-session-delete
+# @ybbmm/dsh-session-delete
 
 **Permanently delete a conversation from the DeepSeek Harness sidebar.**
 **在 DeepSeek Harness 侧边栏永久删除对话。**
@@ -49,14 +49,14 @@ From the plugin market: search for **Session Delete**.
 Manually:
 
 ```bash
-dsh plugin add deepseek-harness-session-delete
+dsh plugin add @ybbmm/dsh-session-delete
 ```
 
 From a local tarball:
 
 ```bash
 npm pack
-dsh plugin add ./deepseek-harness-session-delete-0.1.0.tgz
+dsh plugin add ./ybbmm-dsh-session-delete-0.1.0.tgz
 ```
 
 Restart the Harness if your profile does not hot-reload plugin bundles.

@@ -1,6 +1,6 @@
 - insert:
-    - id: deepseek-harness-session-delete
-      name: 'deepseek-harness-session-delete'
+    - id: ybbmm-dsh-session-delete
+      name: '@ybbmm/dsh-session-delete'
       inject:
         - sessions
         - sessionPersistence

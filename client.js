@@ -1,5 +1,5 @@
 /**
- * Browser half of the deepseek-harness-session-delete bundle.
+ * Browser half of the @ybbmm/dsh-session-delete bundle.
  *
  * Adds a "Delete conversation" entry to the sidebar session list: one row in
  * the Session "..." menu, one hover button, and one confirmation dialog. The
@@ -7,15 +7,15 @@
  * endpoint; this half only collects the request and shows the outcome.
  */
 window.__ModuleLoader__.load({
-  id: 'deepseek-harness-session-delete',
+  id: '@ybbmm/dsh-session-delete',
   factory(require) {
     const React = require('react')
     const h = React.createElement
     const { Button, IconTrashOutlineRegular, MenuItemButton, Modal, Tooltip } =
       require('@deepseek-ai/dsh-client-ui-primitives')
 
-    const NS = 'deepseek-harness-session-delete'
-    const PLUGIN = 'deepseek-harness-session-delete'
+    const NS = 'ybbmm.dsh-session-delete'
+    const PLUGIN = '@ybbmm/dsh-session-delete'
 
     const en = {
       'menu.delete': 'Delete conversation',
@@ -199,7 +199,7 @@ window.__ModuleLoader__.load({
       apply(ctx) {
         ctx.effect(
           () => ctx.locale.register(NS, { zh, en }),
-          'deepseek-harness-session-delete: dictionaries',
+          'ybbmm.dsh-session-delete: dictionaries',
         )
 
         const pending = createObservable(null)
@@ -222,7 +222,7 @@ window.__ModuleLoader__.load({
               try {
                 uiWorkspace?.startSession()
               } catch (error) {
-                console.warn('deepseek-harness-session-delete: could not open a new session:', error)
+                console.warn('ybbmm.dsh-session-delete: could not open a new session:', error)
               }
             }
           } catch (error) {
@@ -242,7 +242,7 @@ window.__ModuleLoader__.load({
           yield ctx.slots.register(
             {
               name: 'sidebar.workspaces.session.menu.item',
-              id: 'deepseek-harness-session-delete',
+              id: 'ybbmm.dsh-session-delete',
               order: 500,
               locale: NS,
               inject: actionInjected,
@@ -254,7 +254,7 @@ window.__ModuleLoader__.load({
           yield ctx.slots.register(
             {
               name: 'sidebar.workspaces.session.row.action',
-              id: 'deepseek-harness-session-delete',
+              id: 'ybbmm.dsh-session-delete',
               order: 300,
               locale: NS,
               inject: actionInjected,
@@ -266,7 +266,7 @@ window.__ModuleLoader__.load({
           yield ctx.slots.register(
             {
               name: 'shell.overlay',
-              id: 'deepseek-harness-session-delete',
+              id: 'ybbmm.dsh-session-delete',
               locale: NS,
               inject: dialogInjected,
             },
