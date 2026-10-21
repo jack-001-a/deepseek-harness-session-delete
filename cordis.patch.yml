@@ -1,0 +1,7 @@
+- insert:
+    - id: deepseek-harness-session-delete
+      name: 'deepseek-harness-session-delete'
+      inject:
+        - sessions
+        - sessionPersistence
+        - workspaceRegistry

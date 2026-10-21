@@ -1,0 +1,58 @@
+{
+  "name": "deepseek-harness-session-delete",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Permanently delete a DeepSeek Harness conversation from the sidebar session menu: removes the session log, its projection cache and its workspace accounting. | 在 DeepSeek Harness 侧边栏永久删除对话，清除会话日志、投影缓存与工作区记账。",
+  "license": "MIT",
+  "author": "jack-001-a",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jack-001-a/deepseek-harness-session-delete.git"
+  },
+  "homepage": "https://github.com/jack-001-a/deepseek-harness-session-delete#readme",
+  "bugs": {
+    "url": "https://github.com/jack-001-a/deepseek-harness-session-delete/issues"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "session",
+    "conversation",
+    "delete",
+    "sidebar",
+    "plugin"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  }
+}

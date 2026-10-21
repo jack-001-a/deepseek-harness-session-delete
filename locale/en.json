@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session Delete",
+    "description": "Adds a Delete conversation action to the sidebar session menu and permanently removes the conversation from disk."
+  }
+}
