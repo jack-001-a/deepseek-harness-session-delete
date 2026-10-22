@@ -1,8 +1,8 @@
 {
   "name": "@ybbmm/dsh-session-delete",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
-  "description": "Permanently delete a DeepSeek Harness conversation from the sidebar session menu: removes the session log, its projection cache and its workspace accounting. | 在 DeepSeek Harness 侧边栏永久删除对话，清除会话日志、投影缓存与工作区记账。",
+  "description": "Delete a DeepSeek Harness conversation from the sidebar: a recoverable trash with restore and purge, or permanent removal, with a path-safety guard and an audit trail. | 在 DeepSeek Harness 侧边栏删除对话：可恢复的回收站（支持还原与彻底删除），或永久删除，并带有路径安全校验与审计日志。",
   "license": "MIT",
   "author": "jack-001-a",
   "repository": {
@@ -20,6 +20,8 @@
     "session",
     "conversation",
     "delete",
+    "trash",
+    "restore",
     "sidebar",
     "plugin"
   ],
@@ -42,6 +44,7 @@
     "locale/*.json",
     "icon.svg",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "publishConfig": {

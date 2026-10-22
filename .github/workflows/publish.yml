@@ -36,5 +36,27 @@ jobs:
       - name: Inspect the tarball contents
         run: npm pack --dry-run
 
+      # A release is often published twice on purpose: once from a workstation
+      # that already holds the registry token, and once from the tag that
+      # records it. npm refuses to publish a version that exists, so the
+      # second attempt must skip rather than fail the release.
+      - name: Check whether the version is already published
+        id: published
+        run: |
+          package="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          if npm view "${package}@${version}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "${package}@${version} is already on the registry; nothing to publish"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "${package}@${version} is not on the registry yet"
+          fi
+
       - name: Publish
+        if: steps.published.outputs.exists == 'false'
         run: npm publish
+
+      - name: Confirm the published version
+        if: steps.published.outputs.exists == 'false'
+        run: npm view "$(node -p "require('./package.json').name")" version

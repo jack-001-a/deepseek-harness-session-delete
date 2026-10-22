@@ -1,3 +1,8 @@
+# Loader patch for the @ybbmm/dsh-session-delete bundle.
+#
+# Every key below is optional: the Host falls back to the documented default
+# when a key is absent or invalid, so a partial override is safe. Copy the
+# block into your profile's `cordis.patch.yml` to change the tunables.
 - insert:
     - id: ybbmm-dsh-session-delete
       name: '@ybbmm/dsh-session-delete'
@@ -5,3 +10,14 @@
         - sessions
         - sessionPersistence
         - workspaceRegistry
+      config:
+        # 'trash' moves the conversation into a recoverable trash area and
+        # purges it after `retentionDays`; 'permanent' removes it at once.
+        mode: trash
+        # Days a trashed conversation is kept before it is purged.
+        retentionDays: 7
+        # Where the trash lives. The default is a sibling of the session
+        # store (`~/.dsh/.trash`), never a directory inside it: the store
+        # lists every directory under its root as a project, so a trash
+        # inside the tree would be read back as live conversations.
+        # trashRoot: C:\Users\<you>\.dsh\.trash
