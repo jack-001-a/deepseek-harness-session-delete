@@ -118,6 +118,8 @@ window.__ModuleLoader__.load({
       'dialog.restoring': 'Restoring…',
       'dialog.purging': 'Deleting permanently…',
       'dialog.restored': 'The conversation was restored.',
+      'dialog.restoredPartial':
+        'The conversation was restored, but it could not be put back in its workspace. Restart the Harness to see it in the sidebar again.',
       'dialog.restoreFailed': 'The conversation could not be restored.',
       'dialog.purged': 'The conversation was deleted permanently.',
       'dialog.purgeFailed': 'The conversation could not be deleted permanently.',
@@ -165,6 +167,7 @@ window.__ModuleLoader__.load({
       'dialog.restoring': '正在恢复…',
       'dialog.purging': '正在永久删除…',
       'dialog.restored': '该对话已恢复。',
+      'dialog.restoredPartial': '该对话已恢复，但未能放回其工作区。重启 Harness 后即可在侧栏中再次看到它。',
       'dialog.restoreFailed': '该对话未能恢复。',
       'dialog.purged': '该对话已永久删除。',
       'dialog.purgeFailed': '该对话未能永久删除。',
@@ -1048,7 +1051,12 @@ window.__ModuleLoader__.load({
             setPendingAction(undefined)
             if (result?.restored === true) {
               setRestored(true)
-              setActionResult({ ok: true, key: 'dialog.restored' })
+              // Only an explicit false is a partial restore: an older Host
+              // that does not report the field has done its whole job.
+              setActionResult({
+                ok: result.reattached !== false,
+                key: result.reattached === false ? 'dialog.restoredPartial' : 'dialog.restored',
+              })
               return
             }
             setActionResult({ ok: false, key: 'dialog.restoreFailed' })
@@ -1362,13 +1370,29 @@ window.__ModuleLoader__.load({
 
           /**
            * Bring a trashed conversation back.
+           *
+           * The Host reattaches the conversation to its workspace accounting and
+           * announces it; the workspace projection follows the Host's own
+           * domain stream. The session catalog is refreshed as well, because a
+           * summary that is missing from it would leave the row unrenderable
+           * even with the membership restored. The refresh runs after the
+           * answer, so a slow list read never delays the dialog.
            * @param sessionId - the conversation to restore.
            * @returns the restore outcome.
            * @throws the Host failure, for the dialog to localize.
            */
           const restoreSession = async (sessionId) => {
             try {
-              return await callRemote(ctx, 'restore', { sessionId })
+              const outcome = await callRemote(ctx, 'restore', { sessionId })
+              const sessions = optionalService(ctx, 'sessions')
+              if (typeof sessions?.refresh === 'function') {
+                Promise.resolve()
+                  .then(() => sessions.refresh())
+                  .catch((failure) => {
+                    logWarning(ctx, 'could not refresh the session list after a restore:', failure)
+                  })
+              }
+              return outcome
             } catch (failure) {
               // The dialog shows localized copy; the diagnostic belongs in
               // the log, where it can be read without being read by a user.

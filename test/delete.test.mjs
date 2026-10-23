@@ -170,6 +170,72 @@ function cacheServices(cache, onDelete = () => {}) {
 }
 
 /**
+ * A workspace registry that records the accounting calls a deletion releases
+ * and a restore replays.
+ *
+ * `options` is read on every call, so a test can repair a failure it injected
+ * and retry the restore. The entity's record mirrors the host's prepend rule.
+ * @param store - the paths of the stored session.
+ * @param options - `pinned`, `archived`, `failAttach`, `sessionIds` overrides.
+ * @returns the fake registry, its entity and its call log.
+ */
+function accountingRegistry(store, options = {}) {
+  const calls = []
+  const workspace = {
+    id: 'ws-1',
+    path: store.root,
+    record: { sessionIds: options.sessionIds ?? [SESSION_ID, 'session-older'] },
+    detachSession: async (sessionId) => {
+      calls.push(['detach', sessionId])
+      workspace.record.sessionIds = workspace.record.sessionIds.filter((id) => id !== sessionId)
+    },
+    attachSession: async (sessionId) => {
+      if (options.failAttach === true) throw new Error('cannot attach: injected failure')
+      calls.push(['attach', sessionId])
+      if (!workspace.record.sessionIds.includes(sessionId)) {
+        workspace.record.sessionIds = [sessionId, ...workspace.record.sessionIds]
+      }
+    },
+    insertSessionBefore: async (sessionId, beforeSessionId) => {
+      calls.push(['insert', sessionId, beforeSessionId])
+    },
+  }
+  const registry = {
+    calls,
+    workspace,
+    list: () => [workspace],
+    get: (id) => (id === workspace.id ? workspace : undefined),
+    get pinnedSessionIds() {
+      return options.pinned === true ? [SESSION_ID] : []
+    },
+    get archivedSessionIds() {
+      return options.archived === true ? [SESSION_ID] : []
+    },
+    pinSession: async (sessionId) => {
+      calls.push(['pin', sessionId])
+    },
+    unpinSession: async (sessionId) => {
+      calls.push(['unpin', sessionId])
+    },
+    archiveSession: async (sessionId) => {
+      calls.push(['archive', sessionId])
+    },
+    unarchiveSession: async (sessionId) => {
+      calls.push(['unarchive', sessionId])
+    },
+  }
+  return registry
+}
+
+/** The lines of the audit trail, newest last. */
+async function auditLines(store) {
+  return (await readFile(join(store.trashRoot, 'audit.jsonl'), 'utf8'))
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line))
+}
+
+/**
  * The trash entry one deletion created.
  * @param store - the paths of the stored session.
  * @param trashId - the trash entry id.
@@ -621,6 +687,209 @@ test('restoring a session that is not in the trash fails with not-found', async 
   })
 })
 
+test('restore reattaches the recorded workspace, its slot and the pin, then announces the row', async () => {
+  const store = await makeStore()
+  const registry = accountingRegistry(store, { pinned: true })
+  const sessionController = {
+    listState: {
+      summarizeCold: ({ header }) => ({ sessionId: header.id, updatedAt: 7, running: false }),
+    },
+  }
+  const h = harness({ ...storedTarget(store), registry, services: { sessionController } })
+
+  const deleted = await h.service.delete(SESSION_ID)
+  const manifest = JSON.parse(await readFile(join(trashEntry(store, deleted.trashId), 'meta.json'), 'utf8'))
+  assert.deepEqual(manifest.accounting, {
+    member: true,
+    pinned: true,
+    archived: false,
+    workspaceId: 'ws-1',
+    beforeSessionId: 'session-older',
+  })
+  assert.deepEqual(registry.calls, [
+    ['detach', SESSION_ID],
+    ['unpin', SESSION_ID],
+    ['unarchive', SESSION_ID],
+  ])
+  registry.calls.length = 0
+
+  const outcome = await h.service.restore(SESSION_ID)
+
+  assert.deepEqual(registry.calls, [
+    ['attach', SESSION_ID],
+    ['insert', SESSION_ID, 'session-older'],
+    ['pin', SESSION_ID],
+  ])
+  assert.equal(outcome.reattached, true)
+  assert.equal(outcome.announced, true)
+  assert.deepEqual(h.calls.emitted.at(-1), [
+    'api-session/added',
+    { sessionId: SESSION_ID, updatedAt: 7, running: false },
+  ])
+  assert.equal((await stat(join(store.dir, 'session.4.jsonl'))).isFile(), true)
+  await assert.rejects(stat(trashEntry(store, deleted.trashId)), (error) => error.code === 'ENOENT')
+})
+
+test('restore replays a recorded archive mark instead of a pin', async () => {
+  const store = await makeStore()
+  const registry = accountingRegistry(store, { archived: true })
+  const h = harness({ ...storedTarget(store), registry })
+
+  const deleted = await h.service.delete(SESSION_ID)
+  const manifest = JSON.parse(await readFile(join(trashEntry(store, deleted.trashId), 'meta.json'), 'utf8'))
+  assert.equal(manifest.accounting.archived, true)
+  assert.equal(manifest.accounting.pinned, false)
+  registry.calls.length = 0
+
+  const outcome = await h.service.restore(SESSION_ID)
+
+  assert.equal(outcome.reattached, true)
+  assert.deepEqual(registry.calls, [
+    ['attach', SESSION_ID],
+    ['insert', SESSION_ID, 'session-older'],
+    ['archive', SESSION_ID],
+  ])
+  assert.equal(registry.calls.some(([name]) => name === 'pin'), false, 'an archived session is not pinned')
+})
+
+test('a failed reattachment is reported, keeps the files and stays retryable', async () => {
+  const store = await makeStore()
+  const options = { pinned: true, failAttach: true }
+  const registry = accountingRegistry(store, options)
+  const h = harness({ ...storedTarget(store), registry })
+
+  const deleted = await h.service.delete(SESSION_ID)
+  const entry = trashEntry(store, deleted.trashId)
+  registry.calls.length = 0
+
+  const partial = await h.service.restore(SESSION_ID)
+
+  assert.equal(partial.restored, true, 'the files are back and the outcome says so')
+  assert.equal(partial.reattached, false)
+  assert.equal(partial.needsRestart, true)
+  assert.deepEqual(partial.reattachFailures, ['workspace'])
+  assert.equal((await stat(join(store.dir, 'session.4.jsonl'))).isFile(), true)
+  assert.deepEqual((await h.service.listTrash()).entries.length, 1, 'the entry survives as the retry record')
+  assert.equal((await h.service.listTrash()).entries[0].restoreState, 'accounting-pending')
+  assert.equal((await stat(entry)).isDirectory(), true)
+  await assert.rejects(stat(join(entry, 'artifact')), (error) => error.code === 'ENOENT')
+  const trail = await auditLines(store)
+  assert.equal(trail.at(-1).action, 'restore')
+  assert.equal(trail.at(-1).ok, true)
+  assert.equal(trail.at(-1).partial, true)
+  assert.equal(trail.at(-1).code, 'session-delete/restore-incomplete')
+
+  // Repair the host-side failure and retry: only the accounting is replayed.
+  options.failAttach = false
+  registry.calls.length = 0
+  let moves = 0
+  const realMove = h.service.moveArtifact.bind(h.service)
+  h.service.moveArtifact = async (source, destination) => {
+    moves += 1
+    return realMove(source, destination)
+  }
+  const done = await h.service.restore(SESSION_ID)
+
+  assert.equal(done.reattached, true)
+  assert.equal(moves, 0, 'an already-moved artifact must not be copied twice')
+  assert.deepEqual((await h.service.listTrash()).entries, [])
+  assert.equal((await stat(join(store.dir, 'session.4.jsonl'))).isFile(), true)
+})
+
+test('a restore interrupted after the move is completed instead of conflicting', async () => {
+  const store = await makeStore()
+  const registry = accountingRegistry(store, { pinned: true })
+  const h = harness({ ...storedTarget(store), registry })
+
+  const deleted = await h.service.delete(SESSION_ID)
+  const artifact = join(trashEntry(store, deleted.trashId), 'artifact')
+  // Simulate a crash between the move and the accounting replay.
+  await h.service.moveArtifact(artifact, store.dir)
+  registry.calls.length = 0
+
+  const outcome = await h.service.restore(SESSION_ID)
+
+  assert.equal(outcome.restored, true)
+  assert.equal(outcome.reattached, true)
+  assert.deepEqual(registry.calls, [
+    ['attach', SESSION_ID],
+    ['insert', SESSION_ID, 'session-older'],
+    ['pin', SESSION_ID],
+  ])
+  assert.deepEqual((await h.service.listTrash()).entries, [])
+})
+
+test('a legacy manifest without accounting is restored by inferring the workspace from cwd', async () => {
+  const store = await makeStore()
+  const registry = accountingRegistry(store)
+  let resolved
+  registry.resolveByPath = async (cwd) => {
+    resolved = cwd
+    return registry.list()[0]
+  }
+  const h = harness({ ...storedTarget(store), registry })
+
+  const deleted = await h.service.delete(SESSION_ID)
+  const entry = trashEntry(store, deleted.trashId)
+  const manifest = JSON.parse(await readFile(join(entry, 'meta.json'), 'utf8'))
+  delete manifest.accounting
+  await writeFile(join(entry, 'meta.json'), JSON.stringify(manifest))
+  await h.service.refreshTrash()
+  registry.calls.length = 0
+
+  const outcome = await h.service.restore(SESSION_ID)
+
+  assert.equal(resolved, store.dir, 'the recorded header cwd names the owning workspace')
+  assert.equal(outcome.reattached, true)
+  assert.equal(outcome.inferred, true)
+  assert.deepEqual(registry.calls[0], ['attach', SESSION_ID])
+  assert.equal((await stat(join(store.dir, 'session.4.jsonl'))).isFile(), true)
+})
+
+test('a legacy manifest still restores when the host exposes no workspace resolver', async () => {
+  const store = await makeStore()
+  const h = harness({ ...storedTarget(store) })
+
+  const deleted = await h.service.delete(SESSION_ID)
+  const entry = trashEntry(store, deleted.trashId)
+  const manifest = JSON.parse(await readFile(join(entry, 'meta.json'), 'utf8'))
+  delete manifest.accounting
+  await writeFile(join(entry, 'meta.json'), JSON.stringify(manifest))
+  await h.service.refreshTrash()
+
+  assert.deepEqual(await h.service.restore(SESSION_ID), {
+    sessionId: SESSION_ID,
+    restored: true,
+    mode: 'trash',
+  })
+  assert.equal((await stat(join(store.dir, 'session.4.jsonl'))).isFile(), true)
+})
+
+test('a summary the host cannot build does not fail the restore', async () => {
+  const store = await makeStore()
+  const registry = accountingRegistry(store, { pinned: true })
+  const sessionController = {
+    listState: {
+      summarizeCold: () => {
+        throw new Error('projection store unavailable')
+      },
+    },
+  }
+  const h = harness({ ...storedTarget(store), registry, services: { sessionController } })
+
+  await h.service.delete(SESSION_ID)
+  const outcome = await h.service.restore(SESSION_ID)
+
+  assert.equal(outcome.restored, true)
+  assert.equal(outcome.reattached, true)
+  assert.equal(outcome.announced, undefined, 'a summary failure is only logged')
+  assert.ok(
+    h.calls.warnings.some((warning) => warning.includes('summarizing the restored session')),
+    'the failure has to be visible in the host log',
+  )
+  assert.equal((await stat(join(store.dir, 'session.4.jsonl'))).isFile(), true)
+})
+
 test('restoring onto an occupied path fails with conflict', async () => {
   const store = await makeStore()
   const h = harness({ ...storedTarget(store) })
@@ -773,6 +1042,29 @@ test('the audit trail stays bounded', async () => {
   const lines = (await readFile(file, 'utf8')).split('\n').filter((line) => line.length > 0)
   assert.ok(lines.length <= 1000, `the trail must stay within its cap, found ${lines.length}`)
   assert.ok(lines.length > 0)
+})
+
+test('the audit trail is read once when a fresh trail needs trimming', async () => {
+  const store = await makeStore()
+  const h = harness({ ...storedTarget(store) })
+  const records = Array.from({ length: 1100 }, (_, index) =>
+    JSON.stringify({ at: new Date(0).toISOString(), action: 'delete', sessionId: `old-${index}`, ok: true }),
+  )
+  let reads = 0
+  // The counting read and the trim read are the same read; the second one
+  // would double the work of the mutation that crosses the cap.
+  h.service.readAuditTrail = async () => {
+    reads += 1
+    return `${records.join('\n')}\n`
+  }
+
+  await h.service.audit('delete', SESSION_ID, true, { mode: 'trash' })
+
+  assert.equal(reads, 1, 'the trail must not be read twice for one trim')
+  const lines = (await readFile(join(store.trashRoot, 'audit.jsonl'), 'utf8'))
+    .split('\n')
+    .filter((line) => line.length > 0)
+  assert.ok(lines.length <= 1000, 'the trim still has to bound the trail')
 })
 
 test('describe reports the capabilities of the store', async () => {

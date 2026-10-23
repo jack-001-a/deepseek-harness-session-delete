@@ -31,13 +31,32 @@ The default mode is `trash`:
 
 1. The conversation's artifact is **moved** into a trash area next to the
    session store, together with a small manifest recording the original path,
-   the deletion time and the child conversations.
+   the deletion time, the child conversations, and the workspace accounting the
+   deletion is about to release — owning workspace, its display-slot anchor,
+   pin and archive marks.
 2. The row leaves the sidebar, the workspace accounting is released and the
    projection cache is dropped — exactly as before.
-3. **Restore** puts the artifact back where it came from.
+3. **Restore** moves the artifact back, **reattaches the conversation to the
+   workspace accounting recorded in the manifest**, puts it back in its
+   recorded display slot, replays a pin or archive mark, and announces the row
+   to the browser — no restart needed. Reattachment is best-effort: if it
+   fails, the restore reports it honestly (`restored: true`, `reattached:
+   false`, `needsRestart: true`), keeps the files in place, and leaves a
+   marked trash entry so a later Restore finishes the accounting without
+   moving anything twice.
 4. **Delete permanently** removes the trashed artifact for good.
 5. Anything still in the trash after `retentionDays` (default 7) is purged
    automatically.
+
+Restore is idempotent: an entry whose files are already back (a failed
+reattachment, or a process that stopped mid-restore) is completed by the next
+Restore call instead of being reported as a conflict, and a completed restore
+is gone from the trash, so restoring it again reports `not-found`.
+
+A trash entry written by 0.3.0 or older has no accounting record. Restoring one
+still puts the files back and tries to infer the owning workspace from the
+stored `cwd`, but when the host cannot resolve it the row reappears only after
+a restart — that is what the startup history bootstrap is for.
 
 Setting `mode: permanent` in the plugin config removes the intermediate step
 and deletes outright — the dialog then requires the conversation title to be
@@ -88,6 +107,13 @@ before anything becomes user-visible:
   the dialog says why.
 - **No double deletion.** A repeated click joins the deletion already in
   flight instead of interleaving two runs.
+- **Restore never half-succeeds silently.** The artifact move runs first and
+  reports the usual error codes when it fails. Everything after it — the
+  workspace reattachment, the pin/archive replay, the browser announcement —
+  is reported per step: a failure is returned as `reattached: false` with the
+  failed steps in `reattachFailures` and recorded in the audit trail with a
+  `partial` marker, never as an unqualified success and never as a thrown
+  error that would suggest nothing came back.
 - **Everything is audited.** Each mutation appends one record — action, session
   id, outcome, timestamp — to `audit.jsonl` next to the trash. Conversation
   content is never written to it, and the file is trimmed to its newest
@@ -106,8 +132,13 @@ The Host answers with stable codes; the dialog localizes them.
 | `session-delete/unreadable` | The log exists but cannot be read by this build |
 | `session-delete/unsafe-path` | The store named a target outside its own root; nothing was changed |
 | `session-delete/trash-unavailable` | The trash area is not usable; nothing was changed |
-| `session-delete/conflict` | The target of a restore is already occupied |
+| `session-delete/conflict` | The target of a restore is already occupied by a different artifact |
 | `session-delete/invalid-request` | Malformed request (defensive) |
+
+A restore whose files came back but whose accounting replay failed is **not an
+error**: it resolves with `restored: true` and the partial-restore fields listed
+below, because the conversation is on disk again and only its sidebar
+accounting is missing.
 
 ## Remote endpoints
 
@@ -117,7 +148,15 @@ The Host answers with stable codes; the dialog localizes them.
 | `sessionDelete/describe` | Report the active mode, the retention window and what the store supports |
 | `sessionDelete/restore` | Restore a trashed conversation |
 | `sessionDelete/purge` | Remove a trashed conversation permanently |
-| `sessionDelete/listTrash` | List the trash, newest first |
+| `sessionDelete/listTrash` | List the trash, newest first; a `restoreState: "accounting-pending"` entry holds no artifact and waits for a retry |
+
+`sessionDelete/restore` answers with `{ sessionId, restored, mode }` plus, when
+a reattachment was attempted, these fields (each present only when it applies):
+`reattached`, `reattachFailures` (step names, partial outcome only),
+`needsRestart` (partial outcome only), `reordered` (only when the recorded slot
+could not be applied), `inferred` (legacy entry) and `announced` (only when the
+browser was told). A client that only knows the three base fields treats a
+missing `reattached` as a full restore, which is also what an older host reports.
 
 ## Config
 
@@ -169,11 +208,15 @@ Restart the Harness if your profile does not hot-reload plugin bundles.
 - **No runtime dependencies.** The bundle imports only Node built-ins, and
   loads nothing from `@deepseek-ai/*` at runtime.
 - It deliberately builds on a few host internals: the session store and
-  persistence services, the workspace registry, the storage-domain projection
-  cache, and the API Gateway's runtime *SRC* dispatch for services that carry a
-  `typertRemote` binding plus Remote method markers. A host release that
-  reshapes those may need a plugin update — pin your host version if you depend
-  on this.
+  persistence services, the workspace registry (including `attachSession` and
+  the pin/archive sets, which is how a restore puts a conversation back), the
+  API session controller's list state (for the `api-session/added` summary),
+  the storage-domain projection cache, and the API Gateway's runtime *SRC*
+  dispatch for services that carry a `typertRemote` binding plus Remote method
+  markers. A host release that reshapes those may need a plugin update — pin
+  your host version if you depend on this. Each of those is read defensively:
+  a missing one degrades the restore to the older files-only behaviour and is
+  reported, never thrown.
 - The browser half loads the host's UI primitives defensively. If a future
   host build drops `@deepseek-ai/dsh-client-ui-primitives`, the action still
   works with plain elements instead of breaking the sidebar.
@@ -186,13 +229,21 @@ Restart the Harness if your profile does not hot-reload plugin bundles.
   artifacts. The artifact is located through the store's own `locate()`,
   which names the session directory for the shipped JSONL backend and is
   honoured as-is for other layouts — after the target has been checked against
-  the store's root.
+  the store's root. Deletion captures the workspace accounting into the trash
+  manifest before releasing it; restore replays it through the registry's own
+  `attachSession` / `insertSessionBefore` / `pinSession` / `archiveSession`,
+  which is what makes the workspace follow stream update the sidebar, and
+  emits the inverse of the deletion's `api-session/removed` event
+  (`api-session/added`, with the host's own session summary) so the catalog row
+  comes back too.
 - **Browser half** (`client.js`) registers into
   `sidebar.workspaces.session.menu.item`,
   `sidebar.workspaces.session.row.action` and `shell.overlay`, and calls the
   endpoints over the shared connection RPC. The dialog is keyed by the
   Session it deletes, so one request's in-flight/error/success state never
-  leaks into the next.
+  leaks into the next. After a restore it asks the session catalog for a
+  refresh (when that service exists) so a host that could not build a summary
+  still renders the restored row.
 - Styles copy the host's own geometry, renamed under a plugin prefix, and use
   only `--dsw-alias-*` theme tokens, so light/dark and theme switching follow
   the app.
@@ -220,6 +271,17 @@ Restart the Harness if your profile does not hot-reload plugin bundles.
   the next search rather than eagerly.
 - The trash is a plain directory next to the session store. It is not shared
   between machines and does not sync.
+- **Restore is only as exact as the host API allows.** The workspace registry
+  has `attachSession` (which prepends) and `insertSessionBefore`, not an
+  "insert after"; the recorded slot is restored when the session that followed
+  the deleted one still exists, otherwise the conversation is accounted at the
+  front. Pinning always prepends, so a restored pin is in the pinned set but
+  may not hold its old position among the pinned sessions. The workspace
+  projection itself is followed by the browser's own workspace stream, so no
+  extra client RPC is needed for it.
+- A restore that could not reattach the workspace accounting leaves the files
+  and the row metadata in place and reports `needsRestart: true`; the next
+  launch re-adopts the session through the host's history bootstrap.
 
 ## Development
 
@@ -236,7 +298,9 @@ DeepSeek Harness 只能归档会话、无法真正删除，日志会一直堆积
 
 **新增内容**：会话「…」菜单里的**红色「删除对话」**、会话行悬停时的垃圾桶按钮，以及一个显示对话标题、写明"是否可恢复"的确认框；永久删除模式下还需要手动输入会话标题才会解锁按钮。删除后确认框会原地显示结果，并提供**还原**与**彻底删除**两个后续操作。删除当前正在看的对话后，会在同一工作区重新打开一个新会话。
 
-**删除顺序是事务式的**：解析目标 → 拒绝运行中的工作 → 停并将活跃会话摘除 → **把日志移出存储** → 释放工作区记账 → 删除投影缓存 → 广播移除事件。移动失败时会**先失败、不动记账和缓存**，所以侧边栏行仍在、可以直接重试。
+**删除顺序是事务式的**：解析目标 → 拒绝运行中的工作 → 停并将活跃会话摘除 → **把日志移出存储**（移出前先把工作区记账写入回收站清单：所属工作区、显示位置锚点、置顶/归档标记）→ 释放工作区记账 → 删除投影缓存 → 广播移除事件。移动失败时会**先失败、不动记账和缓存**，所以侧边栏行仍在、可以直接重试。
+
+**还原是完整的**：文件移回后，插件会按清单重新挂回工作区、回复到原来的显示位置（锚点仍存在时）、重新置顶或归档，并向界面广播 `api-session/added`，所以**不必重启就能在侧边栏重新看到**。重新挂接失败时不会假装成功：结果会给出 `reattached: false` 与 `needsRestart: true`，文件保持在原位，回收站条目保留为 `accounting-pending`，再点一次「恢复」只补做记账、不会重复移动文件。旧版本（0.3.0 及更早）写入的条目没有记账信息，只会尽力按 `cwd` 推断工作区，必要时仍需重启。
 
 **会被处理的**：会话日志目录（日志 + 锁文件，移入回收站）、投影缓存记录、工作区记账（成员关系/排序/置顶/归档标记）。
 
@@ -250,9 +314,9 @@ DeepSeek Harness 只能归档会话、无法真正删除，日志会一直堆积
 
 **审计**：每次删除、还原、彻底删除都会向回收站旁的 `audit.jsonl` 追加一条记录（动作、会话 ID、结果、时间），**不写入任何对话内容**。
 
-**兼容性**：在 DeepSeek Harness `0.2.1-rc.2`（Desktop/Web，Windows，中英文界面）上验证；零运行时依赖。实现依赖少量宿主内部机制（会话存储/持久化服务、工作区注册表、投影缓存域、以及 API Gateway 对带 `typertRemote` 绑定的服务的运行时派发），宿主大版本变更时可能需要跟进更新。
+**兼容性**：在 DeepSeek Harness `0.2.1-rc.2`（Desktop/Web，Windows，中英文界面）上验证；零运行时依赖。实现依赖少量宿主内部机制（会话存储/持久化服务、工作区注册表的重新挂接与置顶/归档集合、会话列表状态与 `api-session/added` 事件、投影缓存域、以及 API Gateway 对带 `typertRemote` 绑定的服务的运行时派发），宿主大版本变更时可能需要跟进更新；这些能力都是防御式读取，缺失时只会降级并如实报告。
 
-**已知限制**：没有全局 toast（插件无法使用该槽位），确认框内的原地提示即反馈；界面文案仅中英文；从未落盘的空白会话删除后，宿主内存里的 pending 条目可能要等重启才彻底消失。
+**已知限制**：没有全局 toast（插件无法使用该槽位），确认框内的原地提示即反馈；界面文案仅中英文；从未落盘的空白会话删除后，宿主内存里的 pending 条目可能要等重启才彻底消失。还原的精确程度受宿主 API 限制：显示位置只在锚点仍存在时恢复，否则排到最前；置顶只能前置、无法还原其在置顶集合中的旧顺序；记账恢复失败时需重启后由启动引导重新接管。
 
 ## License
 

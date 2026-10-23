@@ -4,6 +4,53 @@ All notable changes to `@ybbmm/dsh-session-delete` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-10-23
+
+### Fixed
+
+- **A restored conversation is visible again without a restart.** Restore used
+  to move the files back only; the workspace membership, saved order, pin and
+  archive mark that deletion released were never rebuilt, and the host
+  re-adopts unaccounted stored sessions only during the startup history
+  bootstrap — so a restored conversation stayed out of the sidebar until the
+  next launch. Deletion now records the workspace accounting in the trash
+  manifest, and restore reattaches the conversation through the host registry,
+  replays the pin or archive mark, and emits `api-session/added` with the
+  host's own session summary so the catalog row returns as well.
+- **A partial restore is reported, never silent.** A reattachment that fails
+  after the files are back resolves with `restored: true` and `reattached:
+  false` (failed steps in `reattachFailures`, `needsRestart: true`), keeps the
+  files in place and records the restore in the audit trail with a `partial`
+  marker. It is never thrown as a failure and never reported as a full success.
+- **A half-finished restore is recoverable.** An entry whose artifact has
+  already moved back (a failed reattachment, or a process that stopped between
+  the move and the accounting replay) is completed by the next Restore call
+  instead of failing as `conflict`; the pending entry is marked
+  `restoreState: "accounting-pending"`, holds no artifact, is reported by
+  `listTrash`, and is superseded by a fresh delete.
+- **A trash entry written by 0.3.0 or earlier restores with a best-effort
+  workspace reattachment.** Such manifests carry no accounting record, so the
+  owning workspace is inferred from the stored `cwd` — the same rule the
+  startup bootstrap uses — and the restore still works when the host cannot
+  resolve one.
+
+### Changed
+
+- `sessionDelete/restore` answers with backwards-compatible extra fields when
+  a reattachment was attempted: `reattached`, `reattachFailures`,
+  `needsRestart`, `reordered`, `inferred`, `announced`. A client that only
+  knows `{ sessionId, restored, mode }` keeps working; a missing `reattached`
+  means the host did its whole job.
+- `sessionDelete/listTrash` reports `restoreState` for a pending-accounting
+  entry (there is no wire change for older entries).
+- The browser half asks the session catalog for a refresh after a restore when
+  that service exists, so a host that cannot build a summary still renders the
+  restored row, and shows a dedicated "restart the Harness" message only when
+  the host explicitly reports `reattached: false`.
+- The audit trail trim reuses the read that counted a fresh trail instead of
+  reading the whole file twice on the mutation that crosses the record cap.
+- New English and Chinese copy for the partial-restore message.
+
 ## [0.3.0] — 2026-10-22
 
 ### Added

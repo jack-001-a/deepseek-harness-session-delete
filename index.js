@@ -92,6 +92,14 @@ const SWEEP_INTERVAL_MS = 5 * 60 * 1000
 const TRASH_NAME_LIMIT = 100
 /** How many names one trash entry may try before it gives up. */
 const TRASH_NAME_ATTEMPTS = 5
+/**
+ * Manifest marker of an entry whose artifact is back in the session store but
+ * whose workspace accounting could not be restored yet.
+ *
+ * The entry is kept so a later restore call can finish the accounting without
+ * moving the artifact a second time; it holds no artifact of its own by then.
+ */
+const RESTORE_PENDING = 'accounting-pending'
 
 /**
  * One deletion failure with a stable code and caller-facing message.
@@ -340,11 +348,13 @@ class SessionDeleteService {
 
     // 0. A conversation that already sits in the trash is not an error:
     //    deleting it again reports the entry that already holds it, so a
-    //    repeated click cannot fail the second time. A permanent store never
-    //    takes this path: it must not report a trashed artifact as deleted
-    //    while leaving it on the disk.
+    //    repeated click cannot fail the second time. An entry that only waits
+    //    for its accounting is not holding anything: the conversation is back
+    //    on the disk, so the deletion below runs as usual. A permanent store
+    //    never takes this path: it must not report a trashed artifact as
+    //    deleted while leaving it on the disk.
     const trashed = this.mode === 'trash' ? await this.trashEntryFor(sessionId) : undefined
-    if (trashed !== undefined) {
+    if (trashed !== undefined && trashed.restoreState === undefined) {
       const children = Array.isArray(trashed.children) ? trashed.children : []
       return {
         sessionId,
@@ -411,6 +421,12 @@ class SessionDeleteService {
       // 3. Children survive their parent: name them so the browser can say so.
       const { ids: children, count: childrenCount } = await this.listChildren(sessionId)
 
+      // 3b. Capture the workspace accounting this deletion is about to release.
+      //     The trash manifest is the only place the restore can learn from, so
+      //     the membership, its display anchor, the pin and the archive mark are
+      //     read here, before step 6 clears them.
+      const accounting = this.mode === 'trash' ? this.captureAccounting(sessionId) : undefined
+
       // 4. Stop what is left, then let a live session leave the stores so its
       //    writer closes. The writer itself removes its handle on
       //    `session/disposed`; the removal below retries through that delay.
@@ -423,7 +439,13 @@ class SessionDeleteService {
       // 5. Remove the stored conversation. This is the irreversible step; a
       //    session that never materialized has no artifact, which counts as
       //    success rather than failure.
-      const removal = await this.removeStoredLog(header, sessionId, children, childrenCount)
+      const removal = await this.removeStoredLog(
+        header,
+        sessionId,
+        children,
+        childrenCount,
+        accounting,
+      )
 
       // 6. Release the durable workspace accounting. Fail-soft: the artifact
       //    is already gone, so a stale membership must not fail the deletion.
@@ -514,6 +536,236 @@ class SessionDeleteService {
     }
     await attempt('pin', () => registry.unpinSession(sessionId))
     await attempt('archive mark', () => registry.unarchiveSession(sessionId))
+  }
+
+  /**
+   * Capture the workspace accounting a deletion is about to release.
+   *
+   * The restore is only useful when it can put the conversation back where the
+   * sidebar expects it, and the host's own accounting is the only truth about
+   * that: which workspace owned it, where in the ordered account it sat, and
+   * whether it was pinned or archived. All of it is read before the deletion
+   * releases it and written into the trash manifest, so a restore inside a
+   * running app can rebuild it. History bootstrap only re-adopts unaccounted
+   * sessions at startup, which is why a restore without this record leaves the
+   * conversation invisible until the next launch.
+   *
+   * The values are read from the registry synchronously and every read is
+   * fail-soft: losing one of them degrades the restore, never the deletion.
+   * @param sessionId - durable Session identity.
+   * @returns the recorded accounting, presence marks included.
+   */
+  captureAccounting(sessionId) {
+    const registry = optionalService(this.ctx, 'workspaceRegistry')
+    // The empty record is not a missing one: its presence tells a future
+    // restore that the accounting was captured, so nothing is inferred.
+    const accounting = { member: false, pinned: false, archived: false }
+    if (!registry) return accounting
+    try {
+      for (const workspace of registry.list()) {
+        const ids = workspace?.record?.sessionIds
+        if (!Array.isArray(ids) || !ids.includes(sessionId)) continue
+        accounting.member = true
+        if (typeof workspace.id === 'string') accounting.workspaceId = workspace.id
+        // `attachSession` prepends, so the session that sat right after the
+        // deleted one is the anchor that puts it back in its old slot.
+        const next = ids[ids.indexOf(sessionId) + 1]
+        if (typeof next === 'string') accounting.beforeSessionId = next
+        // A session is accounted by at most one workspace (a registry
+        // invariant), so the first match is the only match.
+        break
+      }
+    } catch (error) {
+      this.ctx.logger?.warn(`sessionDelete: capturing workspace membership of "${sessionId}" failed: ${String(error)}`)
+    }
+    try {
+      const pinned = registry.pinnedSessionIds
+      if (Array.isArray(pinned) && pinned.includes(sessionId)) accounting.pinned = true
+    } catch {
+      // A registry that cannot report the pin set restores a session unpinned.
+    }
+    try {
+      const archived = registry.archivedSessionIds
+      if (Array.isArray(archived) && archived.includes(sessionId)) accounting.archived = true
+    } catch {
+      // A registry that cannot report the archive set restores a session
+      // unarchived rather than failing the deletion.
+    }
+    return accounting
+  }
+
+  /**
+   * Put a restored conversation back into the workspace accounting.
+   *
+   * Runs after the artifact is back in the store, because the host validates
+   * `attachSession` against the stored header (its `cwd` must resolve to the
+   * workspace path). The recorded order anchor is applied best-effort: the
+   * conversation is already accounted even when the anchor has since been
+   * deleted, and a missing anchor only costs its exact slot.
+   *
+   * A legacy manifest written before 0.4.0 carries no accounting record; for
+   * those the header's `cwd` is used to find the owning workspace, which is
+   * the same rule the startup bootstrap uses.
+   * @param manifest - the trash entry's manifest.
+   * @param sessionId - durable Session identity.
+   * @returns the reattachment result, or undefined when there is nothing to attempt.
+   */
+  async reattachAccounting(manifest, sessionId) {
+    const registry = optionalService(this.ctx, 'workspaceRegistry')
+    if (!registry) return undefined
+    const accounting = manifest?.accounting
+    const recorded = accounting !== undefined && accounting !== null && typeof accounting === 'object'
+    if (recorded) {
+      const member = accounting.member === true
+      const pinned = accounting.pinned === true
+      const archived = accounting.archived === true
+      if (!member && !pinned && !archived) return undefined
+      const result = { reattached: true, reordered: false, failures: [] }
+      if (member) {
+        const workspaceId = typeof accounting.workspaceId === 'string' ? accounting.workspaceId : undefined
+        const workspace = workspaceId === undefined ? undefined : registry.get?.(workspaceId)
+        if (workspace === undefined) {
+          // The conversation stays on the disk with no sidebar row: history
+          // bootstrap can re-adopt it from its cwd on the next launch.
+          result.failures.push('workspace-missing')
+        } else {
+          try {
+            await workspace.attachSession(sessionId)
+            result.reordered = await this.reorderRestoredSession(
+              workspace,
+              sessionId,
+              typeof accounting.beforeSessionId === 'string' ? accounting.beforeSessionId : undefined,
+            )
+          } catch (error) {
+            this.ctx.logger?.warn(
+              `sessionDelete: reattaching session "${sessionId}" to its workspace failed: ${String(error)}`,
+            )
+            result.failures.push('workspace')
+          }
+        }
+      }
+      // Pinning and archival are mutually exclusive in the host registry, and
+      // an archive write drops a pin. Replaying the recorded archive mark is
+      // therefore enough; a pin is only replayed when it was not archived.
+      if (archived) {
+        try {
+          await registry.archiveSession?.(sessionId)
+        } catch (error) {
+          this.ctx.logger?.warn(`sessionDelete: re-archiving session "${sessionId}" failed: ${String(error)}`)
+          result.failures.push('archive')
+        }
+      } else if (pinned) {
+        try {
+          await registry.pinSession?.(sessionId)
+        } catch (error) {
+          this.ctx.logger?.warn(`sessionDelete: re-pinning session "${sessionId}" failed: ${String(error)}`)
+          result.failures.push('pin')
+        }
+      }
+      result.reattached = result.failures.length === 0
+      return result
+    }
+    // Legacy entry: infer the owning workspace from the stored cwd the same
+    // way the startup bootstrap does. Nothing is claimed when this host
+    // exposes no resolver or the cwd matches no registered workspace.
+    const cwd = typeof manifest?.header?.cwd === 'string' ? manifest.header.cwd : undefined
+    if (cwd === undefined || typeof registry.resolveByPath !== 'function') return undefined
+    const result = { reattached: true, reordered: false, failures: [], inferred: true }
+    let workspace
+    try {
+      workspace = await registry.resolveByPath(cwd)
+    } catch (error) {
+      // The cwd directory itself is unreadable: nothing can be attached, and
+      // only the restart bootstrap can decide later.
+      this.ctx.logger?.warn(`sessionDelete: resolving the workspace of "${sessionId}" failed: ${String(error)}`)
+      result.failures.push('workspace-unresolved')
+      result.reattached = false
+      return result
+    }
+    if (workspace === undefined || typeof workspace.attachSession !== 'function') {
+      result.failures.push('workspace-missing')
+      result.reattached = false
+      return result
+    }
+    try {
+      await workspace.attachSession(sessionId)
+    } catch (error) {
+      this.ctx.logger?.warn(`sessionDelete: reattaching session "${sessionId}" by its cwd failed: ${String(error)}`)
+      result.failures.push('workspace')
+      result.reattached = false
+    }
+    return result
+  }
+
+  /**
+   * Move a restored conversation back to its recorded display slot.
+   *
+   * `attachSession` prepends, and the host has no "insert after" operation, so
+   * the anchor recorded at delete time (the session that was after the deleted
+   * one) is used when it is still accounted. A missing anchor keeps the
+   * conversation accounted at the front, which is a visible position; the
+   * reorder is therefore a best-effort improvement, never a failure.
+   * @param workspace - the workspace entity that now accounts the session.
+   * @param sessionId - durable Session identity.
+   * @param anchorId - the recorded session that sat after the deleted one.
+   * @returns whether the recorded slot could be applied.
+   */
+  async reorderRestoredSession(workspace, sessionId, anchorId) {
+    if (anchorId === undefined || typeof workspace.insertSessionBefore !== 'function') return false
+    const ids = workspace.record?.sessionIds
+    if (!Array.isArray(ids) || !ids.includes(anchorId)) return false
+    try {
+      await workspace.insertSessionBefore(sessionId, anchorId)
+      return true
+    } catch (error) {
+      // The anchor may have been detached between the check and the write; the
+      // conversation is still accounted, so this is only a lost position.
+      this.ctx.logger?.warn(
+        `sessionDelete: restoring the display slot of "${sessionId}" failed: ${String(error)}`,
+      )
+      return false
+    }
+  }
+
+  /**
+   * Announce a restored conversation to the browser.
+   *
+   * Deletion emits `api-session/removed`; the inverse is `api-session/added`,
+   * which the shipped session list relays into the sidebar catalog. The Host's
+   * own list state builds a truthful summary from the stored header, so no
+   * title or message content is invented here. A host that cannot answer is
+   * only logged: the files are already back, and a failed announcement must
+   * never turn the restore into a failure.
+   * @param manifest - the trash entry's manifest, carrying the stored header.
+   * @returns whether the addition was announced.
+   */
+  announceRestored(manifest) {
+    const controller = optionalService(this.ctx, 'sessionController')
+    const listState = controller?.listState
+    const header = manifest?.header
+    if (!listState || typeof header?.id !== 'string') return false
+    let summary
+    try {
+      const live = optionalService(this.ctx, 'sessions')?.get?.(header.id)
+      if (live !== undefined && typeof listState.summaryFor === 'function') summary = listState.summaryFor(live)
+    } catch {
+      // Fall through to the stored-header summary.
+    }
+    if (summary === undefined && typeof listState.summarizeCold === 'function') {
+      try {
+        summary = listState.summarizeCold({ header })
+      } catch (error) {
+        this.ctx.logger?.warn(`sessionDelete: summarizing the restored session "${header.id}" failed: ${String(error)}`)
+      }
+    }
+    if (summary === undefined) return false
+    try {
+      this.ctx.emit('api-session/added', summary)
+      return true
+    } catch (error) {
+      this.ctx.logger?.warn(`sessionDelete: announcing the restored session "${header.id}" failed: ${String(error)}`)
+      return false
+    }
   }
 
   /**
@@ -666,9 +918,10 @@ class SessionDeleteService {
    * @param sessionId - durable Session identity, for diagnostics.
    * @param children - the capped child ids to record in the manifest.
    * @param childrenCount - the true child count to record in the manifest.
+   * @param accounting - the workspace accounting captured before the release.
    * @returns what happened to the artifact.
    */
-  async removeStoredLog(header, sessionId, children = [], childrenCount = children.length) {
+  async removeStoredLog(header, sessionId, children = [], childrenCount = children.length, accounting) {
     const artifact = this.resolveArtifact(header, sessionId)
     if (artifact === undefined) {
       return { removed: false, trashed: false, purged: false }
@@ -680,7 +933,7 @@ class SessionDeleteService {
       return { removed: false, trashed: false, purged: false }
     }
     if (this.mode === 'trash') {
-      const entry = await this.moveToTrash(artifact, sessionId, header, children, childrenCount)
+      const entry = await this.moveToTrash(artifact, sessionId, header, children, childrenCount, accounting)
       return { removed: true, trashed: true, trashId: entry.trashId, purged: false }
     }
     await this.removeWithRetries(artifact.target, sessionId)
@@ -730,9 +983,10 @@ class SessionDeleteService {
    * @param header - the stored session header.
    * @param children - the capped child ids to record.
    * @param childrenCount - the true child count to record.
+   * @param accounting - the captured workspace accounting, when there is any.
    * @returns the trash entry that now holds the artifact.
    */
-  async moveToTrash(artifact, sessionId, header, children, childrenCount) {
+  async moveToTrash(artifact, sessionId, header, children, childrenCount, accounting) {
     const root = this.trashRoot()
     if (root === undefined) {
       throw new SessionDeleteError(
@@ -750,6 +1004,14 @@ class SessionDeleteService {
         { sessionId, path: root, reason: error instanceof Error ? error.message : String(error) },
       )
     }
+    // A pending-accounting entry from an earlier, half-finished restore holds
+    // no artifact. A fresh deletion of the same id supersedes it, so it is
+    // dropped instead of leaving a second, stale entry behind.
+    const pending = this.trashBySession.get(sessionId)
+    if (pending !== undefined && pending.restoreState !== undefined) {
+      this.forgetTrashEntry(pending.trashId)
+      await this.discardTrashEntry(pending.path)
+    }
     const stamp = this.nextStamp()
     const entry = await this.createTrashEntry(root, sessionId, stamp)
     const { trashId, path: entryPath } = entry
@@ -761,6 +1023,9 @@ class SessionDeleteService {
       children,
       childrenCount,
       mode: this.mode,
+      // Presence marks "captured": a manifest without this field predates
+      // 0.4.0 and is restored with a best-effort workspace inference instead.
+      ...(accounting === undefined ? {} : { accounting }),
     }
     try {
       await writeFile(join(entryPath, MANIFEST_FILE_NAME), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
@@ -803,6 +1068,8 @@ class SessionDeleteService {
       path: entryPath,
       children,
       childrenCount,
+      header: manifest.header,
+      accounting: manifest.accounting,
     })
     return { trashId, path: entryPath }
   }
@@ -1066,6 +1333,14 @@ class SessionDeleteService {
 
   /**
    * The restore proper; see {@link restore} for the contract.
+   *
+   * The artifact comes back first: the host validates a reattachment against
+   * the stored header, so the file has to be in its place before the workspace
+   * can account for it again. The accounting is replayed from the manifest and
+   * is best-effort: a reattachment failure leaves the files restored and the
+   * entry in a pending state, so a repeated restore can finish the accounting
+   * without copying anything twice. A restore interrupted after the move is
+   * recognised the same way, which keeps the operation retryable.
    * @param sessionId - durable Session identity.
    * @returns the restore outcome.
    */
@@ -1101,23 +1376,76 @@ class SessionDeleteService {
         { sessionId, path: target, root, reason: 'unexpected-layout' },
       )
     }
-    if (await this.pathExists(target)) {
+    const artifact = join(entry.path, ARTIFACT_DIR_NAME)
+    const targetExists = await this.pathExists(target)
+    const artifactExists = await this.pathExists(artifact)
+    // A previous restore may have moved the artifact back and stopped before
+    // finishing the accounting (a failed reattachment keeps the entry, and a
+    // crash can interrupt any step). That is a retry, not a conflict: the move
+    // is skipped and only the remaining bookkeeping runs.
+    const alreadyMoved = targetExists && !artifactExists
+    if (targetExists && !alreadyMoved) {
       throw new SessionDeleteError(
         'session-delete/conflict',
         `sessionDelete: the original location of session "${sessionId}" is occupied; nothing was restored`,
         { sessionId, path: target },
       )
     }
-    const artifact = join(entry.path, ARTIFACT_DIR_NAME)
-    try {
-      await mkdir(dirname(target), { recursive: true })
-      await this.moveArtifact(artifact, target)
-    } catch (error) {
+    if (!targetExists && !artifactExists) {
       throw new SessionDeleteError(
         'session-delete/io',
-        `sessionDelete: restoring session "${sessionId}" failed: ${error instanceof Error ? error.message : String(error)}`,
-        { sessionId, path: target },
+        `sessionDelete: the trash entry of session "${sessionId}" holds no artifact; nothing was restored`,
+        { sessionId, path: artifact, reason: 'missing-artifact' },
       )
+    }
+    if (!alreadyMoved) {
+      try {
+        await mkdir(dirname(target), { recursive: true })
+        await this.moveArtifact(artifact, target)
+      } catch (error) {
+        throw new SessionDeleteError(
+          'session-delete/io',
+          `sessionDelete: restoring session "${sessionId}" failed: ${error instanceof Error ? error.message : String(error)}`,
+          { sessionId, path: target },
+        )
+      }
+    }
+    // The files are back; from here on every step reports rather than throws.
+    // The store is asked for the header again so the reattachment and the
+    // browser summary use the real stored header, not only the identifying
+    // fields the manifest kept.
+    let header = entry.header
+    try {
+      const snapshot = await this.ctx.sessionPersistence.stat(sessionId)
+      if (snapshot?.header) header = snapshot.header
+    } catch {
+      // The manifest header is the recorded truth when the store cannot read.
+    }
+    const restoredEntry = header === entry.header ? entry : { ...entry, header }
+    const reattach = await this.reattachAccounting(restoredEntry, sessionId)
+    const announced = reattach === undefined || reattach.reattached === true
+      ? this.announceRestored(restoredEntry)
+      : false
+    const incomplete = reattach !== undefined && reattach.reattached === false
+    if (incomplete) {
+      // Keep the entry: it no longer holds an artifact, but it is the record a
+      // repeated restore needs to finish the reattachment. It is marked so the
+      // deletion path does not mistake it for a conversation still in the trash.
+      await this.markRestorePending(entry)
+      await this.audit('restore', sessionId, true, {
+        mode: this.mode,
+        partial: true,
+        code: 'session-delete/restore-incomplete',
+      })
+      return {
+        sessionId,
+        restored: true,
+        mode: this.mode,
+        reattached: false,
+        needsRestart: true,
+        reattachFailures: reattach.failures,
+        ...(announced ? { announced: true } : {}),
+      }
     }
     // The artifact is back in place, so a leftover manifest is only litter:
     // it must not turn a completed restore into a failure.
@@ -1130,7 +1458,39 @@ class SessionDeleteService {
     }
     this.forgetTrashEntry(entry.trashId)
     await this.audit('restore', sessionId, true, { mode: this.mode })
-    return { sessionId, restored: true, mode: this.mode }
+    const outcome = { sessionId, restored: true, mode: this.mode }
+    if (reattach !== undefined) {
+      outcome.reattached = reattach.reattached
+      if (reattach.reordered === false && reattach.reattached) outcome.reordered = false
+      if (reattach.inferred === true) outcome.inferred = true
+    }
+    if (announced) outcome.announced = true
+    return outcome
+  }
+
+  /**
+   * Mark a trash entry as waiting for its accounting restore.
+   *
+   * The manifest is rewritten in place with the marker and the moment the
+   * artifact went back, so the next restore (or the next launch) can tell a
+   * half-finished restore from an occupied original location.
+   * @param entry - the trash entry whose artifact is already back.
+   */
+  async markRestorePending(entry) {
+    const manifest = (await this.readManifest(entry.path)) ?? {
+      sessionId: entry.sessionId,
+      originalPath: entry.originalPath,
+      deletedAt: entry.deletedAt,
+    }
+    const next = { ...manifest, restoreState: RESTORE_PENDING, restoredAt: new Date().toISOString() }
+    try {
+      await writeFile(join(entry.path, MANIFEST_FILE_NAME), `${JSON.stringify(next, null, 2)}\n`, 'utf8')
+      entry.restoreState = RESTORE_PENDING
+    } catch (error) {
+      this.ctx.logger?.warn(
+        `sessionDelete: marking the trash entry of session "${entry.sessionId}" as pending failed: ${String(error)}`,
+      )
+    }
   }
 
   /**
@@ -1169,6 +1529,10 @@ class SessionDeleteService {
         sessionId: entry.sessionId,
         deletedAt: entry.deletedAt,
         originalPath: entry.originalPath,
+        // Present only for an entry whose files are already restored but whose
+        // workspace accounting still has to be replayed; such an entry holds no
+        // artifact and a restore (or a launch) finishes it.
+        ...(entry.restoreState === undefined ? {} : { restoreState: entry.restoreState }),
       })),
     }
   }
@@ -1224,6 +1588,14 @@ class SessionDeleteService {
         children: Array.isArray(manifest.children) ? manifest.children : [],
         childrenCount:
           typeof manifest.childrenCount === 'number' ? manifest.childrenCount : (manifest.children ?? []).length,
+        // The header and the accounting record are what a restore needs; they
+        // travel with the manifest so the trash entry alone is enough.
+        header: manifest.header !== null && typeof manifest.header === 'object' ? manifest.header : undefined,
+        accounting:
+          manifest.accounting !== null && typeof manifest.accounting === 'object'
+            ? manifest.accounting
+            : undefined,
+        restoreState: typeof manifest.restoreState === 'string' ? manifest.restoreState : undefined,
       })
     }
     entries.sort(compareTrashEntries)
@@ -1393,6 +1765,8 @@ class SessionDeleteService {
       ...(typeof extra.code === 'string' ? { code: extra.code } : {}),
       ...(typeof extra.children === 'number' ? { children: extra.children } : {}),
       ...(typeof extra.mode === 'string' ? { mode: extra.mode } : {}),
+      // Marker only: the files are back but the accounting replay was partial.
+      ...(extra.partial === true ? { partial: true } : {}),
     }
     const file = join(root, AUDIT_FILE_NAME)
     try {
@@ -1409,26 +1783,25 @@ class SessionDeleteService {
    *
    * The file is trimmed to its newest half once it passes the record cap, so
    * the trail always holds recent history and never fills the disk. The file
-   * is only read when the record count is unknown or the cap is reached.
+   * is only read when the record count is unknown or the cap is reached, and
+   * the read that counts a fresh trail is reused for the trim itself.
    * @param file - the audit trail file.
    */
   async trimAudit(file) {
+    let text
     if (this.auditRecords === undefined) {
-      try {
-        const text = await readFile(file, 'utf8')
-        this.auditRecords = text.split('\n').filter((line) => line.length > 0).length
-      } catch {
-        this.auditRecords = 0
-      }
+      text = await this.readAuditTrail(file)
+      this.auditRecords =
+        text === undefined ? 0 : text.split('\n').filter((line) => line.length > 0).length
     }
     this.auditRecords += 1
     if (this.auditRecords <= AUDIT_MAX_RECORDS) return
-    let text
-    try {
-      text = await readFile(file, 'utf8')
-    } catch {
-      this.auditRecords = 0
-      return
+    if (text === undefined) {
+      text = await this.readAuditTrail(file)
+      if (text === undefined) {
+        this.auditRecords = 0
+        return
+      }
     }
     const lines = text.split('\n').filter((line) => line.length > 0)
     const kept = lines.slice(Math.floor(lines.length / 2))
@@ -1437,6 +1810,19 @@ class SessionDeleteService {
       this.auditRecords = kept.length
     } catch (error) {
       this.ctx.logger?.warn(`sessionDelete: trimming the audit trail failed: ${String(error)}`)
+    }
+  }
+
+  /**
+   * Read the whole audit trail, or undefined when it cannot be read.
+   * @param file - the audit trail file.
+   * @returns the file's text, or undefined.
+   */
+  async readAuditTrail(file) {
+    try {
+      return await readFile(file, 'utf8')
+    } catch {
+      return undefined
     }
   }
 }

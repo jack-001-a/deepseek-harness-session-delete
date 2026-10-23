@@ -227,6 +227,15 @@ function applyPlugin(plugin, handlers = {}) {
     },
     rpcCalls: [],
   }
+  // The shipped client's Session catalog; a restore asks it to re-pull the
+  // Host list so the restored summary becomes renderable again.
+  services.sessions = {
+    refresh: () => {
+      services.refreshes += 1
+      return Promise.resolve()
+    },
+  }
+  services.refreshes = 0
   const ctx = {
     effect: (run) => run(),
     locale: {
@@ -644,6 +653,77 @@ test('restore calls the host and reports the outcome inline', async () => {
   assert.ok(statuses.includes('The conversation was restored.'))
   const labels = footerButtons(form).map((button) => text(button))
   assert.deepEqual(labels, ['Close'], 'a restored conversation offers nothing but Close')
+})
+
+test('restore refreshes the session catalog and treats an older host as a full success', async () => {
+  const { plugin, React } = await loadPlugin()
+  const { registrations, dictionaries, services } = applyPlugin(plugin, {
+    // A host older than 0.4.0 knows nothing about reattachment and says so by
+    // leaving the field out; that must read as a completed restore.
+    'sessionDelete/restore': () => ({ ok: true, value: { sessionId: 'session-a', restored: true, mode: 'trash' } }),
+  })
+  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+    describeDeletion: async () => DESCRIBE_TRASH,
+    confirmDelete: async () => ({ mode: 'trash', trashed: true, children: [], childrenCount: 0 }),
+  })
+  await settle()
+  footerButtons(form)[1].props.onClick()
+  await settle()
+
+  footerButtons(form)
+    .find((button) => text(button) === 'Restore')
+    .props.onClick()
+  await settle()
+  await settle()
+
+  assert.equal(services.refreshes, 1, 'the session catalog must be re-pulled after a restore')
+  const statuses = []
+  walk(form.tree, (node) => {
+    if (node.props?.role === 'status') statuses.push(text(node))
+  })
+  assert.ok(statuses.includes('The conversation was restored.'))
+  assert.equal(findByRole(form, 'alert'), undefined, 'an older host must not be reported as partial')
+})
+
+test('a partial restore reports the missing workspace and asks for a restart', async () => {
+  const { plugin, React } = await loadPlugin()
+  const { registrations, dictionaries, services } = applyPlugin(plugin, {
+    'sessionDelete/restore': () => ({
+      ok: true,
+      value: {
+        sessionId: 'session-a',
+        restored: true,
+        mode: 'trash',
+        reattached: false,
+        needsRestart: true,
+        reattachFailures: ['workspace'],
+      },
+    }),
+  })
+  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+    describeDeletion: async () => DESCRIBE_TRASH,
+    confirmDelete: async () => ({ mode: 'trash', trashed: true, children: [], childrenCount: 0 }),
+  })
+  await settle()
+  footerButtons(form)[1].props.onClick()
+  await settle()
+
+  footerButtons(form)
+    .find((button) => text(button) === 'Restore')
+    .props.onClick()
+  await settle()
+  await settle()
+
+  const alert = findByRole(form, 'alert')
+  assert.ok(alert, 'a partial restore must be reported, not silently accepted')
+  assert.match(text(alert), /could not be put back in its workspace/)
+  assert.match(text(alert), /Restart the Harness/)
+  assert.equal(services.refreshes, 1, 'the catalog refresh still runs; only the membership is missing')
+  assert.deepEqual(
+    footerButtons(form).map((button) => text(button)),
+    ['Close'],
+    'a partially restored conversation offers nothing but Close',
+  )
 })
 
 test('a failed restore keeps the conversation trashed and says so', async () => {
