@@ -5,6 +5,8 @@ name: publish
 # filename and repository, so neither may be renamed without reconfiguring it.
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
   workflow_dispatch:
@@ -21,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: read
+      contents: write
       # Required for the OIDC identity GitHub exchanges with npm.
       id-token: write
     steps:
@@ -41,6 +43,11 @@ jobs:
       - name: Verify the package manifest and release tag
         run: |
           node -e "const p=require('./package.json'); if (p.private) throw new Error('package.json must not be private'); if (!p.repository?.url) throw new Error('repository.url is required for trusted publishing'); if (!p.engines?.node) throw new Error('engines.node is required'); console.log(p.name, p.version)"
+          version="$(node -p "require('./package.json').version")"
+          if ! grep -Fq "## [$version] —" CHANGELOG.md; then
+            echo "CHANGELOG.md has no release section for $version" >&2
+            exit 1
+          fi
           node -e "const [major, minor] = process.versions.node.split('.').map(Number); if (major < 22 || (major === 22 && minor < 14)) throw new Error('npm Trusted Publishing requires Node.js >= 22.14.0')"
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             tag="${GITHUB_REF_NAME#v}"
@@ -90,3 +97,32 @@ jobs:
       - name: Confirm the published version
         if: steps.published.outputs.exists == 'false'
         run: npm view "$(node -p "require('./package.json').name")" version
+
+      # A main-branch version bump or a pushed release tag produces both the
+      # GitHub Release and its exact changelog notes. Existing releases are
+      # idempotently left untouched, so ordinary main pushes are safe.
+      - name: Create GitHub Release from CHANGELOG.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          tag="v$version"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub Release $tag already exists; nothing to create"
+            exit 0
+          fi
+          notes_file="$(mktemp)"
+          awk -v version="$version" '
+            $0 == "## [" version "] — " substr($0, length("## [" version "] — ") + 1) { in_release=1; next }
+            in_release && /^## \[/ { exit }
+            in_release { print }
+          ' CHANGELOG.md > "$notes_file"
+          if [[ ! -s "$notes_file" ]]; then
+            echo "No release notes found for $version in CHANGELOG.md" >&2
+            exit 1
+          fi
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$expected" \
+            --notes-file "$notes_file"
