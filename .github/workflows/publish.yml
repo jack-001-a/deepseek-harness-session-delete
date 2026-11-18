@@ -142,5 +142,15 @@ jobs:
         run: |
           package="$(node -p "require('./package.json').name")"
           version="$(node -p "require('./package.json').version")"
-          npm view "${package}@${version}" version
+          for attempt in {1..6}; do
+            if npm view "${package}@${version}" version; then
+              exit 0
+            fi
+            if [[ "$attempt" -lt 6 ]]; then
+              echo "Registry has not indexed ${package}@${version} yet (attempt $attempt/6); retrying in 5 seconds"
+              sleep 5
+            fi
+          done
+          echo "Could not verify ${package}@${version} after 6 attempts" >&2
+          exit 1
 
