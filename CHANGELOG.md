@@ -6,6 +6,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## Unreleased
 
+## [0.4.1] — 2026-11-18
+
 ### Security
 
 - Resolve existing filesystem components before deleting or restoring an
