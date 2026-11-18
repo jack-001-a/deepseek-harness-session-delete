@@ -124,5 +124,5 @@ jobs:
           gh release create "$tag" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "$expected" \
+            --title "Session Delete $version" \
             --notes-file "$notes_file"
