@@ -9,7 +9,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -612,6 +612,31 @@ test('an artifact outside the store root is refused', async () => {
   assert.ok((await stat(outside.log)).isFile(), 'a foreign directory must survive')
 })
 
+test('a symlinked project directory cannot redirect deletion outside the session store', async (t) => {
+  const store = await makeStore()
+  const outsideProject = join(store.base, 'outside-project')
+  const outsideDir = join(outsideProject, SESSION_ID)
+  const outsideLog = join(outsideDir, 'session.4.jsonl')
+  await mkdir(outsideDir, { recursive: true })
+  await writeFile(outsideLog, '{"seq":0}\\n')
+  await rm(store.project, { recursive: true, force: true })
+  try {
+    await symlink(outsideProject, store.project, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOSYS', 'UNKNOWN'].includes(error?.code)) {
+      t.skip('the runner does not permit creating directory symlinks')
+      return
+    }
+    throw error
+  }
+  const h = harness({ ...storedTarget(store) })
+  await assert.rejects(h.service.delete(SESSION_ID), (error) => {
+    assert.equal(error.code, 'session-delete/unsafe-path')
+    assert.equal(error.details.reason, 'symlink-escape')
+    return true
+  })
+  assert.ok((await stat(outsideLog)).isFile(), 'the external session artifact must survive')
+})
 test('a log file may not be widened into its directory without a store root', async () => {
   const store = await makeStore()
   const h = harness({
@@ -923,6 +948,32 @@ test('a manifest that names a path outside the store is refused', async () => {
   })
 })
 
+test('restore refuses an original path redirected outside the store by a symlink', async (t) => {
+  const store = await makeStore()
+  const h = harness({ ...storedTarget(store) })
+  const deleted = await h.service.delete(SESSION_ID)
+  const entry = trashEntry(store, deleted.trashId)
+  const outsideProject = join(store.base, 'outside-project')
+  await mkdir(outsideProject, { recursive: true })
+  await rm(store.project, { recursive: true, force: true })
+  try {
+    await symlink(outsideProject, store.project, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOSYS', 'UNKNOWN'].includes(error?.code)) {
+      t.skip('the runner does not permit creating directory symlinks')
+      return
+    }
+    throw error
+  }
+  await h.service.refreshTrash()
+  await assert.rejects(h.service.restore(SESSION_ID), (error) => {
+    assert.equal(error.code, 'session-delete/unsafe-path')
+    assert.equal(error.details.reason, 'symlink-escape')
+    return true
+  })
+  assert.ok((await stat(join(entry, 'artifact', 'session.4.jsonl'))).isFile(), 'the trashed artifact must remain intact')
+  assert.equal(await h.service.pathExists(join(outsideProject, SESSION_ID)), false)
+})
 test('purge removes the trash entry for good', async () => {
   const store = await makeStore()
   const h = harness({ ...storedTarget(store) })
