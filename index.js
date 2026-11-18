@@ -25,8 +25,8 @@
  * a local directory resolves its imports from that directory, so every import
  * would have to be a Node built-in.
  */
-import { appendFile, cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { appendFile, cp, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 /** Cordis service key of this plugin's service. */
 const SERVICE_KEY = 'sessionDelete'
@@ -184,6 +184,33 @@ function isInside(root, target) {
   if (isAbsolute(rel)) return false
   if (rel === '..' || rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)) return false
   return true
+}
+
+/**
+ * Resolve a path through every existing filesystem component.
+ *
+ * `path.resolve()` only normalizes strings; it does not follow a symlink in
+ * an ancestor directory. Resolve the nearest existing ancestor and append
+ * the missing suffix so delete and restore checks cannot be bypassed by a
+ * project-directory symlink.
+ * @param rawPath - an absolute or relative path to resolve.
+ * @returns the path as it resolves on the filesystem.
+ */
+async function resolveThroughExistingAncestors(rawPath) {
+  let current = resolve(rawPath)
+  const suffix = []
+  while (true) {
+    try {
+      const actual = await realpath(current)
+      return resolve(actual, ...suffix.reverse())
+    } catch (error) {
+      if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error
+      const parent = dirname(current)
+      if (parent === current) throw error
+      suffix.unshift(basename(current))
+      current = parent
+    }
+  }
 }
 
 /**
@@ -796,7 +823,7 @@ class SessionDeleteService {
    * @param sessionId - durable Session identity, for diagnostics.
    * @returns the removal target, or undefined when the store names no artifact.
    */
-  resolveArtifact(header, sessionId) {
+  async resolveArtifact(header, sessionId) {
     const persistence = this.ctx.sessionPersistence
     const locate = persistence?.locate
     if (typeof locate !== 'function') {
@@ -865,7 +892,46 @@ class SessionDeleteService {
         { sessionId, kind, path: target, root, reason: 'unexpected-layout' },
       )
     }
-    return { target, root, kind }
+    // Lexical containment is necessary but not sufficient: a path component
+    // below the store root may be a symlink to a directory outside the store.
+    // Resolve existing components before any destructive operation.
+    let canonicalRoot
+    let canonicalTarget
+    try {
+      canonicalRoot = await realpath(root)
+      canonicalTarget = await resolveThroughExistingAncestors(target)
+    } catch (error) {
+      throw new SessionDeleteError(
+        'session-delete/unsafe-path',
+        `sessionDelete: the artifact of "${sessionId}" could not be verified against the session store; nothing was removed`,
+        { sessionId, kind, path: target, root, reason: 'unverifiable-path', causeCode: error?.code },
+      )
+    }
+    if (!isInside(canonicalRoot, canonicalTarget)) {
+      throw new SessionDeleteError(
+        'session-delete/unsafe-path',
+        `sessionDelete: the artifact of "${sessionId}" resolves outside the session store; nothing was removed`,
+        { sessionId, kind, path: canonicalTarget, root: canonicalRoot, reason: 'symlink-escape' },
+      )
+    }
+    if (kind === 'jsonl' && !samePath(dirname(dirname(canonicalTarget)), canonicalRoot)) {
+      throw new SessionDeleteError(
+        'session-delete/unsafe-path',
+        `sessionDelete: the artifact of "${sessionId}" resolves to an unexpected session layout; nothing was removed`,
+        { sessionId, kind, path: canonicalTarget, root: canonicalRoot, reason: 'unexpected-layout' },
+      )
+    }
+    if (kind === 'dir' && samePath(dirname(canonicalTarget), canonicalRoot)) {
+      throw new SessionDeleteError(
+        'session-delete/unsafe-path',
+        `sessionDelete: the artifact of "${sessionId}" resolves to a project directory, not a session; nothing was removed`,
+        { sessionId, kind, path: canonicalTarget, root: canonicalRoot, reason: 'unexpected-layout' },
+      )
+    }
+    // Keep the normalized locator path for the filesystem operation. In
+    // particular, rm() removes a final symlink itself instead of following
+    // it; the canonical path above is only the security-check target.
+    return { target, root: canonicalRoot, kind }
   }
 
   /**
@@ -922,7 +988,7 @@ class SessionDeleteService {
    * @returns what happened to the artifact.
    */
   async removeStoredLog(header, sessionId, children = [], childrenCount = children.length, accounting) {
-    const artifact = this.resolveArtifact(header, sessionId)
+    const artifact = await this.resolveArtifact(header, sessionId)
     if (artifact === undefined) {
       return { removed: false, trashed: false, purged: false }
     }
@@ -1375,6 +1441,33 @@ class SessionDeleteService {
         `sessionDelete: the trash entry of session "${sessionId}" names a path that is not a session directory; nothing was restored`,
         { sessionId, path: target, root, reason: 'unexpected-layout' },
       )
+    }
+    if (root !== undefined) {
+      try {
+        const canonicalRoot = await realpath(root)
+        const canonicalTarget = await resolveThroughExistingAncestors(target)
+        if (!isInside(canonicalRoot, canonicalTarget)) {
+          throw new SessionDeleteError(
+            'session-delete/unsafe-path',
+            `sessionDelete: the original location of session "${sessionId}" resolves outside the session store; nothing was restored`,
+            { sessionId, path: canonicalTarget, root: canonicalRoot, reason: 'symlink-escape' },
+          )
+        }
+        if (samePath(dirname(canonicalTarget), canonicalRoot)) {
+          throw new SessionDeleteError(
+            'session-delete/unsafe-path',
+            `sessionDelete: the original location of session "${sessionId}" resolves to a project directory, not a session; nothing was restored`,
+            { sessionId, path: canonicalTarget, root: canonicalRoot, reason: 'unexpected-layout' },
+          )
+        }
+      } catch (error) {
+        if (error instanceof SessionDeleteError) throw error
+        throw new SessionDeleteError(
+          'session-delete/unsafe-path',
+          `sessionDelete: the original location of session "${sessionId}" could not be verified; nothing was restored`,
+          { sessionId, path: target, root, reason: 'unverifiable-path', causeCode: error?.code },
+        )
+      }
     }
     const artifact = join(entry.path, ARTIFACT_DIR_NAME)
     const targetExists = await this.pathExists(target)

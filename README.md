@@ -93,9 +93,11 @@ before anything becomes user-visible:
   fails immediately instead of burning the budget.
 - **Only known targets are ever removed.** The store's locator must name a
   kind the plugin knows (`dir`, `file`, or the shipped store's `jsonl`), and
-  the resolved path must lie inside the session store's root. Anything else
-  is refused with `session-delete/unsafe-path` and changes nothing — a
-  malformed locator can never turn into an arbitrary directory removal.
+  the resolved path must lie inside the session store's root. Both normalized
+  and filesystem-resolved paths are checked, so a symlink in an existing path
+  component cannot redirect removal outside the store. Anything else is
+  refused with `session-delete/unsafe-path` and changes nothing — a malformed
+  locator can never turn into an arbitrary directory removal.
   The store's own `root` is the anchor for that check, never a path derived
   from the target: a self-derived root would make the containment test
   vacuous. The shipped store's `jsonl` kind names the log *file*, which lives
@@ -308,7 +310,7 @@ DeepSeek Harness 只能归档会话、无法真正删除，日志会一直堆积
 
 **错误码**：`active`（仍有运行中的工作）、`not-found`（已删除或不存在）、`io`（文件无法移动，未做任何改动）、`unsupported-store`（当前版本无法定位文件）、`unreadable`（日志无法读取）、`unsafe-path`（目标不在会话存储根目录内）、`trash-unavailable`、`conflict`、`invalid-request`（请求非法）。
 
-**路径安全**：只会删除存储定位器明确给出的 `dir` 或 `file`，且解析后的路径必须位于会话存储根目录内；否则一律拒绝、不做任何改动。
+**路径安全**：只会删除存储定位器明确给出的 `dir` 或 `file`；既检查归一化后的路径，也解析现存路径组件中的符号链接。任何最终指向会话存储根目录之外的路径都会被拒绝，不做任何改动。
 
 **重试策略**：只对 `EBUSY`/`EPERM`/`EACCES`/`ENOTEMPTY` 这类"句柄还没关"的瞬时错误做退避重试（8 次，约 1.8 秒），其他错误立即报错，不会把时间耗在无效重试上。
 

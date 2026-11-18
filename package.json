@@ -29,6 +29,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "check": "node --check index.js && node --check client.js",
     "test": "node --test"
   },
   "exports": {

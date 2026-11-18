@@ -4,6 +4,20 @@ All notable changes to `@ybbmm/dsh-session-delete` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Security
+
+- Resolve existing filesystem components before deleting or restoring an
+  artifact. A project-directory symlink that escapes the session-store root is
+  now rejected with `session-delete/unsafe-path`; the artifact is left intact.
+
+### Fixed
+
+- Correct the localized plugin description so it documents recoverable trash,
+  restore and permanent deletion instead of describing every deletion as
+  immediately permanent.
+
 ## [0.4.0] — 2026-10-23
 
 ### Fixed
