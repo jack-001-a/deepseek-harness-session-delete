@@ -118,39 +118,55 @@ jobs:
             exit "$status"
           fi
 
-      - name: Publish through npm Trusted Publishing (OIDC)
-        id: oidc_publish
+      # Newly configured npm trusted publishers may allow staged publishing
+      # only. The maintainer approves the staged version with 2FA before it
+      # becomes publicly installable.
+      - name: Stage package through npm Trusted Publishing (OIDC)
+        id: oidc_stage
         if: steps.published.outputs.exists == 'false'
         continue-on-error: true
-        run: npm publish
+        run: |
+          set +e
+          output="$(npm stage publish 2>&1)"
+          status=$?
+          set -e
+          printf '%s\\n' "$output"
+          if [[ $status -eq 0 ]]; then
+            echo "result=staged" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if grep -Eqi 'previously staged version|E409|409 Conflict' <<< "$output"; then
+            echo "The exact package version is already staged; maintainer approval is still required."
+            echo "result=already-staged" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          exit "$status"
 
-      # Optional fallback for repositories that have not yet configured the
-      # exact npm Trusted Publisher relationship for this workflow.
-      - name: Publish with repository NPM_TOKEN fallback
-        if: steps.published.outputs.exists == 'false' && steps.oidc_publish.outcome == 'failure'
+      # Optional fallback for repositories that use a granular npm token.
+      - name: Stage package with repository NPM_TOKEN fallback
+        id: token_stage
+        if: steps.published.outputs.exists == 'false' && steps.oidc_stage.outcome == 'failure'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [[ -z "$NODE_AUTH_TOKEN" ]]; then
-            echo "npm OIDC publishing was denied and the NPM_TOKEN repository secret is not configured." >&2
+            echo "npm staged publishing was denied and the NPM_TOKEN repository secret is not configured." >&2
             echo "Configure npm Trusted Publishing for this exact repository and publish.yml workflow, or add a granular NPM_TOKEN secret." >&2
             exit 1
           fi
-          npm publish
+          npm stage publish
 
-      - name: Confirm the exact published version
+      - name: Report staged npm release
+        if: steps.oidc_stage.outcome == 'success' || steps.token_stage.outcome == 'success'
         run: |
           package="$(node -p "require('./package.json').name")"
           version="$(node -p "require('./package.json').version")"
-          for attempt in {1..6}; do
-            if npm view "${package}@${version}" version; then
-              exit 0
-            fi
-            if [[ "$attempt" -lt 6 ]]; then
-              echo "Registry has not indexed ${package}@${version} yet (attempt $attempt/6); retrying in 5 seconds"
-              sleep 5
-            fi
-          done
-          echo "Could not verify ${package}@${version} after 6 attempts" >&2
-          exit 1
+          {
+            echo "### npm staged release"
+            echo
+            echo "- Package: \\`$package\\`"
+            echo "- Version: \\`$version\\`"
+            echo "- Status: submitted to npm Staged Publishing; it is not publicly installable until approved."
+            echo "- Required action: review the staged package in npmjs.com and approve it with 2FA."
+          } >> "$GITHUB_STEP_SUMMARY"
 
