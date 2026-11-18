@@ -33,7 +33,6 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-          package-manager-cache: false
 
       # npm Trusted Publishing requires npm CLI >= 11.5.1 and Node >= 22.14.
       # Pin the CLI to make the OIDC publishing environment reproducible.
