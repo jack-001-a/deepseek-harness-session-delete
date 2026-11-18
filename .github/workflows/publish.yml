@@ -65,6 +65,35 @@ jobs:
       - name: Inspect the tarball contents
         run: npm pack --dry-run
 
+      # A main-branch version bump or a pushed release tag produces both the
+      # GitHub Release and its exact changelog notes. Existing releases are
+      # idempotently left untouched, so ordinary main pushes are safe.
+      - name: Create GitHub Release from CHANGELOG.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          tag="v$version"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub Release $tag already exists; nothing to create"
+            exit 0
+          fi
+          notes_file="$(mktemp)"
+          awk -v version="$version" '
+            $0 == "## [" version "] — " substr($0, length("## [" version "] — ") + 1) { in_release=1; next }
+            in_release && /^## \[/ { exit }
+            in_release { print }
+          ' CHANGELOG.md > "$notes_file"
+          if [[ ! -s "$notes_file" ]]; then
+            echo "No release notes found for $version in CHANGELOG.md" >&2
+            exit 1
+          fi
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Session Delete $version" \
+            --notes-file "$notes_file"
+
       # A release is often published twice on purpose: once from a workstation
       # that already holds the registry token, and once from the tag that
       # records it. npm refuses to publish a version that exists, so the
@@ -97,31 +126,3 @@ jobs:
         if: steps.published.outputs.exists == 'false'
         run: npm view "$(node -p "require('./package.json').name")" version
 
-      # A main-branch version bump or a pushed release tag produces both the
-      # GitHub Release and its exact changelog notes. Existing releases are
-      # idempotently left untouched, so ordinary main pushes are safe.
-      - name: Create GitHub Release from CHANGELOG.md
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          version="$(node -p "require('./package.json').version")"
-          tag="v$version"
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "GitHub Release $tag already exists; nothing to create"
-            exit 0
-          fi
-          notes_file="$(mktemp)"
-          awk -v version="$version" '
-            $0 == "## [" version "] — " substr($0, length("## [" version "] — ") + 1) { in_release=1; next }
-            in_release && /^## \[/ { exit }
-            in_release { print }
-          ' CHANGELOG.md > "$notes_file"
-          if [[ ! -s "$notes_file" ]]; then
-            echo "No release notes found for $version in CHANGELOG.md" >&2
-            exit 1
-          fi
-          gh release create "$tag" \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "Session Delete $version" \
-            --notes-file "$notes_file"
