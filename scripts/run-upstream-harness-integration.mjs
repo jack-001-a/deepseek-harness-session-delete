@@ -45,7 +45,7 @@ async function createHostContext(sessionRoot) {
   await testkit.mountAgentLoopTestDependencies(ctx)
   await ctx.plugin(agentLoop.default, { agents: [] })
   await jsonl.apply(ctx, { root: sessionRoot, compression: 'none' })
-  return { ctx, session }
+  return { ctx, persistence, session }
 }
 
 const SESSION_ID = 'session-delete-real-host-fixture'
@@ -71,7 +71,7 @@ async function seedInSeparateProcess(sessionRoot) {
   assert.match(worker.stdout, /seeded-and-closed/)
 }
 
-async function verifyCrossProcessWriterOwnership(ctx, sessionRoot) {
+async function verifyCrossProcessWriterOwnership(ctx, persistence, sessionRoot) {
   const worker = spawn(
     process.execPath,
     [fileURLToPath(import.meta.url), '--hold-writer', sessionRoot],
@@ -277,7 +277,7 @@ async function runIntegration() {
 
     // Verify provider-level writer exclusion in a separate process; this does
     // not imply that Session Delete can fence a live writer during mutation.
-    await verifyCrossProcessWriterOwnership(ctx, sessionRoot)
+    await verifyCrossProcessWriterOwnership(ctx, host.persistence, sessionRoot)
 
     const removed = await service.delete(SESSION_ID)
     assert.equal(removed.removed, true)
