@@ -1467,7 +1467,7 @@ test('restore retries after an interrupted partial cross-device copy', async () 
   }
 
   await assert.rejects(h.service.restore(SESSION_ID), /simulated interruption during cross-device copy/)
-  assert.ok((await stat(store.dir)).isDirectory() === false, 'the original path remains absent')
+  await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT', 'the original path remains absent')
   assert.ok((await stat(store.dir + '.partial')).isDirectory())
 
   h.service.moveArtifact = originalMove
