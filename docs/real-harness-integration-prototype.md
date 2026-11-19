@@ -61,7 +61,9 @@ The first successful real-Harness run completed on 2026-11-19:
 
 - [Integration workflow run 44509694976](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44509694976) — passed.
 - [Expanded integration workflow run 44511034933](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44511034933) — passed, including committed-delete startup reconciliation through a fresh Host context.
+- [Cordis ready-event integration run 44512014722](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44512014722) — passed on the ready-listener revision; committed-delete reconciliation was triggered and awaited through `ctx.parallel('ready')`.
 - [Regular CI run 44509694956](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44509694956) — all 9 Linux/macOS/Windows × Node 22/24/26 jobs passed.
+- [Latest-head regular CI run 44512014483](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44512014483) — all 9 matrix jobs passed.
 - Plugin unit suite — 97 passed, 0 failed.
 - Real integration — passed using the pinned Harness revision, with a separate-process seed/close followed by delete, trash listing, restore, second delete, and purge from a fresh Host context.
 
