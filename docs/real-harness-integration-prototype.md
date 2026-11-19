@@ -52,8 +52,9 @@ The last command emits the real Host package libraries, including the Cordis, Ag
 5. It performs trash delete and lists the trash.
 6. It disposes that Host context, opens a fresh Host composition over the same store, dispatches the real Cordis `ready` event with `ctx.parallel('ready')`, and observes the plugin's committed-delete recovery result.
 7. It restores the session, verifies it through the real provider, and deletes it again.
-8. It writes a durable `.restoring` marker, promotes the trash artifact back to its original path, disposes the Host context, and opens a fresh composition.
-9. The fresh Host's Cordis `ready` listener recovers the interrupted restore and the real provider verifies the session; the runner then deletes and purges it.
+8. A separate real Host child writes the `.restoring` marker and promotes the trash artifact back to its original path.
+9. The controller kills that child with `SIGKILL` at the explicit post-promotion stdout barrier, before graceful Host disposal, accounting replay, or marker cleanup.
+10. A fresh Host composition's Cordis `ready` listener recovers the interrupted restore and the real provider verifies the session; the runner then deletes and purges it.
 
 This proves a useful first integration seam: **a session materialized by one real Harness process can be consumed by the plugin running in another real Harness composition**, with a fresh provider instance and real on-disk artifacts.
 
@@ -66,11 +67,11 @@ The first successful real-Harness run completed on 2026-11-19:
 - [Cordis ready-event integration run 44512014722](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44512014722) — passed on the ready-listener revision; committed-delete reconciliation was triggered and awaited through `ctx.parallel('ready')`.
 - [Regular CI run 44509694956](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44509694956) — all 9 Linux/macOS/Windows × Node 22/24/26 jobs passed.
 - [Latest-head regular CI run 44512780418](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44512780418) — all 9 Linux/macOS/Windows × Node 22/24/26 matrix jobs passed.
-- [Latest-head real Harness integration run 44512780369](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44512780369) — passed with the post-promotion interrupted-restore scenario enabled; upstream native/Host builds, the 97-test unit suite, and the real Cordis/AgentLoop/JSONL runner all succeeded.
+- [Latest-head real Harness integration run 44512780369](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44512780369) — passed with the modeled post-promotion interrupted-restore scenario; upstream native/Host builds, the 97-test unit suite, and the real Cordis/AgentLoop/JSONL runner all succeeded. This run predates the new controller-driven `SIGKILL` barrier.
 - Plugin unit suite — 97 passed, 0 failed.
 - Real integration — passed using the pinned Harness revision, with a separate-process seed/close, committed-delete recovery through a fresh Host `ready` listener, restore, a simulated post-promotion interrupted restore recovered through another fresh Host `ready` listener, and final delete/purge. The interrupted-restore assertion returned `{ deleted: 0, restored: 1, preserved: 0 }`.
 
-The latest-head run 44512780369 verifies the closed-writer artifact lifecycle described above, including committed-delete reconciliation and post-promotion interrupted-restore reconciliation through fresh Host compositions. The runner dispatches Cordis `ready` explicitly through `ctx.parallel('ready')` so the registered listener is awaited. This verifies the plugin's real event wiring, but does not reproduce the full production Host boot sequence or independently establish the ordering of every Host service. It is not evidence for live-writer contention, Host-native artifact leases, or cross-process workspace accounting.
+The run 44512780369 verifies the earlier simulated closed-writer artifact lifecycle, including committed-delete reconciliation and post-promotion interrupted-restore reconciliation through fresh Host compositions. The controller-driven child-process kill was added afterward and awaits its own latest-head integration run. The runner dispatches Cordis `ready` explicitly through `ctx.parallel('ready')` so the registered listener is awaited. This verifies the plugin's real event wiring, but does not reproduce the full production Host boot sequence or independently establish the ordering of every Host service. It is not evidence for live-writer contention, Host-native artifact leases, or cross-process workspace accounting.
 
 ## Deliberate limits
 
@@ -80,7 +81,7 @@ This is not yet a live-writer contention or full desktop/web Host test:
 - It does not race AgentLoop teardown against delete.
 - It does not claim that Session Delete acquires the JSONL provider's Host-native write lease.
 - It does not validate workspace membership, pin/archive accounting, projection cache, or cross-process workspace transactions.
-- It models the post-promotion interrupted-restore state using a durable marker and filesystem rename, then verifies recovery through a fresh Host's Cordis `ready` listener. It does not kill a process at an instruction-level fault-injection barrier, test interruption during the cross-volume copy itself, or cover crash injection during delete/purge.
+- The runner now prepares the post-promotion interrupted-restore state in a separate real Host child process and the controller sends `SIGKILL` after the child reports the completed marker+rename barrier. A fresh Host then verifies recovery through its Cordis `ready` listener. This is one deterministic process-death point, not a general instruction-level fault-injection framework; it does not test interruption during the cross-volume copy itself or crash injection during delete/purge.
 - It does not make the existing plugin-only filesystem lock safe against an independent live Host writer.
 
 Those scenarios remain gated on a public artifact lease/tombstone contract and a full Host lifecycle fixture. Do not run destructive operations against a live writer based on this prototype.
