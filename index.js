@@ -1112,6 +1112,7 @@ class SessionDeleteService {
         JSON.stringify({
           dev: sourceStat.dev,
           ino: sourceStat.ino,
+          isDirectory: sourceStat.isDirectory(),
           size: sourceStat.size,
           mtimeMs: sourceStat.mtimeMs,
         }),
@@ -1756,8 +1757,8 @@ class SessionDeleteService {
         samePath(dirname(canonicalSource), canonicalRoot) ||
         current.dev !== identity.dev ||
         current.ino !== identity.ino ||
-        current.size !== identity.size ||
-        current.mtimeMs !== identity.mtimeMs
+        (identity.isDirectory !== true &&
+          (current.size !== identity.size || current.mtimeMs !== identity.mtimeMs))
       ) {
         this.ctx.logger?.warn(
           `sessionDelete: the source of interrupted move "${path}" changed; both copies were preserved for manual recovery`,

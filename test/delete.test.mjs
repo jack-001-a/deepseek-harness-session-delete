@@ -708,6 +708,7 @@ test('trash refresh completes a promoted cross-device copy after a simulated cra
   await writeFile(join(entryPath, '.copying'), JSON.stringify({
     dev: sourceStat.dev,
     ino: sourceStat.ino,
+    isDirectory: sourceStat.isDirectory(),
     size: sourceStat.size,
     mtimeMs: sourceStat.mtimeMs,
   }))
