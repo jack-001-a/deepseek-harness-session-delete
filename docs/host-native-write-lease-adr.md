@@ -1,120 +1,157 @@
-# ADR: Host-native session write-lease integration
+# ADR: Provider-owned Session lifecycle transactions
 
 - Status: proposed
-- Scope: shipped DeepSeek Harness JSONL persistence provider
-- Depends on: the plugin-level cross-process operation lock in PR #12
-- Non-goal: claiming generic cross-process exclusion for every `SessionPersistence` backend
+- Scope: Host persistence lifecycle contract shared by built-in providers
+- Depends on: plugin-level cross-process operation lock in PR #12
+- Replaces: the earlier JSONL-directory-move protocol
+- Non-goal: exposing provider-private paths, lock files, database tables, or kernel primitives to plugins
 
-## Context
+## Context and verified constraints
 
-The plugin's filesystem operation lock serializes cooperating instances of this plugin. It does not exclude a native Harness writer. The persistence seam exposes `ctx.sessionPersistence.open(id, 'write')`; a successful write handle owns the provider's single-writer lease until `close()` has drained pending writes and released ownership.
+The plugin's filesystem operation lock serializes cooperating plugin instances. It does not exclude native Harness writers or coordinate provider storage mutations from another process.
 
-The shipped JSONL provider implements that lease with a POSIX `flock(2)` on `session.lock` inside the session directory, or a Windows named kernel semaphore derived from that path. On POSIX, the lease protects an inode, not a pathname. The provider deliberately verifies that the locked inode is still the inode currently named by `session.lock`, and deliberately never unlinks that file.
+The built-in providers have different storage models:
 
-## Verified provider lifecycle
+- **JSONL** stores each Session in a directory. Cross-process write ownership uses a stable `session.lock` coordination object: POSIX `flock(2)` on its inode and a Windows named kernel semaphore. A live handle retains ownership until close drains writes and releases the lease. Moving or unlinking the lock-file identity can split exclusion on POSIX.
+- **SQLite** stores Session metadata and event frames in a shared database. Its writer path acquires a database-scoped per-Session lock plus a root artifact/creation lock. Public persistence snapshots do not expose a per-Session filesystem `location`. Internal migration helpers are not a public lifecycle API.
 
-1. `open(id, 'write')` resolves the current log first.
-2. It claims the backend's process-local writer slot.
-3. It acquires the kernel lease in the resolved log's containing session directory.
-4. It reads/prepares the stored log and returns a write handle.
-5. `SessionHandle.close()` drains routed writes and the mutation chain, releases the kernel lease, then releases the process-local writer claim.
-6. A newly created, unmaterialized session does not acquire a lease until its first materializing write.
-
-The last point means a lease cannot protect an unmaterialized session. It also means this ADR's destructive protocol applies only after an existing materialized artifact has been resolved and opened.
-
-## Critical pathname/inode race
-
-Do **not** implement deletion as:
-
-1. open the session for write;
-2. rename the entire session directory into trash;
-3. close the handle.
-
-On POSIX, the open descriptor continues to lock the original `session.lock` inode after the directory rename. The original pathname is now absent. A concurrent create/materialization at that original pathname can create a new directory and a new `session.lock` inode, then acquire a different lock. The old lease does not exclude it. The same general warning applies to any algorithm that unlinks or replaces the lock file while a lease is held.
-
-## Proposed JSONL-specific protocol
-
-Treat the session directory and its `session.lock` as stable provider-owned coordination state. Move or remove the log generations, not the containing directory and not `session.lock`.
-
-### Delete to trash
-
-1. Acquire the plugin's per-session operation lock.
-2. Resolve and validate the JSONL artifact location; reject unknown artifact kinds and unsupported providers.
-3. Open `sessionPersistence.open(id, 'write')`. If it reports active ownership, abort without moving anything. Keep the returned handle open for the entire filesystem mutation.
-4. Re-resolve the current log location while holding the provider lease. Confirm it is still the expected session directory and that the directory's `session.lock` remains present. Do not use a stale path captured before acquiring the lease.
-5. Write the trash manifest and transaction marker before moving log data.
-6. Move/copy the selected log-generation files into the trash artifact while leaving the original session directory and `session.lock` in place. For cross-volume moves, copy to private staging, verify the complete copied generations, atomically promote staging on the trash volume, then remove only the source log-generation files. Never recursively remove the source session directory.
-7. Verify no selected log generation remains at the live path. Keep the write handle open until this verification and the durable transaction state are complete.
-8. Close the write handle, then replay workspace accounting and projection-cache cleanup using the existing retry/recovery protocol.
-9. The now-empty session directory and stable `session.lock` remain as provider coordination state. This is intentional; deleting that lock file would invalidate the provider's exclusion guarantee.
-
-### Restore
-
-1. Acquire the plugin operation lock and validate the manifest, marker, target path, and trash artifact.
-2. Recreate the original session directory if absent, but never replace or unlink an existing `session.lock`.
-3. Open the session for write only when a live log already exists. For an empty target directory, the provider's write-open correctly reports not-found; the restore implementation must instead use a provider-supported lease acquisition capability or a new Host API. Do not invent a lock by writing `session.lock` directly: the POSIX and Windows implementations differ.
-4. Under a valid lease, restore the log-generation files into the existing directory using staging and atomic promotion. Preserve the lock file and fail closed if another writer has materialized a log or acquired ownership.
-5. Persist restore completion before releasing the lease. If lease acquisition loses a race, preserve both the trash artifact and any target state; leave accounting pending.
-
-**Important unresolved seam:** after delete has removed all log generations, `open(id, 'write')` cannot acquire a lease because the provider's `open` first resolves an existing log and returns not-found. A correct restore/delete lifecycle therefore needs a provider-owned API that can acquire a lease by `SessionId` plus validated `SessionHeader`/location even when the log is temporarily absent, or a Host-level atomic tombstone/quarantine primitive. Directly reproducing provider lock internals in this plugin is rejected.
-
-### Permanent purge and retention cleanup
-
-- Never recursively remove the session directory while its write lease is held.
-- Purging trash-side log data does not require deleting the live session's stable lock sentinel; the trash artifact must not contain a second copied `session.lock`.
-- If policy requires deleting the empty live directory and its lock file, that is **not safe** with the current public persistence seam. It requires a provider-owned tombstone/retire API that prevents new opens/creates while the provider removes its lock state.
-- Retention cleanup must use the same protocol and must not bypass the lease because it runs in the background.
-
-## Required Host API capability
-
-Before implementation, upstream should expose a provider-owned operation with semantics equivalent to:
-
-```ts
-interface SessionArtifactLease {
-  readonly id: SessionId
-  readonly location: SessionLocation
-  // Prevents new opens/creates for this id while held.
-  // Existing writers must have closed before acquisition resolves.
-  release(): Promise<void>
-}
-
-sessionPersistence.acquireArtifactLease(id, options?): Promise<SessionArtifactLease>
-```
-
-This is a semantic sketch, not a proposed exact public signature. Required properties:
-
-- atomically coordinates with existing write handles and new `open('write')` / `create` attempts;
-- can acquire for a materialized session and for a temporarily absent artifact during restore;
-- exposes a validated provider-owned location/capability, not an arbitrary filesystem path;
-- keeps a stable per-session exclusion identity across log rename, copy, quarantine, and restore;
-- has explicit crash semantics and releases kernel ownership on process death;
-- does not require consumers to know POSIX inode or Windows semaphore details;
-- distinguishes unsupported providers from contention and I/O failure.
-
-A backend-local `open('write')` is still useful for flushing and validating a live session, but it is not a substitute for this lifecycle capability.
-
-## Compatibility and fail-closed behavior
-
-- Feature-detect the proposed Host capability; do not infer it from a package version string alone.
-- If absent, keep the current plugin behavior only where its existing guarantees are sufficient. Do not claim native-writer exclusion.
-- For destructive JSONL operations that require the missing capability, refuse the operation with a clear unsupported-capability error rather than falling back to plugin-only locking.
-- Other artifact kinds/backends require their own provider-specific contract. A generic `locate()` result does not imply a lock protocol.
-
-## Acceptance tests before implementation
-
-Run against the real shipped JSONL provider and two independent Harness processes, not only mocked contexts:
-
-1. A live native writer makes artifact-lease acquisition contend; no log file or manifest is moved.
-2. Closing/disposal drains the final event batch before lease acquisition succeeds.
-3. Delete holds exclusion while another process attempts `open('write')` and `create(id)`.
-4. Delete to trash leaves the original stable `session.lock` inode/path intact and no live log generations.
-5. A process crash after staging, after promotion, and before source cleanup is recoverable without deleting a changed source.
-6. Restore races a competing writer; either restore owns the artifact lease and completes, or it preserves the trash copy and leaves restore accounting pending.
-7. Crash recovery resumes each delete/restore phase without treating an absent log as proof that the transaction committed.
-8. Permanent purge and retention never unlink a held lock file or recursively remove its containing directory.
-9. Windows named-semaphore behavior is covered separately; tests must not assume POSIX lock-file semantics there.
-10. Unsupported providers fail closed and never receive JSONL-specific filesystem mutations.
+Both providers have provider-specific writer ownership, but neither currently exposes a public provider-owned delete/restore/retire contract. A plugin cannot safely translate a generic `SessionPersistence` snapshot into a filesystem mutation.
 
 ## Decision
 
-Do not implement Host-native lease integration inside PR #12. Keep PR #12 as the plugin-instance coordination layer. Implement the destructive integration only after the Host exposes and tests the stable artifact-lease/tombstone capability above. Until then, the plugin must not claim protection against native Harness writers.
+The Host should expose a **provider-owned Session lifecycle transaction**. The public contract describes lifecycle semantics, not storage paths or lock mechanics. The provider remains the sole authority for admitting writers, preserving Session identity, quarantining data, restoring it, permanently purging it, and recovering interrupted operations.
+
+The plugin may own user-facing trash metadata, retention policy, and workspace projection/accounting. It must not move, rename, unlink, or edit provider-private Session storage.
+
+## Proposed semantic API
+
+This is a design sketch, not an approved exact TypeScript signature:
+
+```ts
+type SessionLifecycleState = 'live' | 'retiring' | 'retired' | 'restoring' | 'purging' | 'purged'
+
+interface SessionRetirement {
+  readonly id: SessionId
+  readonly token: string // opaque, stable, provider-issued
+  readonly state: 'retired' | 'restored' | 'purged'
+  readonly revision: string
+}
+
+interface SessionLifecycle {
+  retire(id: SessionId, options?: {
+    expectedRevision?: SessionRevision
+    signal?: AbortSignal
+  }): Promise<SessionRetirement>
+
+  restore(token: string, options?: { signal?: AbortSignal }): Promise<SessionSnapshot>
+  purge(token: string, options?: { signal?: AbortSignal }): Promise<void>
+  inspect(token: string): Promise<SessionRetirement | undefined>
+  recover(signal?: AbortSignal): Promise<void>
+}
+```
+
+The exact surface may instead use an explicit transaction object with prepare/commit/abort. The non-negotiable semantics are:
+
+1. **Stable identity:** coordination is keyed by stable `SessionId`, not by current file existence or pathname.
+2. **Writer fencing:** lifecycle mutation atomically excludes new write opens and creates for that ID, and waits for admitted writers to drain their final event batch before destructive ownership is granted.
+3. **Absent-artifact restore:** a retirement token remains valid while the live artifact is absent. Restore does not need a fake live artifact or a lease on a missing file.
+4. **Provider-owned mutation:** the provider performs quarantine, restore, and purge using its own storage model. Consumers receive an opaque token/state, never a private storage path.
+5. **Idempotency:** retries with the same token return the committed result or a typed terminal-state error; they cannot create duplicate retirement or destroy unrelated data.
+6. **Crash consistency:** durable phase changes and data movement are recoverable after process death. A missing live artifact alone never proves retirement committed.
+7. **Revision protection:** retire may compare an expected revision so stale plugin/UI state cannot retire a newer Session generation.
+8. **Typed outcomes:** unsupported capability, writer contention/cancellation, revision conflict, not-found, already-retired/restored/purged, and storage I/O/corruption are distinguishable.
+9. **Process-death release:** kernel ownership is released on process death, while durable transaction state remains recoverable by a later provider instance.
+10. **Capability discovery:** support is advertised by the active provider instance through a typed optional capability or registry. Package-version checks and `locate()` are insufficient.
+
+The Host may wait for an active writer or return a typed busy result. Either policy is acceptable if atomic, documented, cancellable, and tested. It must never proceed while a writer can still commit.
+
+## Provider adapter requirements
+
+### JSONL
+
+- Keep the provider's coordination identity stable for the full lifecycle. Never move, unlink, replace, or copy `session.lock` as part of a plugin operation.
+- The provider may quarantine data generations while preserving its coordination object, or use a provider-owned tombstone namespace. This remains an implementation detail.
+- New `open('write')` and `create(id)` attempts must observe retirement state and be rejected or serialized behind the lifecycle transaction.
+- Restore reacquires the same stable Session identity even when no live log generation exists.
+- Cross-volume staging, promotion, source cleanup, and crash recovery are provider responsibilities.
+
+### SQLite
+
+- Retire and restore through transactions over provider-owned metadata, event frames, and tombstone records. Never move or delete the shared database to remove one Session.
+- Writer admission and lifecycle state transitions serialize through the same database-scoped Session identity. The root artifact/creation guard remains coordinated where legacy JSONL import or first materialization is involved.
+- A retirement record preserves enough provider-owned metadata to restore the Session without exposing Segment IDs, database paths, or lock directories.
+- Purge deletes only the retired Session's owned rows/segments and related metadata, with referential-integrity and crash-recovery guarantees. Shared database maintenance/compaction is a separate provider operation.
+- Legacy JSONL import and lifecycle operations need a documented lock order; inconsistent acquisition order must not deadlock or publish stale imported history after retirement.
+
+### Third-party providers
+
+A provider may advertise no lifecycle capability. In that case the plugin must not perform destructive storage operations against it. No generic raw-filesystem fallback is permitted.
+
+## Plugin integration boundary
+
+1. Discover the capability from the active `ctx.sessionPersistence` instance.
+2. If unsupported, disable or reject destructive actions with a clear unsupported-capability error. Preserve non-destructive listing/description where permitted.
+3. Invoke provider lifecycle operations using stable Session IDs and opaque retirement tokens.
+4. Persist plugin-owned trash metadata and workspace projection/accounting through an idempotent outbox/reconciliation protocol.
+5. Treat provider lifecycle state as authoritative for whether data is live, retired, or purged. Plugin metadata is a replayable projection.
+6. Run provider recovery before reconciling plugin trash metadata. Never infer provider state from path existence.
+7. Keep the plugin lock for plugin metadata/accounting serialization only; it is not native writer fencing.
+
+Provider mutation and plugin metadata publication are not one distributed transaction. The design must handle a crash between provider retirement and plugin projection. A durable provider token plus idempotent plugin outbox/reconciliation is the proposed boundary, and tests must cover both sides.
+
+## Failure and recovery model
+
+A representative durable state machine is:
+
+```text
+live -> retiring -> retired -> restoring -> live
+                         \-> purging -> purged
+```
+
+- Intermediate states are recoverable, not user-visible success.
+- A crash before durable retirement must roll back or resume without losing the live Session.
+- A crash after provider retirement but before plugin metadata publication must allow discovery by token/ID and completion of the projection.
+- A crash during restore preserves the retirement token and either resumes restore or leaves retired data intact.
+- A crash during purge must never resurrect partially deleted data as live. Purge is durable and idempotent.
+- Unknown or contradictory state fails closed and preserves data for operator recovery; it never triggers best-effort recursive deletion.
+
+## Compatibility and rollout
+
+- Add the lifecycle capability as an optional, explicitly discoverable provider capability first.
+- Keep existing `SessionPersistence` methods source-compatible; `open(id, 'write')` is not itself a lifecycle lease.
+- Ship provider implementations and conformance tests before enabling destructive plugin integration.
+- Feature-detect at runtime. Unsupported providers fail closed for destructive operations.
+- Do not enable a provider until its platform-specific multi-process tests pass.
+- Existing plugin-only filesystem behavior retains its narrowly documented guarantee until provider integration exists. Old trash entries must not be silently reinterpreted as provider retirement tokens.
+
+## Acceptance tests before implementation
+
+Run conformance tests against two independent real Harness processes for each built-in provider and supported OS family:
+
+1. A live writer blocks retirement or produces a typed busy result; no data or plugin metadata is lost.
+2. Retirement succeeds only after writer close/process teardown drains its final admitted event batch.
+3. While retirement is held, another process cannot open a writer or create/materialize the same Session ID.
+4. A create racing retirement is serialized deterministically; exactly one wins and no duplicate live generation appears.
+5. Successful retirement removes the Session from normal list/read/open paths while preserving an opaque restore token.
+6. Restore works with no live artifact and preserves metadata, event order, revision semantics, and required workspace references.
+7. A competing writer racing restore is excluded or receives a typed conflict; retired data remains recoverable if restore loses.
+8. Process termination at every durable phase boundary recovers without data loss or split lock identity.
+9. Purge affects only the retired Session and is idempotent after process death at every phase.
+10. SQLite retirement/purge never moves, truncates, or removes the shared database; unrelated Sessions remain readable and writable.
+11. JSONL tests prove the stable coordination object is not replaced or unlinked while ownership is held; Windows named-object behavior is tested independently.
+12. Legacy JSONL import racing SQLite retirement follows a documented lock order and cannot publish stale imported history after retirement.
+13. Unsupported third-party providers fail closed; no plugin-side private-layout fallback is attempted.
+14. Plugin outbox recovery completes metadata/accounting after a crash between provider commit and plugin projection publication.
+
+Mock Cordis contexts and plugin-local process-lock tests are useful but do not satisfy these provider conformance requirements.
+
+## Consequences
+
+- This is a cross-provider Host API proposal, not a claim that either built-in provider currently implements it.
+- JSONL and SQLite preserve storage-specific optimizations without leaking lock/storage models into plugins.
+- The plugin owns user-facing trash policy and metadata projection; the provider owns Session data lifecycle correctness.
+- Provider implementation and migration complexity increase, but consumers gain one enforceable contract.
+
+## Decision
+
+Do not implement provider-native destructive integration in the plugin until the Host exposes this capability and both built-in providers pass the real multi-process conformance suite. Keep PR #12 as plugin-instance coordination only. Until then, do not claim protection against native Harness writers or cross-process provider mutations.
