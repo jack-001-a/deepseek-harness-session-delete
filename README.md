@@ -141,7 +141,7 @@ typed before the destructive action unlocks.
 | Session log artifact (`~/.dsh/sessions/<project-key>/<session-id>/`, log + `session.lock`) | currently moved as a directory to trash, or removed in permanent mode; **not coordinated with a native Harness writer in another process** |
 | Projection cache record (`~/.dsh/storages/session_projcache/sessions/<id>.json`) | dropped, then re-checked against a late checkpoint write |
 | Workspace accounting — membership, saved order, pin, archive mark | released |
-| Live session and agent store entries | detached *before* the files are moved, so no writer re-creates the log |
+| Live session and agent store entries | detached from the **current Host instance** before the files are moved; this does not stop a different Harness process from writing |
 | Attachments (`~/.dsh/attachments`) | **kept** — content-addressed and shared between sessions |
 | Temp spill files | not touched (the host sweeps them by age) |
 | Conversations forked *from* this one | **kept**; the dialog names how many still point at the deleted parent |
