@@ -1661,7 +1661,7 @@ class SessionDeleteService {
       // shared lock so decisions cannot rely on another process's stale view.
       const entries = await this.refreshTrash({ recoverMoves: false, force: true })
       const interruptedMove = entries.find((entry) => entry.sessionId === sessionId)
-      if (interruptedMove !== undefined && await this.pathExists(join(interruptedMove.path, COPYING_MARKER_FILE_NAME))) {
+      if (action !== 'move-recovery' && interruptedMove !== undefined && await this.pathExists(join(interruptedMove.path, COPYING_MARKER_FILE_NAME))) {
         const manifest = await this.readManifest(interruptedMove.path)
         if (manifest === undefined || !(await this.recoverTrashMove(interruptedMove.path, manifest))) {
           throw new SessionDeleteError(
@@ -2115,7 +2115,10 @@ class SessionDeleteService {
         const recovered = await this.runTrashOperation(
           'move-recovery',
           sessionId,
-          () => this.recoverTrashMove(path, manifest),
+          async () => {
+            const currentManifest = await this.readManifest(path)
+            return currentManifest === undefined ? false : this.recoverTrashMove(path, currentManifest)
+          },
         )
         if (!recovered) continue
       }
