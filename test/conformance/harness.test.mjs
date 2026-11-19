@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ProcessWorker, withWorkers } from './process-harness.mjs'
 import { assertProviderAdapter } from './fixture-contract.mjs'
+import { BarrierController, FaultPlan } from './orchestration.mjs'
 import { assertReleaseGate, createManifest, recordCase, writeManifest } from './manifest.mjs'
 
 test('worker barrier is controlled by the parent process, not sleeps', async () => {
@@ -19,14 +20,36 @@ test('worker barrier is controlled by the parent process, not sleeps', async () 
   })
 })
 
-test('workers are separate OS processes', async () => {
+test('two worker processes expose distinct PIDs and deterministic barrier ordering', async () => {
   await withWorkers([
-    { role: 'a', caseId: 'process-isolation' },
-    { role: 'b', caseId: 'process-isolation' },
-  ], async ([a, b]) => {
-    assert.notEqual(a, b)
-    assert.notEqual(a.role, b.role)
+    { role: 'writer', caseId: 'cross-process-order' },
+    { role: 'controller-peer', caseId: 'cross-process-order' },
+  ], async ([writer, peer]) => {
+    const controller = new BarrierController([writer, peer])
+    writer.barrier('writer-admitted')
+    const first = await controller.waitFor('writer', 'barrier-reached', 'writer-admitted')
+    peer.barrier('peer-ready')
+    const second = await controller.waitFor('controller-peer', 'barrier-reached', 'peer-ready')
+    assert.notEqual(first.pid, second.pid)
+    controller.release('writer', 'writer-admitted')
+    controller.release('controller-peer', 'peer-ready')
+    await Promise.all([
+      controller.waitFor('writer', 'barrier-released', 'writer-admitted'),
+      controller.waitFor('controller-peer', 'barrier-released', 'peer-ready'),
+    ])
   })
+})
+
+test('fault plan applies deterministic pause, error, and kill actions', async () => {
+  const plan = new FaultPlan([
+    { point: 'before-commit', action: 'pause' },
+    { point: 'after-commit', action: 'error', code: 'injected-io' },
+    { point: 'after-response', action: 'kill', signal: 'SIGKILL' },
+  ])
+  assert.deepEqual(plan.take('before-commit'), { point: 'before-commit', action: 'pause' })
+  assert.throws(() => plan.take('after-commit'), /injected-io/)
+  assert.deepEqual(plan.take('after-response'), { point: 'after-response', action: 'kill', signal: 'SIGKILL' })
+  assert.equal(plan.take('after-response'), null)
 })
 
 test('manifest rejects duplicate IDs and non-passing required cases', async () => {

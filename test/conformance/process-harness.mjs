@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
+import { fileURLToPath } from 'node:url'
 
 const MAX_LINE_BYTES = 64 * 1024
 
@@ -14,7 +15,7 @@ export class ProcessWorker {
     if (!role || !caseId) throw new TypeError('role and caseId are required')
     this.role = role
     this.caseId = caseId
-    this.#child = spawn(process.execPath, [script instanceof URL ? script.pathname : script], {
+    this.#child = spawn(process.execPath, [script instanceof URL ? fileURLToPath(script) : script], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, ...env, CONFORMANCE_ROLE: role, CONFORMANCE_CASE_ID: caseId },
       windowsHide: true,
@@ -59,6 +60,12 @@ export class ProcessWorker {
     this.#child.stdin.write(line + '\n')
   }
 
+  async ready(options) {
+    const event = await this.waitFor((item) => item.type === 'ready', options)
+    if (event.role !== this.role || event.caseId !== this.caseId) throw new Error('worker identity handshake mismatch')
+    return event
+  }
+
   barrier(barrier) {
     this.send({ type: 'run', action: 'barrier', barrier, caseId: this.caseId, role: this.role })
   }
@@ -87,8 +94,15 @@ export class ProcessWorker {
   async shutdown({ timeoutMs = 3_000 } = {}) {
     if (this.#closed) return this.exit
     this.send({ type: 'shutdown' })
-    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('worker shutdown timed out')), timeoutMs))
-    return Promise.race([this.exit, timeout])
+    let timer
+    try {
+      return await Promise.race([
+        this.exit,
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('worker shutdown timed out')), timeoutMs) }),
+      ])
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   kill(signal = 'SIGKILL') {
@@ -96,10 +110,11 @@ export class ProcessWorker {
   }
 }
 
-/** Start and always reap workers created by a test. */
+/** Start workers, await identity handshakes, and always reap every child. */
 export async function withWorkers(options, callback) {
   const workers = options.map((option) => new ProcessWorker(option))
   try {
+    await Promise.all(workers.map((worker) => worker.ready()))
     return await callback(workers)
   } finally {
     for (const worker of workers) worker.kill()
