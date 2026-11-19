@@ -121,10 +121,12 @@ export async function withWorkers(options, callback) {
   const workers = options.map((option) => new ProcessWorker(option))
   let value
   let callbackError
+  let callbackFailed = false
   try {
     await Promise.all(workers.map((worker) => worker.ready()))
     value = await callback(workers)
   } catch (error) {
+    callbackFailed = true
     callbackError = error
   }
 
@@ -134,7 +136,7 @@ export async function withWorkers(options, callback) {
   }
   await Promise.allSettled(workers.map((worker) => worker.exit))
 
-  if (callbackError) throw callbackError
+  if (callbackFailed) throw callbackError
   const shutdownErrors = shutdownResults.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
   if (shutdownErrors.length) throw new AggregateError(shutdownErrors, 'one or more workers failed to shut down cleanly')
   return value

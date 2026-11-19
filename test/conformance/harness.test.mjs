@@ -20,6 +20,16 @@ test('worker barrier is controlled by the parent process, not sleeps', async () 
   })
 })
 
+test('worker cleanup remains graceful when the test callback fails', async () => {
+  let workerRef
+  await assert.rejects(withWorkers([{ role: 'failure-cleanup', caseId: 'callback-failure' }], async ([worker]) => {
+    workerRef = worker
+    throw new Error('expected callback failure')
+  }), /expected callback failure/)
+  const exit = await workerRef.exit
+  assert.equal(exit.code, 0)
+})
+
 test('worker shutdown acknowledges and exits cleanly', async () => {
   await withWorkers([{ role: 'shutdown-test', caseId: 'graceful-shutdown' }], async ([worker]) => {
     const result = await worker.shutdown()
