@@ -212,3 +212,33 @@ The proposed public capability signature is specified in the parent ADR's **Conc
 ### Exact lost-response recovery scenario
 
 Add a deterministic test that retires Session X with operation A, loses the response after provider commit, restores X, then retires X again with operation B. Recovery for operation A must return A's original token and terminal state; recovery for B must return B's distinct token. `inspectById(X)` may report only the current lifecycle record and must not be used to correlate either outbox item. Run the same sequence across provider restart and verify operation mappings survive until the configured outbox-recovery retention boundary.
+## Provider capability compatibility and discovery tests
+
+The recommended discovery seam is a concrete, non-abstract method on the existing `SessionPersistence` service:
+
+```ts
+getLifecycleCapability(): SessionLifecycleCapability | undefined {
+  return undefined
+}
+```
+
+The default is intentionally unsupported. This preserves existing third-party subclasses and the repository's many test doubles that provide only the current persistence contract. The method is not a second Cordis service: capability discovery must begin from the exact active `ctx.sessionPersistence` instance whose storage is being mutated.
+
+Add these Gate 0 compatibility tests before implementing either adapter:
+
+| Test | Setup | Required result |
+|---|---|---|
+| Legacy subclass source compatibility | Compile a minimal third-party subclass implementing only the existing abstract methods | It still type-checks without lifecycle overrides |
+| Default unsupported behavior | Instantiate that subclass and call capability discovery | Returns `undefined`; no storage operation is attempted |
+| Explicit provider capability | Instantiate a provider that overrides discovery | Returns a stable capability object bound to that provider instance |
+| Mock persistence compatibility | Inject existing lightweight test doubles through Cordis | Existing tests remain valid; destructive consumers fail closed when capability is absent |
+| Service replacement | Resolve capability A, replace `ctx.sessionPersistence` with provider B | Consumer rejects/reacquires; capability A cannot mutate B's storage |
+| Repeated discovery | Resolve capability more than once from one provider instance | Stable identity/semantics; no duplicate coordinator or lease runtime is created |
+| Provider composition | Mount SQLite with its internal JSONL legacy reader | The exposed capability belongs to the outer SQLite persistence service and governs both SQLite and fallback/import paths |
+| Package entry-point contract | Import public capability types from the persistence package root | No provider-private module path or implementation dependency is required |
+
+The service's existing `identity` symbol is process-local and changes on provider replacement. Consumers that retain a capability must retain the originating service identity and verify it against the currently active service immediately before each lifecycle operation. Do not treat the identity or `SessionPersistenceRevision` as a durable cross-process token.
+
+The public package should own only provider-neutral interfaces, opaque tokens, typed outcomes/errors, and operation semantics. Provider packages own capability construction, durable operation indexes, recovery, locks, tombstones, and storage-specific tests. Avoid importing either concrete provider into the shared persistence package.
+
+A fake provider passing these compatibility tests proves only that discovery is backward-compatible; it does not count toward lifecycle conformance. A provider is lifecycle-capable only after its real multi-process adapter suite and platform matrix pass.
