@@ -1500,6 +1500,7 @@ test('startup recovery releases stale workspace and projection accounting for co
   options.pinned = true
   cache.set(SESSION_ID, { rows: { stale: true } })
   registry.calls.length = 0
+  h.calls.emitted.length = 0
 
   const result = await h.service.reconcileStartup()
 
