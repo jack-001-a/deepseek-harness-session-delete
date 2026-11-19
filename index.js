@@ -553,21 +553,29 @@ class SessionDeleteService {
   async releaseWorkspaceAccounting(sessionId) {
     const ctx = this.ctx
     const registry = optionalService(ctx, 'workspaceRegistry')
-    if (!registry) return
+    if (!registry) return true
+    let complete = true
     const attempt = async (label, run) => {
       try {
         await run()
       } catch (error) {
+        complete = false
         ctx.logger?.warn(`sessionDelete: releasing ${label} for "${sessionId}" failed: ${String(error)}`)
       }
     }
-    for (const workspace of registry.list()) {
-      if (workspace.record?.sessionIds?.includes(sessionId)) {
-        await attempt('workspace membership', () => workspace.detachSession(sessionId))
+    try {
+      for (const workspace of registry.list()) {
+        if (workspace.record?.sessionIds?.includes(sessionId)) {
+          await attempt('workspace membership', () => workspace.detachSession(sessionId))
+        }
       }
+    } catch (error) {
+      complete = false
+      ctx.logger?.warn(`sessionDelete: listing workspace membership for "${sessionId}" failed: ${String(error)}`)
     }
     await attempt('pin', () => registry.unpinSession(sessionId))
     await attempt('archive mark', () => registry.unarchiveSession(sessionId))
+    return complete
   }
 
   /**
@@ -1333,24 +1341,27 @@ class SessionDeleteService {
    */
   async removeProjectionCache(sessionId) {
     const storageDomain = optionalService(this.ctx, 'storageDomain')
-    if (!storageDomain || typeof storageDomain.get !== 'function') return
+    if (!storageDomain || typeof storageDomain.get !== 'function') return true
     let table
     try {
       const domain = storageDomain.get('session_projcache')
-      if (!domain || typeof domain.table !== 'function') return
+      if (!domain || typeof domain.table !== 'function') return true
       table = domain.table('sessions')
-    } catch {
-      return
+    } catch (error) {
+      this.ctx.logger?.warn(
+        `sessionDelete: opening the projection cache for "${sessionId}" failed: ${String(error)}`,
+      )
+      return false
     }
     for (let attempt = 0; attempt < CACHE_ATTEMPTS; attempt++) {
       try {
-        if (table.get(sessionId) === undefined) return
+        if (table.get(sessionId) === undefined) return true
         await table.delete(sessionId)
       } catch (error) {
         this.ctx.logger?.warn(
           `sessionDelete: dropping the projection cache of "${sessionId}" failed: ${String(error)}`,
         )
-        return
+        return false
       }
       if (attempt < CACHE_ATTEMPTS - 1) await delay(CACHE_RETRY_MS)
     }
@@ -1359,10 +1370,12 @@ class SessionDeleteService {
         this.ctx.logger?.warn(
           `sessionDelete: projection cache row for "${sessionId}" survived deletion; it is re-validated on the next read`,
         )
+        return false
       }
     } catch {
       // A closed domain cannot hold a stale row for the browser either.
     }
+    return true
   }
 
   /**
@@ -1726,10 +1739,12 @@ class SessionDeleteService {
     try {
       await writeFile(join(entry.path, MANIFEST_FILE_NAME), `${JSON.stringify(next, null, 2)}\n`, 'utf8')
       entry.restoreState = RESTORE_PENDING
+      return true
     } catch (error) {
       this.ctx.logger?.warn(
         `sessionDelete: marking the trash entry of session "${entry.sessionId}" as pending failed: ${String(error)}`,
       )
+      return false
     }
   }
 
@@ -2063,7 +2078,10 @@ class SessionDeleteService {
             }
             // A crash can happen after the restore move and before the manifest
             // is marked pending. Persist that state before replaying accounting.
-            if (!restorePending && !restoreMarkerExists) await this.markRestorePending(current)
+            if (!restorePending && !restoreMarkerExists) {
+              const marked = await this.markRestorePending(current)
+              if (!marked) return 'preserved'
+            }
             const result = await this.runRestore(current.sessionId)
             return result.restored === true ? 'restored' : 'preserved'
           }
@@ -2072,9 +2090,9 @@ class SessionDeleteService {
             // The artifact is safely in trash. These operations are
             // idempotent, so replaying them closes the crash window between
             // moving the artifact and releasing the host-side records.
-            await this.releaseWorkspaceAccounting(current.sessionId)
-            await this.removeProjectionCache(current.sessionId)
-            return 'deleted'
+            const accountingComplete = await this.releaseWorkspaceAccounting(current.sessionId)
+            const cacheComplete = await this.removeProjectionCache(current.sessionId)
+            return accountingComplete && cacheComplete ? 'deleted' : 'preserved'
           }
 
           this.ctx.logger?.warn(
