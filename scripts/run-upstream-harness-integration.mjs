@@ -121,7 +121,15 @@ async function runIntegration() {
     ctx = recoveryHost.ctx
     applySessionDelete(ctx, {})
     const recoveryService = ctx.get('sessionDelete')
-    const recovery = await recoveryService.reconcileStartup()
+    // Observe the actual Cordis ready listener while letting the event bus
+    // await its returned promise; emit() itself intentionally does not await.
+    const reconcileStartup = recoveryService.reconcileStartup.bind(recoveryService)
+    let recovery
+    recoveryService.reconcileStartup = async () => {
+      recovery = await reconcileStartup()
+      return recovery
+    }
+    await ctx.parallel('ready')
     assert.deepEqual(recovery, { deleted: 1, restored: 0, preserved: 0 })
     assert.ok((await recoveryService.listTrash()).entries.some(
       entry => entry.sessionId === SESSION_ID,
