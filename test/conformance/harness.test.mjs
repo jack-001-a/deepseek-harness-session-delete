@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ProcessWorker, withWorkers } from './process-harness.mjs'
@@ -18,6 +18,28 @@ test('worker barrier is controlled by the parent process, not sleeps', async () 
     const released = await worker.waitFor((event) => event.type === 'barrier-released')
     assert.equal(released.barrier, 'after-admission')
   })
+})
+
+test('already-started workers are reaped if a later worker cannot be constructed', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-worker-construction-'))
+  const script = join(directory, 'worker.mjs')
+  const markerPath = join(directory, 'shutdown-marker')
+  await writeFile(script, [
+    "import { createInterface } from 'node:readline'",
+    "import { writeFile } from 'node:fs/promises'",
+    "const input = createInterface({ input: process.stdin, crlfDelay: Infinity })",
+    "console.log(JSON.stringify({ type: 'ready', role: process.env.CONFORMANCE_ROLE, caseId: process.env.CONFORMANCE_CASE_ID }))",
+    "input.on('line', async (line) => { if (JSON.parse(line).type === 'shutdown') { await writeFile(process.env.SHUTDOWN_MARKER, 'closed'); console.log(JSON.stringify({ type: 'shutdown-ack' })); input.close() } })",
+  ].join('\\n'))
+  try {
+    await assert.rejects(withWorkers([
+      { role: 'first', caseId: 'partial-construction', script: new URL('file://' + script), env: { SHUTDOWN_MARKER: markerPath } },
+      { role: '', caseId: 'invalid-second-worker' },
+    ], async () => {}), /role and caseId are required/)
+    assert.equal(await readFile(markerPath, 'utf8'), 'closed')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 test('worker cleanup remains graceful when the test callback fails', async () => {

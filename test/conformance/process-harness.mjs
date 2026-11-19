@@ -118,11 +118,12 @@ export class ProcessWorker {
 
 /** Start workers, await identity handshakes, and always reap every child. */
 export async function withWorkers(options, callback) {
-  const workers = options.map((option) => new ProcessWorker(option))
+  const workers = []
   let value
   let callbackError
   let callbackFailed = false
   try {
+    for (const option of options) workers.push(new ProcessWorker(option))
     await Promise.all(workers.map((worker) => worker.ready()))
     value = await callback(workers)
   } catch (error) {
