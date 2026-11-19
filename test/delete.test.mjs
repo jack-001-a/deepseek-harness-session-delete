@@ -1448,3 +1448,31 @@ test('restore preserves both copies when an interrupted destination differs', as
   assert.ok((await stat(store.dir)).isDirectory())
   assert.ok((await stat(trashEntry(store, deleted.trashId))).isDirectory())
 })
+
+test('restore retries after an interrupted partial cross-device copy', async () => {
+  const store = await makeStore()
+  const h = harness({ ...storedTarget(store) })
+  await h.service.delete(SESSION_ID)
+  const originalMove = h.service.moveArtifact.bind(h.service)
+  let interrupted = false
+  h.service.moveArtifact = async (_source, destination) => {
+    if (!interrupted) {
+      interrupted = true
+      const { mkdir, writeFile } = await import('node:fs/promises')
+      await mkdir(destination + '.partial', { recursive: true })
+      await writeFile(join(destination + '.partial', 'partial.txt'), 'incomplete')
+      throw new Error('simulated interruption during cross-device copy')
+    }
+    return originalMove(_source, destination)
+  }
+
+  await assert.rejects(h.service.restore(SESSION_ID), /simulated interruption during cross-device copy/)
+  assert.ok((await stat(store.dir)).isDirectory() === false, 'the original path remains absent')
+  assert.ok((await stat(store.dir + '.partial')).isDirectory())
+
+  h.service.moveArtifact = originalMove
+  const restored = await h.service.restore(SESSION_ID)
+  assert.equal(restored.restored, true)
+  assert.equal(await readFile(store.log, 'utf8'), '{"seq":0}\n')
+  await assert.rejects(stat(store.dir + '.partial'), (error) => error.code === 'ENOENT')
+})

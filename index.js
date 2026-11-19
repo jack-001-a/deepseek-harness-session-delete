@@ -1565,6 +1565,30 @@ class SessionDeleteService {
     const artifactExists = await this.pathExists(artifact)
     const restoreMarker = join(entry.path, RESTORING_MARKER_FILE_NAME)
     const restoreInProgress = await this.pathExists(restoreMarker)
+    const staging = `${target}${COPY_STAGE_SUFFIX}`
+    if (restoreInProgress) {
+      let record
+      try {
+        record = JSON.parse(await readFile(restoreMarker, 'utf8'))
+      } catch {
+        throw new SessionDeleteError(
+          'session-delete/io',
+          `sessionDelete: the restore marker for session "${sessionId}" is unreadable; both copies were preserved`,
+          { sessionId, path: restoreMarker, reason: 'invalid-restore-marker' },
+        )
+      }
+      if (
+        record?.sessionId !== sessionId ||
+        typeof record.target !== 'string' ||
+        !samePath(resolve(record.target), resolve(target))
+      ) {
+        throw new SessionDeleteError(
+          'session-delete/conflict',
+          `sessionDelete: the restore marker for session "${sessionId}" does not match its original path; both copies were preserved`,
+          { sessionId, path: restoreMarker, reason: 'restore-marker-mismatch' },
+        )
+      }
+    }
     // A completed move can be retried while accounting is pending. A marker
     // distinguishes that state from an unrelated file that occupied target.
     const alreadyMoved = targetExists && !artifactExists && (restoreInProgress || entry.restoreState !== undefined)
@@ -1597,7 +1621,20 @@ class SessionDeleteService {
       try {
         await mkdir(dirname(target), { recursive: true })
         if (!restoreInProgress) {
+          // Do not claim a pre-existing staging path: only a stage created
+          // after this durable marker belongs to this restore transaction.
+          if (await this.pathExists(staging)) {
+            throw new SessionDeleteError(
+              'session-delete/conflict',
+              `sessionDelete: the restore staging path for session "${sessionId}" is already occupied`,
+              { sessionId, path: staging, reason: 'restore-staging-occupied' },
+            )
+          }
           await writeFile(restoreMarker, JSON.stringify({ sessionId, target }), { encoding: 'utf8', flag: 'wx' })
+        } else {
+          // A prior process may have stopped during cp(). The marker proves
+          // this transaction reserved the staging path before it was created.
+          await rm(staging, { recursive: true, force: true })
         }
         await this.moveArtifact(artifact, target)
       } catch (error) {
