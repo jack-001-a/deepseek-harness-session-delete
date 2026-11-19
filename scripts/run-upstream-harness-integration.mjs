@@ -4,7 +4,7 @@
  * The seed process closes its real JSONL handle before any destructive action.
  */
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -90,6 +90,84 @@ async function seedWorker(sessionRoot) {
     await ctx.fiber.dispose()
   }
 }
+async function interruptRestoreInSeparateProcess(sessionRoot) {
+  const worker = spawn(
+    process.execPath,
+    [fileURLToPath(import.meta.url), '--interrupt-restore', sessionRoot],
+    {
+      cwd: harnessRoot,
+      env: { ...process.env, DSH_HARNESS_ROOT: harnessRoot },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  )
+  let stdout = ''
+  let stderr = ''
+  let killedAtPromotionBarrier = false
+
+  await new Promise((resolvePromise, rejectPromise) => {
+    let settled = false
+    const finish = (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      if (error) rejectPromise(error)
+      else resolvePromise()
+    }
+    const timeout = setTimeout(() => {
+      worker.kill('SIGKILL')
+      finish(new Error(
+        'Restore interruption worker timed out before the promotion barrier.\\nstdout:\\n'
+          + stdout + '\\nstderr:\\n' + stderr,
+      ))
+    }, 60_000)
+
+    worker.stdout.setEncoding('utf8')
+    worker.stderr.setEncoding('utf8')
+    worker.stdout.on('data', chunk => {
+      stdout += chunk
+      if (!killedAtPromotionBarrier && stdout.includes('restore-promoted\\n')) {
+        killedAtPromotionBarrier = true
+        // Kill the real child immediately after promotion, before teardown.
+        worker.kill('SIGKILL')
+      }
+    })
+    worker.stderr.on('data', chunk => { stderr += chunk })
+    worker.once('error', error => finish(error))
+    worker.once('close', (code, signal) => {
+      if (killedAtPromotionBarrier && signal === 'SIGKILL') {
+        finish()
+      } else {
+        finish(new Error(
+          'Restore interruption worker did not die at the promotion barrier '
+            + '(exit ' + code + ', signal ' + signal + ').\\nstdout:\\n'
+            + stdout + '\\nstderr:\\n' + stderr,
+        ))
+      }
+    })
+  })
+}
+
+async function interruptRestoreWorker(sessionRoot) {
+  const { ctx } = await createHostContext(sessionRoot)
+  applySessionDelete(ctx, {})
+  const service = ctx.get('sessionDelete')
+  const entry = (await service.listTrash()).entries.find(
+    item => item.sessionId === SESSION_ID,
+  )
+  assert.ok(entry, 'the second delete must leave a trash entry')
+  const trashEntryPath = join(dirname(sessionRoot), '.trash', entry.trashId)
+  const restoreMarker = join(trashEntryPath, '.restoring')
+  await writeFile(restoreMarker, JSON.stringify({
+    sessionId: SESSION_ID,
+    target: entry.originalPath,
+  }))
+  await rename(join(trashEntryPath, 'artifact'), entry.originalPath)
+  process.stdout.write('restore-promoted\\n')
+  // Intentionally leave the Host context undisposed; the controller kills
+  // this process so graceful teardown and cleanup handlers cannot run.
+}
+
+
 
 async function runIntegration() {
   const sessionRoot = await mkdtemp(join(tmpdir(), 'dsh-session-delete-host-'))
@@ -144,22 +222,9 @@ async function runIntegration() {
     const removedAgain = await service.delete(SESSION_ID)
     assert.equal(removedAgain.trashed, true)
 
-    // Model a process exit after the restore artifact has been promoted to
-    // its original path but before accounting and marker cleanup complete.
-    const interruptedEntry = (await service.listTrash()).entries.find(
-      entry => entry.sessionId === SESSION_ID,
-    )
-    assert.ok(interruptedEntry, 'the second delete must leave a trash entry')
-    const trashEntryPath = join(dirname(sessionRoot), '.trash', interruptedEntry.trashId)
-    const restoreMarker = join(trashEntryPath, '.restoring')
-    await writeFile(restoreMarker, JSON.stringify({
-      sessionId: SESSION_ID,
-      target: interruptedEntry.originalPath,
-    }))
-    await rename(join(trashEntryPath, 'artifact'), interruptedEntry.originalPath)
-
-    // A new Host composition must finish the interrupted restore from its
-    // durable marker and target state, without moving the artifact twice.
+    // A separate real Host process promotes the artifact; this controller
+    // kills it at the explicit post-promotion barrier before accounting runs.
+    await interruptRestoreInSeparateProcess(sessionRoot)
     await ctx.fiber.dispose()
     const restoreRecoveryHost = await createHostContext(sessionRoot)
     ctx = restoreRecoveryHost.ctx
@@ -199,6 +264,8 @@ async function runIntegration() {
 
 if (process.argv[2] === '--seed') {
   await seedWorker(resolve(process.argv[3]))
+} else if (process.argv[2] === '--interrupt-restore') {
+  await interruptRestoreWorker(resolve(process.argv[3]))
 } else {
   await runIntegration()
 }
