@@ -31,6 +31,7 @@ function harness(options = {}) {
     stopped: [],
     accounting: [],
     warnings: [],
+    ready: undefined,
   }
   const extra = options.services ?? {}
   const sessions = {
@@ -66,6 +67,9 @@ function harness(options = {}) {
     },
     emit: (name, payload) => {
       calls.emitted.push([name, payload])
+    },
+    on: (event, callback) => {
+      if (event === 'ready') calls.ready = callback
     },
     get: (name) => {
       if (name === 'sessions') return sessions
@@ -1475,4 +1479,116 @@ test('restore retries after an interrupted partial cross-device copy', async () 
   assert.equal(restored.restored, true)
   assert.equal(await readFile(store.log, 'utf8'), '{"seq":0}\n')
   await assert.rejects(stat(store.dir + '.partial'), (error) => error.code === 'ENOENT')
+})
+
+test('startup recovery releases stale workspace and projection accounting for committed trash entries', async () => {
+  const store = await makeStore()
+  const options = { pinned: true, archived: false }
+  const registry = accountingRegistry(store, options)
+  const cache = new Map()
+  const h = harness({
+    ...storedTarget(store),
+    registry,
+    services: cacheServices(cache),
+  })
+  const deleted = await h.service.delete(SESSION_ID)
+  const entry = trashEntry(store, deleted.trashId)
+
+  // Simulate a process stop immediately after the artifact reached trash,
+  // before workspace membership, pin/archive or cache cleanup completed.
+  registry.workspace.record.sessionIds = [SESSION_ID, 'session-older']
+  options.pinned = true
+  cache.set(SESSION_ID, { rows: { stale: true } })
+  registry.calls.length = 0
+
+  const result = await h.service.reconcileStartup()
+
+  assert.deepEqual(result, { deleted: 1, restored: 0, preserved: 0 })
+  assert.deepEqual(registry.workspace.record.sessionIds, ['session-older'])
+  assert.deepEqual(registry.calls, [
+    ['detach', SESSION_ID],
+    ['unpin', SESSION_ID],
+    ['unarchive', SESSION_ID],
+  ])
+  assert.equal(cache.has(SESSION_ID), false)
+  assert.equal((await stat(join(entry, 'artifact'))).isDirectory(), true)
+  assert.deepEqual(h.calls.emitted, [])
+})
+
+test('startup recovery finishes workspace accounting after a restore move lost its process', async () => {
+  const store = await makeStore()
+  const registryOptions = { pinned: true, failAttach: false }
+  const registry = accountingRegistry(store, registryOptions)
+  const h = harness({ ...storedTarget(store), registry })
+  const deleted = await h.service.delete(SESSION_ID)
+  const entry = trashEntry(store, deleted.trashId)
+
+  // Model the crash window after the artifact is back at its original path,
+  // before .restoring is removed and before the manifest gets accounting-pending.
+  await rename(join(entry, 'artifact'), store.dir)
+
+  registryOptions.failAttach = false
+  registry.calls.length = 0
+  const result = await h.service.reconcileStartup()
+
+  assert.deepEqual(result, { deleted: 0, restored: 1, preserved: 0 })
+  assert.deepEqual(registry.calls, [['attach', SESSION_ID], ['insert', SESSION_ID, 'session-older'], ['pin', SESSION_ID]])
+  assert.equal((await stat(store.log)).isFile(), true)
+  await assert.rejects(stat(entry), (error) => error.code === 'ENOENT')
+})
+
+test('startup recovery resumes an explicit restore marker after the cross-device move', async () => {
+  const store = await makeStore()
+  const registry = accountingRegistry(store, { pinned: true })
+  const h = harness({ ...storedTarget(store), registry })
+  const deleted = await h.service.delete(SESSION_ID)
+  const entry = trashEntry(store, deleted.trashId)
+  await writeFile(join(entry, '.restoring'), JSON.stringify({ sessionId: SESSION_ID, target: store.dir }))
+  await rename(join(entry, 'artifact'), store.dir)
+
+  const result = await h.service.reconcileStartup()
+
+  assert.deepEqual(result, { deleted: 0, restored: 1, preserved: 0 })
+  assert.equal((await stat(store.log)).isFile(), true)
+  await assert.rejects(stat(entry), (error) => error.code === 'ENOENT')
+})
+
+test('startup recovery preserves a target/artifact conflict without releasing accounting', async () => {
+  const store = await makeStore()
+  const registry = accountingRegistry(store)
+  const h = harness({ ...storedTarget(store), registry })
+  const deleted = await h.service.delete(SESSION_ID)
+  const entry = trashEntry(store, deleted.trashId)
+  await mkdir(store.dir, { recursive: true })
+  await writeFile(store.log, 'unrelated replacement\n')
+  registry.workspace.record.sessionIds = [SESSION_ID, 'session-older']
+  registry.calls.length = 0
+
+  const result = await h.service.reconcileStartup()
+
+  assert.deepEqual(result, { deleted: 0, restored: 0, preserved: 1 })
+  assert.deepEqual(registry.workspace.record.sessionIds, [SESSION_ID, 'session-older'])
+  assert.deepEqual(registry.calls, [])
+  assert.equal((await stat(join(entry, 'artifact'))).isDirectory(), true)
+  assert.match(h.calls.warnings.join('\n'), /ambiguous state/)
+})
+
+test('the Cordis ready hook starts startup reconciliation after services are ready', async () => {
+  const store = await makeStore()
+  const registry = accountingRegistry(store)
+  const h = harness({ ...storedTarget(store), registry })
+  const deleted = await h.service.delete(SESSION_ID)
+  registry.workspace.record.sessionIds = [SESSION_ID, 'session-older']
+  registry.calls.length = 0
+
+  assert.equal(typeof h.calls.ready, 'function')
+  await h.calls.ready()
+
+  assert.deepEqual(registry.workspace.record.sessionIds, ['session-older'])
+  assert.deepEqual(registry.calls, [
+    ['detach', SESSION_ID],
+    ['unpin', SESSION_ID],
+    ['unarchive', SESSION_ID],
+  ])
+  assert.equal((await stat(join(trashEntry(store, deleted.trashId), 'artifact'))).isDirectory(), true)
 })

@@ -90,6 +90,8 @@ const CHILD_LIMIT = 100
 const SWEEP_ENTRY_LIMIT = 500
 /** Most trash entries one sweep purges, so a sweep stays bounded. */
 const SWEEP_PURGE_LIMIT = 50
+/** Most startup recovery operations, so plugin readiness stays bounded. */
+const STARTUP_RECOVERY_LIMIT = 50
 /** Most audit records the trail file keeps before it is trimmed. */
 const AUDIT_MAX_RECORDS = 1000
 /** Minimum gap between two retention sweeps. */
@@ -2015,6 +2017,92 @@ class SessionDeleteService {
   }
 
   /**
+   * Reconcile durable trash transactions once the host has finished starting.
+   *
+   * A trash artifact with no live source is a committed delete: replay its
+   * idempotent workspace/cache cleanup. A restore marker, an accounting-pending
+   * manifest, or a live target with no trash artifact is instead a committed
+   * restore: resume the restore path so workspace accounting is reattached.
+   * Ambiguous pairs are preserved for an explicit recovery rather than guessed.
+   *
+   * @returns counts of recovered deletes, restores and preserved entries.
+   */
+  async reconcileStartup() {
+    if (this.mode !== 'trash') return { deleted: 0, restored: 0, preserved: 0 }
+    const entries = await this.refreshTrash()
+    let deleted = 0
+    let restored = 0
+    let preserved = 0
+    let examined = 0
+
+    for (const snapshot of entries) {
+      if (examined >= STARTUP_RECOVERY_LIMIT) break
+      if (typeof snapshot.sessionId !== 'string' || snapshot.sessionId.length === 0) continue
+      examined += 1
+      try {
+        const outcome = await this.runTrashOperation('startup-recovery', snapshot.sessionId, async () => {
+          // Re-read under the same per-session lock as delete/restore/purge.
+          await this.refreshTrash()
+          const current = await this.trashEntryFor(snapshot.sessionId)
+          if (current === undefined || current.trashId !== snapshot.trashId) return 'stale'
+
+          const artifact = join(current.path, ARTIFACT_DIR_NAME)
+          const artifactExists = await this.pathExists(artifact)
+          const targetExists = typeof current.originalPath === 'string' && current.originalPath.length > 0
+            ? await this.pathExists(current.originalPath)
+            : false
+          const restoreMarkerExists = await this.pathExists(join(current.path, RESTORING_MARKER_FILE_NAME))
+          const restorePending = current.restoreState === RESTORE_PENDING
+
+          if (restorePending || restoreMarkerExists || (!artifactExists && targetExists)) {
+            if (!targetExists) {
+              this.ctx.logger?.warn(
+                `sessionDelete: startup recovery preserved "${current.trashId}": the restore target is missing`,
+              )
+              return 'preserved'
+            }
+            // A crash can happen after the restore move and before the manifest
+            // is marked pending. Persist that state before replaying accounting.
+            if (!restorePending && !restoreMarkerExists) await this.markRestorePending(current)
+            const result = await this.runRestore(current.sessionId)
+            return result.restored === true ? 'restored' : 'preserved'
+          }
+
+          if (artifactExists && !targetExists && !restoreMarkerExists && !restorePending) {
+            // The artifact is safely in trash. These operations are
+            // idempotent, so replaying them closes the crash window between
+            // moving the artifact and releasing the host-side records.
+            await this.releaseWorkspaceAccounting(current.sessionId)
+            await this.removeProjectionCache(current.sessionId)
+            return 'deleted'
+          }
+
+          this.ctx.logger?.warn(
+            `sessionDelete: startup recovery preserved "${current.trashId}": artifact and original path are in an ambiguous state`,
+          )
+          return 'preserved'
+        })
+
+        if (outcome === 'deleted') deleted += 1
+        else if (outcome === 'restored') restored += 1
+        else if (outcome === 'preserved') preserved += 1
+      } catch (error) {
+        preserved += 1
+        this.ctx.logger?.warn(
+          `sessionDelete: startup recovery of "${snapshot.trashId}" failed; the entry was preserved: ${String(error)}`,
+        )
+      }
+    }
+
+    if (entries.length > examined) {
+      this.ctx.logger?.warn(
+        `sessionDelete: startup recovery processed ${examined} entries; ${entries.length - examined} remain for a later launch`,
+      )
+    }
+    return { deleted, restored, preserved }
+  }
+
+  /**
    * Purge the trash entries that outlived the retention window.
    *
    * The sweep is bounded on purpose: it examines a limited number of entries
@@ -2233,9 +2321,16 @@ export function apply(ctx, config = {}) {
     value: { associate: SERVICE_KEY, property: 'ctx' },
   })
   ctx.reflect.provide(SERVICE_KEY, service, undefined)
-  // Read the trash once the service exists, so the first request already
-  // knows what an earlier run left behind. The read never blocks the caller.
+  // Prime the trash index immediately; the host's ready hook performs
+  // reconciliation only after workspace and storage services are available.
   service.refreshTrash().catch((error) => {
     ctx.logger?.warn(`sessionDelete: reading the trash failed: ${String(error)}`)
   })
+  if (typeof ctx.on === 'function') {
+    ctx.on('ready', () => {
+      service.reconcileStartup().catch((error) => {
+        ctx.logger?.warn(`sessionDelete: startup recovery failed: ${String(error)}`)
+      })
+    })
+  }
 }
