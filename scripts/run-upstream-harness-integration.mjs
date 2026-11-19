@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { apply as applySessionDelete } from '../index.js'
 
@@ -49,6 +49,12 @@ async function createHostContext(sessionRoot) {
 }
 
 const SESSION_ID = 'session-delete-real-host-fixture'
+
+// Keep trash isolated per test store. The plugin's default is a shared
+// sibling .trash directory, which would otherwise leak state across runs.
+function trashRootFor(sessionRoot) {
+  return join(dirname(sessionRoot), basename(sessionRoot) + '-trash')
+}
 
 async function seedInSeparateProcess(sessionRoot) {
   const worker = spawnSync(
@@ -239,13 +245,13 @@ async function interruptRestoreInSeparateProcess(sessionRoot) {
 
 async function interruptRestoreWorker(sessionRoot) {
   const { ctx } = await createHostContext(sessionRoot)
-  applySessionDelete(ctx, {})
+  applySessionDelete(ctx, { trashRoot: trashRootFor(sessionRoot) })
   const service = ctx.get('sessionDelete')
   const entry = (await service.listTrash()).entries.find(
     item => item.sessionId === SESSION_ID,
   )
   assert.ok(entry, 'the second delete must leave a trash entry')
-  const trashEntryPath = join(dirname(sessionRoot), '.trash', entry.trashId)
+  const trashEntryPath = join(trashRootFor(sessionRoot), entry.trashId)
   const restoreMarker = join(trashEntryPath, '.restoring')
   await writeFile(restoreMarker, JSON.stringify({
     sessionId: SESSION_ID,
@@ -267,7 +273,7 @@ async function runIntegration() {
     await seedInSeparateProcess(sessionRoot)
     const host = await createHostContext(sessionRoot)
     ctx = host.ctx
-    applySessionDelete(ctx, {})
+    applySessionDelete(ctx, { trashRoot: trashRootFor(sessionRoot) })
     let service = ctx.get('sessionDelete')
     assert.ok(service, 'Session Delete must register on the real Cordis context')
 
@@ -292,7 +298,7 @@ async function runIntegration() {
     await ctx.fiber.dispose()
     const recoveryHost = await createHostContext(sessionRoot)
     ctx = recoveryHost.ctx
-    applySessionDelete(ctx, {})
+    applySessionDelete(ctx, { trashRoot: trashRootFor(sessionRoot) })
     const recoveryService = ctx.get('sessionDelete')
     // Observe the actual Cordis ready listener while letting the event bus
     // await its returned promise; emit() itself intentionally does not await.
@@ -323,7 +329,7 @@ async function runIntegration() {
     await ctx.fiber.dispose()
     const restoreRecoveryHost = await createHostContext(sessionRoot)
     ctx = restoreRecoveryHost.ctx
-    applySessionDelete(ctx, {})
+    applySessionDelete(ctx, { trashRoot: trashRootFor(sessionRoot) })
     const restoreRecoveryService = ctx.get('sessionDelete')
     const reconcileRestore = restoreRecoveryService.reconcileStartup.bind(restoreRecoveryService)
     let restoreRecovery
@@ -354,6 +360,7 @@ async function runIntegration() {
   } finally {
     await ctx?.fiber.dispose()
     await rm(sessionRoot, { recursive: true, force: true })
+    await rm(trashRootFor(sessionRoot), { recursive: true, force: true })
   }
 }
 
