@@ -80,11 +80,12 @@ The reviewed implementation is not a set of Session-owned row bundles. It is a s
 
 Therefore, a correct purge cannot mean “delete the target trace's tail and its ancestors.” It must perform reachability-aware reclamation:
 
-1. In one provider-owned `BEGIN IMMEDIATE` transaction, commit the target Session's retired/purged lifecycle state and remove its live trace root only at the defined linearization point.
-2. Starting at the removed trace's former tail, consider a Segment reclaimable only when no remaining trace uses it as a tail and no remaining Segment points to it as a parent.
-3. Reclaim only the now-unreferenced tail-to-root chain. For each Segment, remove its frames and all `segment_ancestors` rows that reference it in either role, then delete the Segment; stop at the first still-referenced ancestor.
-4. Keep all shared ancestors and their frames intact while any live or retired Session still needs them for restore. The design must explicitly decide whether retired Sessions retain their references until purge or whether retirement itself may detach only a private suffix.
-5. Run integrity checks after each fault-injected transaction boundary. A partial graph must never become visible as a valid live Session.
+1. Add a provider-owned retirement/tombstone record that retains the Session header, inherited count, operation/token identity, and former tail Segment reference. In one `BEGIN IMMEDIATE` transaction, transfer the root reference from `traces` to this tombstone; do not garbage-collect its history during retirement.
+2. Restore atomically transfers the retained root reference from the tombstone back into `traces`, preserving the exact Segment head and event history.
+3. Purge first removes the tombstone root reference at its defined linearization point. A Segment is reclaimable only when no live trace or retained tombstone uses it as a root and no remaining Segment points to it as a parent.
+4. Reclaim only the now-unreferenced tail-to-root chain. For each Segment, remove its frames and all `segment_ancestors` rows that reference it in either role, then delete the Segment; stop at the first still-referenced ancestor.
+5. Keep shared ancestors and their frames intact while any live or retired Session still needs them for reads or restore. A retired Session remains a GC root until its purge commits.
+6. Run integrity checks after each fault-injected transaction boundary. A partial graph must never become visible as a valid live Session.
 
 This requires a deliberate schema migration: the current no-delete triggers prohibit physical reclamation, and the existing schema-version gate refuses incompatible layouts. Migration must preserve all existing trace headers, Segment ancestry, frames, and routing records. Do not drop immutability guards wholesale; retain no-update/no-reparent protections and narrow delete permission to provider-owned garbage collection.
 
