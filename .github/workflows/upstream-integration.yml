@@ -70,7 +70,7 @@ jobs:
 
       - name: Upload provider conformance evidence
         if: always() && hashFiles('artifacts/provider-conformance.json') != ''
-        uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v4.3.6
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: jsonl-provider-conformance-manifest
           path: artifacts/provider-conformance.json
