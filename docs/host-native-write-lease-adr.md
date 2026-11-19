@@ -38,7 +38,8 @@ interface SessionRetirement {
 }
 
 interface SessionLifecycle {
-  retire(id: SessionId, options?: {
+  retire(id: SessionId, options: {
+    operationId: string // caller-generated idempotency key, stable across retries
     expectedRevision?: SessionRevision
     signal?: AbortSignal
   }): Promise<SessionRetirement>
@@ -46,6 +47,7 @@ interface SessionLifecycle {
   restore(token: string, options?: { signal?: AbortSignal }): Promise<SessionSnapshot>
   purge(token: string, options?: { signal?: AbortSignal }): Promise<void>
   inspect(token: string): Promise<SessionRetirement | undefined>
+  inspectById(id: SessionId): Promise<SessionRetirement | undefined>
   recover(signal?: AbortSignal): Promise<void>
 }
 ```
@@ -56,7 +58,7 @@ The exact surface may instead use an explicit transaction object with prepare/co
 2. **Writer fencing:** lifecycle mutation atomically excludes new write opens and creates for that ID, and waits for admitted writers to drain their final event batch before destructive ownership is granted.
 3. **Absent-artifact restore:** a retirement token remains valid while the live artifact is absent. Restore does not need a fake live artifact or a lease on a missing file.
 4. **Provider-owned mutation:** the provider performs quarantine, restore, and purge using its own storage model. Consumers receive an opaque token/state, never a private storage path.
-5. **Idempotency:** retries with the same token return the committed result or a typed terminal-state error; they cannot create duplicate retirement or destroy unrelated data.
+5. **Idempotency and lost responses:** `retire` requires a caller-generated `operationId` that is stable across retries. If the provider commits retirement but the process dies before receiving the response, retrying the same `operationId` returns the same retirement token. `inspectById(id)` lets plugin recovery discover a committed retirement when its metadata write was interrupted. Repeated restore/purge calls with the same token return the committed terminal state or a typed terminal-state error; they cannot create duplicate retirement or destroy unrelated data.
 6. **Crash consistency:** durable phase changes and data movement are recoverable after process death. A missing live artifact alone never proves retirement committed.
 7. **Revision protection:** retire may compare an expected revision so stale plugin/UI state cannot retire a newer Session generation.
 8. **Typed outcomes:** unsupported capability, writer contention/cancellation, revision conflict, not-found, already-retired/restored/purged, and storage I/O/corruption are distinguishable.
@@ -97,7 +99,7 @@ A provider may advertise no lifecycle capability. In that case the plugin must n
 6. Run provider recovery before reconciling plugin trash metadata. Never infer provider state from path existence.
 7. Keep the plugin lock for plugin metadata/accounting serialization only; it is not native writer fencing.
 
-Provider mutation and plugin metadata publication are not one distributed transaction. The design must handle a crash between provider retirement and plugin projection. A durable provider token plus idempotent plugin outbox/reconciliation is the proposed boundary, and tests must cover both sides.
+Provider mutation and plugin metadata publication are not one distributed transaction. The plugin must persist its `operationId` before calling `retire`. If it crashes after provider commit but before storing the returned token, startup uses `inspectById(id)` (or retries the same `operationId`) to recover the provider-issued token, then completes the plugin projection. The outbox must retain the operation ID until reconciliation is durable.
 
 ## Failure and recovery model
 
