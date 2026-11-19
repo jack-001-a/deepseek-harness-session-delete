@@ -268,23 +268,34 @@ async function interruptRestoreWorker(sessionRoot) {
 
 async function runIntegration() {
   const sessionRoot = await mkdtemp(join(tmpdir(), 'dsh-session-delete-host-'))
+  const runStartedAt = process.hrtime.bigint()
   const manifest = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     sourceCommit: '2e39e70496aa02986ca6a820c5d497e816b69d7e',
     provider: 'deepseek-harness-jsonl',
     environment: { os: process.platform, runtime: process.version, architecture: process.arch },
+    status: 'RUNNING',
     startedAt: new Date().toISOString(),
     cases: [],
   }
-  const record = (id, status, details) => manifest.cases.push({
-    id, status, durationMs: 0, expected: null, observed: null, details,
+  const record = (id, status, details, evidence = {}) => manifest.cases.push({
+    id,
+    status,
+    details,
+    ...(evidence.expected ? { expected: evidence.expected } : {}),
+    ...(evidence.observed ? { observed: evidence.observed } : {}),
+    ...(evidence.reasonCode ? { reasonCode: evidence.reasonCode } : {}),
   })
+  let runStatus = 'PASS'
   const manifestPath = resolve(process.env.DSH_CONFORMANCE_MANIFEST_PATH
     || join(process.cwd(), 'artifacts', 'provider-conformance.json'))
   let ctx
   try {
     await seedInSeparateProcess(sessionRoot)
-    record('JSONL-SEED-CROSS-PROCESS', 'PASS', 'Child Host created, flushed, closed, and disposed a real JSONL writer; parent opens a fresh Host over the same root.')
+    record('JSONL-SEED-CROSS-PROCESS', 'PASS', 'Child Host created, flushed, closed, and disposed a real JSONL writer; parent opens a fresh Host over the same root.', {
+      expected: 'A fresh parent Host can open the session seeded by the child process.',
+      observed: 'The parent Host opened the same store after the child closed its writer.',
+    })
     const host = await createHostContext(sessionRoot)
     ctx = host.ctx
     applySessionDelete(ctx, { trashRoot: trashRootFor(sessionRoot) })
@@ -298,10 +309,18 @@ async function runIntegration() {
     // Verify provider-level writer exclusion in a separate process; this does
     // not imply that Session Delete can fence a live writer during mutation.
     await verifyCrossProcessWriterOwnership(ctx, host.persistence, sessionRoot)
-    record('JSONL-WRITER-EXCLUSION-001', 'PASS', 'While a child held the real write handle, parent read-open succeeded and competing write-open rejected with SessionAlreadyOwnedError.')
-    record('JSONL-WRITER-CRASH-RELEASE-001', 'PASS', 'Controller SIGKILLed the writer owner; parent acquired and closed a successor writer, proving kernel lease release after process death.')
+    record('JSONL-WRITER-EXCLUSION-001', 'PASS', 'While a child held the real write handle, parent read-open succeeded and competing write-open rejected with SessionAlreadyOwnedError.', {
+      expected: 'Read-open succeeds while a writer is held; a competing write-open rejects with SessionAlreadyOwnedError.',
+      observed: 'Read-open succeeded and the competing write-open rejected with the exported typed error.',
+    })
+    record('JSONL-WRITER-CRASH-RELEASE-001', 'PASS', 'Controller SIGKILLed the writer owner; parent acquired and closed a successor writer, proving kernel lease release after process death.', {
+      expected: 'After owner process death, a successor process can acquire and close a write handle.',
+      observed: 'The controller observed SIGKILL and the parent acquired and closed a successor writer.',
+    })
     for (const operation of ['RETIRE', 'RESTORE', 'PURGE']) {
-      record(`JSONL-PROVIDER-${operation}-001`, 'SKIP', 'Pinned upstream revision exposes no public provider-owned lifecycle operation or admission fence; plugin filesystem behavior is not provider conformance.')
+      record(`JSONL-PROVIDER-${operation}-001`, 'SKIP', 'Pinned upstream revision exposes no public provider-owned lifecycle operation or admission fence; plugin filesystem behavior is not provider conformance.', {
+        reasonCode: 'provider-lifecycle-api-unavailable',
+      })
     }
 
     const removed = await service.delete(SESSION_ID)
@@ -377,9 +396,13 @@ async function runIntegration() {
       'PASS: real Cordis + AgentLoop testkit + JSONL provider; cross-process seed/close and writer exclusion/release; ready-hook plugin delete/restore recovery; purge\n',
     )
   } catch (error) {
+    runStatus = 'FAIL'
     record('JSONL-INTEGRATION-RUN', 'FAIL', String(error?.stack || error).slice(0, 1800))
     throw error
   } finally {
+    manifest.status = runStatus
+    manifest.finishedAt = new Date().toISOString()
+    manifest.durationMs = Number((process.hrtime.bigint() - runStartedAt) / 1_000_000n)
     await ctx?.fiber.dispose()
     await mkdir(dirname(manifestPath), { recursive: true })
     const temporaryManifest = manifestPath + '.tmp-' + process.pid
