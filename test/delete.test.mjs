@@ -1364,3 +1364,33 @@ test('same trash mutation joins the in-flight operation', async () => {
   assert.deepEqual(await second, { restored: true })
   assert.equal(runs, 1)
 })
+
+test('retrying an already-trashed delete completes accounting after an interrupted first attempt', async () => {
+  const store = await makeStore()
+  const registry = accountingRegistry(store)
+  const cache = new Map([[SESSION_ID, { rows: {} }]])
+  const h = harness({
+    ...storedTarget(store),
+    registry,
+    services: cacheServices(cache),
+  })
+  const release = h.service.releaseWorkspaceAccounting.bind(h.service)
+  h.service.releaseWorkspaceAccounting = async () => {
+    throw new Error('simulated interruption after the artifact move')
+  }
+
+  await assert.rejects(h.service.delete(SESSION_ID), /simulated interruption/)
+  assert.deepEqual(registry.workspace.record.sessionIds, [SESSION_ID, 'session-older'])
+  assert.ok((await readdir(store.trashRoot)).some((name) => name !== 'audit.jsonl'))
+
+  // A fresh process sees the durable trash entry; retrying delete must replay
+  // cleanup even though the session is no longer live or stored at its path.
+  h.service.releaseWorkspaceAccounting = release
+  const outcome = await h.service.delete(SESSION_ID)
+
+  assert.equal(outcome.trashed, true)
+  assert.equal(registry.workspace.record.sessionIds.includes(SESSION_ID), false)
+  assert.ok(registry.calls.some(([kind]) => kind === 'unpin'))
+  assert.ok(registry.calls.some(([kind]) => kind === 'unarchive'))
+  assert.equal(cache.has(SESSION_ID), false)
+})

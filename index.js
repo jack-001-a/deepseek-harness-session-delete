@@ -378,6 +378,11 @@ class SessionDeleteService {
     //    deleted while leaving it on the disk.
     const trashed = this.mode === 'trash' ? await this.trashEntryFor(sessionId) : undefined
     if (trashed !== undefined && trashed.restoreState === undefined) {
+      // The artifact move is the durable commit point. If the process stopped
+      // immediately afterwards, a retry must finish the idempotent side effects
+      // instead of returning early and leaving stale workspace/cache records.
+      await this.releaseWorkspaceAccounting(sessionId)
+      await this.removeProjectionCache(sessionId)
       const children = Array.isArray(trashed.children) ? trashed.children : []
       return {
         sessionId,
