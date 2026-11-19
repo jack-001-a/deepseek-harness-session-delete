@@ -570,3 +570,118 @@ Compaction must preserve the exact token and outcome for every retryable operati
 ### Implementation gate
 
 This is a proposed storage contract. The pinned upstream JSONL Provider currently has no lifecycle ledger, no generation-scoped durable operation journal, and no cross-resource recovery protocol. Until the journal format, sync semantics, stable lock, quarantine protocol, and fault-injection tests are implemented together, the plugin must continue to treat JSONL lifecycle capability as unsupported.
+
+
+## JSONL stable-lock adoption and mixed-version rollout
+
+The stable provider-root lock and lifecycle ledger are a coordinated storage-protocol upgrade, not an additive lock that can safely coexist with the current directory-local lease. The pinned JSONL implementation has the following relevant behavior:
+
+- POSIX write ownership is a `flock(2)` on the inode at `<session-dir>/session.lock`; Windows uses a named kernel semaphore derived from that path.
+- Existing-artifact write opens acquire this lease, and the write handle retains it for its lifetime. A create handle acquires it lazily, immediately before its first materializing write.
+- Read handles do not acquire the current write lease. They resolve the current generation path and read it independently.
+- Consequently, a legacy writer, a pending create, or a legacy reader has no knowledge of a newly introduced provider-root lifecycle lock. Acquiring the new lock in a newer process does not fence any of them.
+
+These are verified constraints at the pinned upstream commit `2e39e70496aa02986ca6a820c5d497e816b69d7e`. This section defines a proposed migration protocol; it does not claim the upstream provider implements it.
+
+### Non-negotiable compatibility rule
+
+There must be no production interval in which old and new provider processes can access the same JSONL root while relying on different lock namespaces. The old in-directory lease cannot be treated as a bridge:
+
+- An old process never acquires the new stable lock, so a new process holding it cannot exclude an old writer or reader.
+- A new process holding both locks does not solve the problem: old processes still do not honor the new lock, and directory movement can change the in-directory lock identity.
+- A lock-file existence check, process-local version check, package semver check, or timeout is not proof that every old process has stopped.
+- Do not automatically fall back to `session.lock` when a stable lock or ledger is missing. Such fallback would silently reopen the split-lock protocol.
+
+Therefore, **offline, all-processes-stopped migration is mandatory** for the first stable-lock deployment. Rolling upgrade and mixed-version operation are unsupported until a future protocol explicitly proves a shared fencing handshake.
+
+### Root identity and namespace bootstrap
+
+The provider must establish one durable identity for the configured storage root before creating any stable per-Session lock:
+
+1. Resolve and validate the configured root using provider-owned no-follow rules. Reject unexpected symlinks, non-directory components, ownership/ACL mismatches, and path substitutions. Do not assume two textual paths identify different roots, or that equal path strings identify the same physical root.
+2. Create or read a versioned root-identity record under a protected provider metadata namespace. Its random root ID is durable data, not a hash of the current path. Creation uses exclusive publication, file sync, and containing-directory sync; concurrent initializers must converge on the one published identity or fail closed.
+3. Bind the identity record to the expected storage-root physical identity and metadata namespace. Revalidate this binding when opening locks and journals. Copying only the metadata namespace to another root must not authorize operations there.
+4. Derive stable per-Session lock names from the root ID and canonical Session ID encoding, not from a movable Session directory. POSIX lock files live in a non-movable provider metadata directory and are never unlinked or replaced. Windows uses a named kernel synchronization object derived from the same canonical tuple; name length, namespace scope, and cross-user collision behavior require platform tests.
+5. A missing, malformed, mismatched, or inaccessible root identity is a provider-wide lifecycle recovery error. Never silently mint a new identity over existing Session data or infer identity from directory contents.
+
+The root ID is an identity namespace, not an authorization secret. ACLs, ownership checks, no-follow path handling, and operation validation remain mandatory.
+
+### Offline upgrade procedure
+
+The migration is an operator-controlled maintenance transaction with an explicit traffic barrier:
+
+1. **Prepare:** publish the exact new provider version and migration tooling, but keep lifecycle capability disabled. Validate disk capacity, filesystem support for required rename/sync semantics, permissions, and a consistent backup/restore plan.
+2. **Stop admission:** stop routing new requests and prevent automatic restarts, schedulers, worker launches, and background recovery from opening the root.
+3. **Drain and stop:** close every Session handle; wait for each write handle's mutation chain, routed live-event buffer, final flush, and close completion. Stop all Host processes, child workers, test/maintenance processes, and any external tool that can access the root. A process list or PID file alone is insufficient; the deployment supervisor must establish the stop barrier.
+4. **Verify quiescence:** with no process able to reopen the root, verify the old deployment is stopped and no external writer remains. If this cannot be established, abort before changing lock or artifact state.
+5. **Back up:** take a provider-consistent backup of the complete root, including Session generations, old lock files as inert historical artifacts, metadata, and any relevant sidecars. Preserve the backup's identity and restore instructions. Do not combine files from different points in time.
+6. **Initialize metadata:** publish and sync the root identity, stable lock namespace, and ledger namespace. Validate every existing Session ID/path relationship without moving or rewriting Session artifacts. Old `session.lock` files are not imported as lock authority and are not deleted as part of bootstrap.
+7. **Reconcile before enabling:** inventory all Session artifacts, validate their current generation and identity, and establish an explicit initial lifecycle state for each. A missing/corrupt artifact or ambiguous inventory blocks that Session; it must not be guessed live or retired. The global listing index is rebuilt only from validated authoritative records.
+8. **Start only the new version:** configure every process that can access the root to use the same provider build and stable-lock protocol. Verify version/build identity at process startup and ensure the supervisor cannot start an older binary.
+9. **Run admission and recovery gates:** validate root identity, lock namespace, ledger integrity, journal recovery, and per-Session reconciliation before enabling reads/writes. Lifecycle capability remains unavailable until the provider-wide gates pass.
+10. **Resume traffic:** enable the new provider and lifecycle capability only after all processes are on the new protocol and the deployment barrier has been released deliberately.
+
+Any failure before step 10 leaves destructive lifecycle capability disabled. Roll back by restoring the complete consistent backup while all processes remain stopped; do not attempt a mixed-version rollback against a root that has already accepted new-protocol writes.
+
+### Stable-lock admission contract after migration
+
+Every operation that can observe or mutate Session lifecycle state must participate in the same stable per-Session lock protocol. This includes read open/admission, write open, pending-create materialization, append, flush, close/drain, retire, restore, purge, and recovery. A provider must not claim complete fencing while any public or internal path bypasses the protocol.
+
+- **Read admission:** acquire the stable Session lock, validate root identity and authoritative lifecycle state, resolve the current generation, open the required file descriptor(s), and validate the opened object identity while still holding the lock. Only then release the lock. The descriptor is the read-admission point; a read admitted before the retire barrier may finish from its already-open descriptor, while a read admitted after the barrier rejects. A path string resolved under the lock but opened after releasing it is not sufficient.
+- **Write admission:** acquire the same stable lock before a write handle is returned and retain the lease for the full handle lifetime, including its queued mutations and final close drain. For a pending create, reserve the Session identity at create time or acquire the lock before publishing any materialized artifact; lazy acquisition must not allow two processes to materialize the same ID concurrently. The chosen behavior must be consistent across providers and tested.
+- **Lifecycle transition:** hold the stable lock across the ledger intent, filesystem transition, durability barriers, and terminal ledger record. Never release it between checking state and publishing the mutation.
+- **Close:** drain all in-flight and routed writes before releasing the stable lock. Release must be idempotent; a drain failure must not be reported as a successful clean close. Kernel ownership is released on process death, while the durable ledger state is recovered by the next process.
+- **Recovery:** acquire the same per-Session lock before reconciling an individual journal/artifact pair. A process-wide startup coordinator may bound work, but must not replace per-Session exclusion or serialize unrelated normal operations.
+
+An already-open read descriptor may continue after retirement admission closes; this is an explicit grandfathering rule, not permission for a later read on the same handle to reopen the pathname. The API must either pin all data needed by the admitted read or reject subsequent reads once the lifecycle generation changes. This behavior needs a dedicated handle contract and tests.
+
+### Lock order and maintenance fencing
+
+Define one lock order and enforce it in every code path:
+
+1. provider-root maintenance/admission gate, when required;
+2. per-Session stable lock;
+3. journal append/metadata lock, if distinct;
+4. filesystem object operations and directory durability barriers.
+
+Prefer avoiding a second journal lock when the per-Session stable lock already serializes the journal. If a shard or root-wide maintenance operation needs additional coordination, document a single total order and never acquire a higher-ranked lock while holding a lower-ranked one. Listing/index rebuild must use a snapshot or bounded per-Session locks; it must not hold a global lock while waiting for arbitrary Session work.
+
+The maintenance gate is reserved for offline bootstrap, root identity changes, namespace migration, and future compaction/manifest publication. Normal Session operations must not take a provider-wide exclusive lock. Recovery and shutdown must have bounded concurrency and must not wait while holding unrelated Session locks.
+
+### Deployment state machine and fail-closed gates
+
+Treat the provider deployment as one of these explicit modes:
+
+- `legacy_only`: old provider protocol; lifecycle capability unsupported.
+- `migration_required`: new binary sees an uninitialized or legacy root; it refuses destructive operations and does not fall back to legacy locking.
+- `quiesced_migration`: operator has established the all-processes-stopped barrier; metadata initialization/reconciliation may run.
+- `stable_lock_ready`: root identity, stable lock namespace, and ledger are validated, but lifecycle capability remains disabled until all deployment processes are verified new-version.
+- `lifecycle_enabled`: all root-wide and per-Session gates pass; every access path participates in stable admission.
+- `recovery_required`: ambiguous identity, lock, journal, artifact, or migration state; destructive operations and new writes fail closed pending explicit recovery.
+
+The provider must not infer `lifecycle_enabled` from the presence of a metadata directory. It requires an explicit successful migration/reconciliation result and a deployment-level guarantee that no legacy process can return. If process-version attestation cannot be made reliable, the deployment must remain offline until an operator-controlled cutover guarantees it.
+
+### Rollback and compatibility policy
+
+- Before any new-protocol write or lifecycle transition, a failed migration may restore the complete pre-upgrade backup with all processes stopped.
+- After a new-protocol write, do not start the legacy provider against the upgraded root. The old implementation does not understand the root identity, stable lock namespace, ledger, or lifecycle fences.
+- After the first retire/restore/purge transition, rollback to a legacy provider is categorically unsupported. Recovery is forward-only using the new protocol or a consistent full-root disaster-recovery restore with an explicit data-loss point.
+- A package downgrade is not a storage rollback. Package version, root format version, and lifecycle protocol version must be tracked independently.
+- A future rolling upgrade requires a separately reviewed compatibility protocol in which old and new binaries demonstrably share one fencing authority before either can access the root. Merely adding a compatibility lock to the new binary is not such a protocol.
+
+### Migration and admission conformance tests
+
+- Old writer holds the in-directory POSIX lock while new version starts: new version must refuse migration/admission until the deployment stop barrier is proven; acquiring a stable lock alone must not proceed.
+- Old process with a pending unmaterialized create, a materialized writer, a reader, a listing, and a recovery worker are each tested across the cutover boundary.
+- Verify no old process can reopen after quiescence; supervisor restart prevention and stale worker/process cases are covered.
+- Two textual root aliases, symlink substitution, root replacement, copied metadata directory, wrong root ID, and concurrent first bootstrap all fail safely.
+- Stable lock names are deterministic for the same root identity/Session ID and isolated across different roots; POSIX inode identity survives ordinary process restart and is never unlinked; Windows named-object scope and release-on-process-death are tested.
+- Read races cover resolve/open/path-swap, descriptor acquisition under lock, multiple reads on an already-open handle, retire after admission, and restore/purge while a descriptor remains open.
+- Pending-create races cover create/create, create/retire, lazy first flush vs retire, and process death before/after first materialization.
+- Lock-order tests exercise shutdown, recovery, index rebuild, journal append, and maintenance operations under contention; deadlock detection uses bounded timeouts without using timeouts as lock ownership.
+- Migration crash injection covers every root-identity, namespace, journal-bootstrap, reconciliation, and capability-enable boundary. A crash must leave capability disabled until a repeatable validation succeeds.
+- Rollback tests prove that pre-upgrade full-root restore is possible and that starting the legacy provider after new-protocol writes is refused.
+
+### Implementation gate
+
+The pinned upstream JSONL provider does not currently implement the provider-root stable lock, read admission, durable lifecycle ledger, or deployment-wide version gate described here. Its existing directory-local writer lease is not a compatibility bridge for lifecycle fencing. The lifecycle capability must remain unsupported until the provider implementation, offline migration tooling, deployment controls, and cross-process fault-injection suite ship together.
