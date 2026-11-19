@@ -786,3 +786,94 @@ If no operation can be safely admitted until initial inventory completes, retain
 ### Implementation gate
 
 The pinned upstream JSONL provider does not implement this recovery protocol. This is a proposed conformance contract, not runtime support. Lifecycle capability remains unsupported until stable locking, authoritative journals, deterministic reconciliation, scoped readiness, bounded scheduling, and the crash/fault-injection matrix ship together.
+
+
+## Session ID reuse, incarnation identity, and stale-operation fencing
+
+A public Session ID is a reusable lookup key, not a durable identity for one lifetime of stored data. The lifecycle protocol must distinguish the caller-visible ID from the immutable incarnation of the Session currently or historically associated with that ID. Otherwise a delayed retry, stale retirement token, queued writer callback, old index entry, or recovery task can accidentally act on a newer Session that happens to reuse the same ID.
+
+### Identity model
+
+Use the following identity tuple throughout the provider's durable metadata and internal operation checks:
+
+- `providerRootId`: durable identity of the storage root.
+- `sessionId`: caller-visible identifier, canonicalized once and validated on every boundary.
+- `incarnationId`: immutable, provider-generated, collision-resistant identifier for one creation lifetime of that Session ID. Generate at least 128 bits from a cryptographically secure source, persist it before publishing artifacts, and reject any collision with retained or active incarnation records. It is not derived from the Session ID, path, timestamp, or process ID.
+- `generation`: monotonically increasing integer within one incarnation, advanced at each lifecycle transition that changes the authoritative artifact/state epoch. It never wraps or resets within the incarnation.
+- `revision`: monotonic state/journal revision used for optimistic concurrency; it is distinct from the incarnation and generation and must not be treated as either.
+
+The immutable artifact identity is the tuple `(providerRootId, sessionId, incarnationId, generation)`, plus provider-validated object identity where the filesystem supports it. Paths and listing entries are locators, not identity.
+
+An incarnation remains the same across retire and restore. A restore advances the generation; it does not create a new incarnation. A successful purge permanently terminates that incarnation. Re-creating the same public Session ID, if the API permits reuse, creates a new incarnation with a fresh identity and a new generation sequence. No generation value or incarnation ID is recycled.
+
+### Creation and ID-reuse rules
+
+1. Under the stable per-Session lock, resolve the current authoritative identity before creating anything. A live or retiring incarnation blocks a second creation. A retired incarnation may be restored only with its matching token; ordinary create must not overwrite it.
+2. Allocate and durably publish the new incarnation record before making the first Session artifact visible. The record binds root ID, canonical Session ID, incarnation ID, initial generation, creation operation ID/fingerprint, and provider format version.
+3. Publish the artifact using a no-replace operation and validate its resulting object identity. A path collision, stale directory, existing artifact, or retained nonterminal incarnation is a conflict, not permission to adopt the existing bytes.
+4. A public Session ID may be reused only after the prior incarnation has a durable terminal `purged` fence, its purge operation mapping is durable, and no in-flight operation/handle can still mutate or reopen that incarnation. If the implementation cannot prove these conditions, ID reuse remains disabled.
+5. New-incarnation publication must be atomic with respect to lookup: readers and writers see either the prior terminal incarnation or the fully initialized new incarnation, never an uninitialized gap interpreted as an ordinary empty Session.
+6. During offline migration, legacy Sessions receive an incarnation only after their artifact identity and ID/path mapping are validated under the maintenance barrier. Ambiguous or duplicate legacy artifacts block that ID; migration must not infer that two directories are one incarnation or silently pick one.
+
+If the product contract requires Session IDs to be globally unique forever, enforce that policy instead and retain a permanent ID tombstone. The protocol must choose one explicit policy; it must not accidentally permit reuse because a directory disappeared.
+
+### Token, operation, and journal binding
+
+- Every retirement token is bound to `(providerRootId, sessionId, incarnationId, retiredGeneration)` and to the exact retirement operation mapping. The token is opaque and unguessable; the binding is validated from protected provider metadata, not decoded from caller-controlled token fields.
+- Operation idempotency keys are scoped by `(providerRootId, sessionId, incarnationId, operationId)`. The request fingerprint includes operation kind, expected generation/revision, and all semantic options. Reusing an operation ID with a different kind or fingerprint returns `operation_id_conflict`.
+- A retry for an old incarnation resolves its original operation mapping and returns the original result; it must never fall through to the current incarnation merely because the public Session ID now resolves to a newer one.
+- A restore token can restore only the exact retired generation it names, and only while that incarnation remains in the matching retired state. After restore commits, the token is terminal; it cannot retire, restore, or purge the new live generation.
+- Purge authorization is bound to the same incarnation and retired generation. The durable anti-resurrection fence is keyed by the full identity tuple, not by Session ID alone.
+- Journal records, snapshots, global-index entries, quarantine manifests, backup metadata, and diagnostics carry incarnation ID and generation. An index keyed only by Session ID is a discovery projection and cannot disambiguate historical incarnations or authorize a destructive action.
+- Keep historical operation mappings and terminal fences long enough to cover every supported retry, backup-restore, and disaster-recovery horizon. If compaction is introduced, preserve the full identity binding and old-token terminal outcomes.
+
+### Stale handles, callbacks, and asynchronous work
+
+Every handle and deferred mutation carries the immutable incarnation ID and generation captured at admission. The provider validates that identity before every mutation that can affect authoritative storage:
+
+- A writer handle is admitted under the stable lock for the current live incarnation/generation. The lock is retained for the handle lifetime; queued append/flush callbacks cannot outlive that ownership.
+- A mutation callback must verify that its handle identity still matches the authoritative live identity before appending. It cannot re-resolve by Session ID and silently attach to a newer incarnation.
+- A read handle may finish using already-open descriptors admitted before retirement, subject to the documented pinned-read contract. It may not reopen a pathname or lazily fetch another generation after its incarnation/generation has been retired or purged.
+- Background recovery, delayed cleanup, index rebuild, retries, and scheduled purge carry the full identity tuple. On lock acquisition they revalidate it against the authoritative journal before acting.
+- A process restart invalidates process-local handles and callbacks. Reopened work must reconstruct authority from durable operation mapping and current incarnation, never from a serialized stale handle object.
+- If a public API accepts only Session ID for a new operation, it resolves the current incarnation under the stable lock and binds the operation before releasing the lock. Token-based operations resolve the token's historical incarnation directly and never use current-ID lookup as a fallback.
+
+This prevents the classic ABA race: ID `S` refers to incarnation A, A is purged, ID `S` is recreated as incarnation B, and a delayed purge/restore/write for A arrives. The old operation is terminal or resolves only against A's retained mapping; it cannot target B.
+
+### Quarantine and filesystem namespace
+
+Do not key quarantine or temporary paths solely by encoded Session ID. Use an unambiguous provider-owned namespace that includes incarnation and generation, for example:
+
+`.lifecycle-quarantine/<shard>/<encoded-session-id>/<incarnation-id>/<generation>/`
+
+The exact encoding must be canonical, bounded, and collision-free. The destination is persisted in the durable intent before filesystem mutation; recovery uses that exact recorded destination rather than recomputing from mutable configuration.
+
+- No-replace rename/promotion is required. Existing destination content is never overwritten or merged.
+- Before any rename, verify source object identity and expected incarnation/generation from the manifest and journal.
+- Purge traversal is rooted in the recorded incarnation/generation directory, uses no-follow operations, and checks that each child remains beneath the opened root. A symlink or substituted mount/path is a scoped recovery error.
+- After purge, retain the anti-resurrection fence and operation mappings even when all artifact/quarantine bytes are gone. A new incarnation receives a distinct namespace and cannot satisfy an old fence's identity.
+- Never use "directory absent" as proof that a public Session ID is unused; consult the authoritative incarnation registry/journal under lock.
+
+### Backup, restore, and disaster recovery
+
+A consistent backup must capture the incarnation registry, per-Session journals, operation mappings/tokens, terminal fences, artifacts, quarantine data, and root identity from one provider-consistent point. Restoring only artifacts can resurrect a purged incarnation; restoring only fences can make valid data unreachable; restoring an older registry can make an ID appear reusable. Partial combinations fail closed.
+
+If a backup is restored to a different physical root, the restore workflow must explicitly rebind or preserve root identity under a separately reviewed disaster-recovery procedure. Copying metadata and artifacts independently must not silently authorize operations under a different root.
+
+A disaster restore may roll the durable state backward to its backup point; therefore the recovery contract must explicitly define the accepted RPO and how clients invalidate operation IDs/tokens created after that point. Never claim that a backup restore preserves post-backup idempotency or fences unless the backup protocol proves it.
+
+### Conformance tests
+
+- Retire A, purge A, recreate the same Session ID as B; replay A's retire/restore/purge operation IDs and tokens and prove none can read, mutate, or delete B.
+- Hold a stale writer callback/read handle for A across purge and ID reuse; verify it cannot reopen or append to B.
+- Race create/create, create/retire, create/purge, restore/recreate, and ID reuse across multiple processes; all decisions serialize on the stable Session lock and durable incarnation registry.
+- Inject crashes before/after incarnation allocation, registry publication, artifact no-replace publication, retire intent, rename, terminal fence, and new-incarnation publication.
+- Corrupt or duplicate incarnation records, reuse an incarnation ID, mismatch path/manifest/journal identity, or present a stale index entry; fail closed for the affected ID.
+- Verify generation monotonicity, no wrap/reset, revision independence, token binding, operation fingerprint binding, and historical retry behavior across multiple retire/restore generations.
+- Verify quarantine path uniqueness and no-replace semantics under adversarial pre-creation, symlink substitution, path swap, and partial purge.
+- Restore backups with each component missing or from a different point in time; ensure partial restore never makes an old ID appear safely reusable.
+- Confirm logs and metrics never expose opaque token material or user event content.
+
+### Implementation gate
+
+The pinned upstream Harness persistence APIs are keyed primarily by public Session ID and do not currently provide durable incarnation identity, generation-scoped lifecycle tokens, or stale-handle fencing. This section is a proposed storage protocol, not implemented upstream behavior. Do not enable lifecycle capability or Session ID reuse until the provider implements the complete identity binding and conformance suite. If that implementation is deferred, the safe initial policy is to prohibit ID reuse after purge and retain a permanent ID tombstone.
