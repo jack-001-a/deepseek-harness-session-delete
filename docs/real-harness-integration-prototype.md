@@ -37,6 +37,7 @@ The Harness checkout must already be built. For the pinned upstream revision, pr
 
 ```sh
 pnpm install --frozen-lockfile \
+  --filter '@deepseek-ai/dsh-typert-generator...' \
   --filter '@deepseek-ai/dsh-agent-loop-testkit...' \
   --filter '@deepseek-ai/dsh-agent-loop...' \
   --filter '@deepseek-ai/dsh-session-persistence-jsonl...'

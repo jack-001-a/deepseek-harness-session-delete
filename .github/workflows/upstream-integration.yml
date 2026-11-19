@@ -49,6 +49,7 @@ jobs:
         working-directory: deepseek-harness
         run: |
           pnpm install --frozen-lockfile \
+            --filter '@deepseek-ai/dsh-typert-generator...' \
             --filter '@deepseek-ai/dsh-agent-loop-testkit...' \
             --filter '@deepseek-ai/dsh-agent-loop...' \
             --filter '@deepseek-ai/dsh-session-persistence-jsonl...'
