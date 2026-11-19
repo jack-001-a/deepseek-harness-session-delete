@@ -129,7 +129,7 @@ async function verifyCrossProcessWriterOwnership(ctx, sessionRoot) {
 
     await assert.rejects(
       ctx.sessionPersistence.open(SESSION_ID, 'write'),
-      error => error?.name === 'SessionAlreadyOwnedError',
+      error => error instanceof persistence.SessionAlreadyOwnedError,
       'a second process must not acquire an active writer lease',
     )
   } catch (error) {

@@ -48,13 +48,16 @@ The last command emits the real Host package libraries, including the Cordis, Ag
 1. A child Node process mounts the real Cordis prerequisites, AgentLoop, and JSONL provider.
 2. That process creates a persisted session, appends a minimal completed turn, flushes, closes the write handle, and disposes its Host context.
 3. The parent process creates a fresh Host context over the same isolated session root.
-4. It loads the real Session Delete \`apply()\` entrypoint and checks capability discovery.
-5. It performs trash delete and lists the trash.
-6. It disposes that Host context, opens a fresh Host composition over the same store, dispatches the real Cordis `ready` event with `ctx.parallel('ready')`, and observes the plugin's committed-delete recovery result.
+4. It loads the real Session Delete `apply()` entrypoint and checks capability discovery.
+5. A second real Host process opens the session for write. The parent proves a read handle can coexist, then verifies a competing write-open rejects with the exported `SessionAlreadyOwnedError` class.
+6. The controller sends `SIGKILL` to the live writer process. The parent then successfully opens and closes a successor write handle, proving the provider's kernel lease is released on process death.
+7. Only after the writer probe has ended does the plugin perform trash delete and list the trash.
+8. It disposes that Host context, opens a fresh Host composition over the same store, dispatches the real Cordis `ready` event with `ctx.parallel('ready')`, and observes the plugin's committed-delete recovery result.
 9. It restores the session, verifies it through the real provider, and deletes it again.
 10. A separate real Host child writes the `.restoring` marker and promotes the trash artifact back to its original path.
 11. The controller kills that child with `SIGKILL` at the explicit post-promotion stdout barrier, before graceful Host disposal, accounting replay, or marker cleanup.
 12. A fresh Host composition's Cordis `ready` listener recovers the interrupted restore and the real provider verifies the session; the runner then deletes and purges it.
+
 
 This proves a useful first integration seam: **a session materialized by one real Harness process can be consumed by the plugin running in another real Harness composition**, with a fresh provider instance and real on-disk artifacts.
 
@@ -67,6 +70,8 @@ The first successful real-Harness run completed on 2026-11-19:
 - [Cordis ready-event integration run 44512014722](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44512014722) — passed on the ready-listener revision; committed-delete reconciliation was triggered and awaited through `ctx.parallel('ready')`.
 - [Regular CI run 44509694956](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44509694956) — all 9 Linux/macOS/Windows × Node 22/24/26 jobs passed.
 - [Latest-head regular CI run 44514626100](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44514626100) — all 9 Linux/macOS/Windows × Node 22/24/26 matrix jobs passed.
+- [Cross-process writer ownership integration run 44517187039](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44517187039) — passed on commit `a7404d2`; all 97 unit tests passed and the real runner verified read coexistence, typed `SessionAlreadyOwnedError`, `SIGKILL` lease release, ready-hook recovery, and purge.
+- [Cross-process writer ownership CI run 44517187020](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44517187020) — all 9 Linux/macOS/Windows × Node 22/24/26 matrix jobs passed.
 - [Latest-head real Harness integration run 44514626145](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44514626145) — passed on the controller-driven `SIGKILL` revision; pinned upstream dependency install, native addon and Host library builds, all 97 unit tests, and the real Cordis/AgentLoop/JSONL integration runner succeeded.
 - [Earlier real Harness integration run 44512780369](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44512780369) — passed with the modeled post-promotion interrupted-restore scenario, before the controller-driven `SIGKILL` barrier was added.
 - Plugin unit suite — 97 passed, 0 failed.
