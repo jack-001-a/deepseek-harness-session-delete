@@ -1675,6 +1675,6 @@ test('filesystem session locks serialize two independent Node processes', async 
     child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`lock worker exited with ${code}`)))
   })
   await Promise.all([launch(), launch()])
-  const events = (await readFile(marker, 'utf8')).trim().split('\\n')
+  const events = (await readFile(marker, 'utf8')).trim().split('\n')
   assert.deepEqual(events, ['start', 'end', 'start', 'end'])
 })
