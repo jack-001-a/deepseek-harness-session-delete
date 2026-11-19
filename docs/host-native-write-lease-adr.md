@@ -817,6 +817,24 @@ An incarnation remains the same across retire and restore. A restore advances th
 
 If the product contract requires Session IDs to be globally unique forever, enforce that policy instead and retain a permanent ID tombstone. The protocol must choose one explicit policy; it must not accidentally permit reuse because a directory disappeared.
 
+### Exact generation advancement rules
+
+To keep artifact identity separate from state-transition sequencing, use these rules consistently:
+
+| Event | Incarnation | Artifact generation | Journal revision |
+| --- | --- | --- | --- |
+| First successful create | Allocate new ID | Start at 1 | Advance on each durable record |
+| Append/flush within the same live Session | Unchanged | Unchanged | Advance only if lifecycle journal state changes; ordinary event-log sequencing remains provider-owned |
+| Retire intent and retire commit | Unchanged | Retired token binds current generation G | Advance for each durable lifecycle record |
+| Restore intent and restore commit | Unchanged | Publish restored live state as generation G+1 | Advance for each durable lifecycle record |
+| Retire again after restore | Unchanged | New retirement token binds G+1 | Advance for each durable lifecycle record |
+| Purge | Unchanged, then terminal | Purge exactly the token's retired generation; no next generation is created | Advance through intent and terminal fence |
+| Re-create the same public Session ID after terminal purge | Allocate a fresh ID | Start at 1 within the new incarnation | Start a new journal sequence namespace bound to the new incarnation |
+
+Generation is therefore an artifact/lifecycle epoch, not a counter incremented for every intent/terminal record. Journal `sequence` and lifecycle `revision` provide ordering and optimistic concurrency within an incarnation. They must never be substituted for the artifact generation. If an implementation needs to distinguish multiple filesystem publications within one generation, add an explicit publication ID rather than overloading generation.
+
+A restore creates a new generation even when the restored bytes are identical to the retired bytes. This makes a pre-restore token, handle, index entry, or delayed callback stale by construction. Purge terminally closes the exact retired generation and incarnation; it does not increment generation to imply a new live artifact.
+
 ### Token, operation, and journal binding
 
 - Every retirement token is bound to `(providerRootId, sessionId, incarnationId, retiredGeneration)` and to the exact retirement operation mapping. The token is opaque and unguessable; the binding is validated from protected provider metadata, not decoded from caller-controlled token fields.
