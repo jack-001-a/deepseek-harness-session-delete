@@ -253,3 +253,85 @@ Use typed errors for unsupported capability (discovery returns `undefined`, so t
 `inspectById(id)` is useful for observing the Session's current lifecycle state, but it is not a sufficient lost-response recovery key by itself. The same Session may be restored and retired again under a new operation ID; a later retirement must not be mistaken for the earlier operation whose response was lost.
 
 The normative recovery path is therefore `inspectOperation(id, operationId)` (or retrying `retire` with that exact same operation ID). The provider durably indexes the operation ID to its committed result and returns the original token/state even if the Session has since moved to another lifecycle state. `inspectById` remains diagnostic/current-state lookup only. The provider must not compact an operation mapping while the plugin outbox may still reference it.
+## Lifecycle error taxonomy, linearization, and retry contract
+
+The capability must distinguish a rejected operation from an operation whose commit outcome is unknown. Callers must never infer rollback from a timeout, abort, connection loss, or generic I/O error after the provider may have crossed its commit point.
+
+### Stable error categories
+
+The following names are semantic categories for the shared persistence package; exact class names may be adjusted upstream, but consumers need stable discriminants and documented retry behavior.
+
+| Category | Meaning | Retry policy | Required caller action |
+| --- | --- | --- | --- |
+| `unsupported` | Active persistence instance has no lifecycle capability (`undefined`) | Never retry against the same unchanged provider | Refuse destructive action; preserve data |
+| `not_found` | Session or opaque token has no durable record in this provider | Do not blind-retry | Reconcile active provider and identity; report absent only when authoritative lookup confirms it |
+| `revision_conflict` | `expectedRevision` did not match the current snapshot at admission | Retry only after obtaining a fresh snapshot and making a new user/domain decision | Do not silently overwrite the caller's concurrency expectation |
+| `operation_id_conflict` | An operation ID is already bound to a different Session or incompatible request fingerprint | Never retry with that key | Treat as caller bug/corrupt outbox; generate a new key only for a genuinely new intent |
+| `state_conflict` | Token/Session is in a state that disallows this transition (e.g. restore after purge) | Do not retry unchanged | Inspect durable state and surface terminal conflict |
+| `busy` | Provider writer/lifecycle ownership is held by another operation | Bounded retry with backoff is allowed | Preserve the same operation ID and token; do not create a new intent |
+| `cancelled_before_commit` | Provider observed cancellation before the operation linearization point and guarantees no lifecycle mutation committed | Retry is allowed if intent remains valid | Reuse the same operation ID for retire; retain the same token for restore/purge |
+| `outcome_unknown` | Provider cannot prove whether commit occurred (e.g. I/O/connection loss around COMMIT) | Never submit a new operation ID | Resolve using exact operation lookup or retry the same idempotency key |
+| `corruption` | Durable state, graph, token mapping, or provider invariants failed validation | Never automatically retry or repair primary data | Fail closed, preserve artifacts, require diagnosis |
+
+Errors should expose a stable `kind`/code, Session ID where safe, operation ID for operation-scoped failures, and a `retryable` classification. Do not require callers to parse message text or inspect backend-specific SQLite/JSONL errors. Preserve the original cause for diagnostics, but do not leak storage paths, SQL, frame bytes, or opaque token contents into logs.
+
+### Operation outcome and linearization table
+
+| Operation | Linearization point | Outcome after point | Idempotent retry behavior |
+| --- | --- | --- | --- |
+| `retire(id, { operationId })` | Durable provider transaction commit that changes live state to retired and persists token + operation mapping | Retired | Same `(id, operationId)` returns the original token and outcome, even if later restored or purged |
+| `restore(token)` | Durable transaction commit that makes the exact retired generation live and records restored outcome | Restored | Same token returns the same retirement identity and current live snapshot; it never creates a second live generation |
+| `purge(token)` | Durable transaction commit that releases the restorable root, completes graph reclamation, records terminal purged outcome and anti-resurrection fence | Purged | Same token returns the durable purged outcome; it never repeats destructive work against a later generation |
+| `inspect*` | Read snapshot/transaction selected by provider | Observed state only | Safe to repeat; inspection does not reserve or authorize a later mutation |
+
+Provider implementations must document the point after which cancellation is no longer allowed to change the result. If cancellation is observed before commit, return `cancelled_before_commit` only when rollback is known complete. Once commit may have happened, return the committed result if known, otherwise `outcome_unknown`; never report a clean cancellation that implies no mutation.
+
+### Exact retry and idempotency rules
+
+- `operationId` is generated and durably stored by the caller before its first `retire` call. It is an idempotency key, not a provider-issued token, revision, timestamp, or random value regenerated on retry.
+- Bind the operation key to `(SessionId, operationId, operation kind, request fingerprint/generation)`. Reuse with a different Session, operation kind, or incompatible request must return `operation_id_conflict`; it must not alias an earlier token.
+- The provider checks an existing operation mapping before evaluating the original `expectedRevision`. This is essential: a retry after successful commit must return the original outcome even though the Session revision/state has since changed.
+- `busy`, `cancelled_before_commit`, and `outcome_unknown` retries retain the exact original operation ID. A fresh operation ID means a new user intent and can target a later lifecycle generation only after explicit reconciliation.
+- Restore and purge are keyed by the opaque retirement token. A provider may add optional caller-generated operation IDs for audit/deduplication, but must not make them mandatory in a way that breaks the current proposed API. Token-scoped retries remain idempotent.
+- Tokens are opaque, unguessable, provider-scoped capabilities. They are not bearer authorization against arbitrary callers unless the Host's authorization model explicitly says so; possession alone must not bypass plugin/user authorization.
+- A known purged token remains inspectable as terminal state for the documented retention window. Its anti-resurrection fence must outlive all artifacts/import paths capable of recreating the Session ID. Token and operation mapping compaction must not erase the only evidence needed by an active outbox recovery.
+
+### Stale token and Provider replacement semantics
+
+- Unknown token: return `not_found`; do not infer that the Session is live or that a legacy artifact may be imported.
+- Known token in `restored` state: `restore` is idempotent; `purge` returns `state_conflict` and cannot delete the now-live Session.
+- Known token in `purged` state: `purge` is idempotent; `restore` returns terminal `state_conflict` and cannot recreate data.
+- Token for an earlier retirement generation after the same Session ID has been restored and retired again: the earlier token continues to identify only its original generation. It must never resolve to or mutate the newer retirement.
+- When Cordis replaces `ctx.sessionPersistence`, consumers must stop using the old capability immediately, reacquire from the new active instance, and verify that the new provider owns the same durable backing identity before attempting recovery. A process-local `identity` mismatch is a cache invalidation signal, not proof that the durable database changed or stayed the same.
+- A token from another provider/database namespace must not be accepted merely because the Session ID matches. Return a non-disclosing `not_found` or provider-scope conflict; never fall back to filesystem paths or provider-private inspection.
+- If the new active provider cannot establish authoritative continuity with the prior provider, keep the outbox pending and fail closed. Do not infer completion from `inspectById` alone.
+
+### Plugin outbox reconciliation protocol
+
+1. Before the first provider call, persist an outbox record containing the Session ID, operation ID, requested action, request fingerprint, provider-neutral intent metadata, and a pending status. For retire, the operation ID must already be durable.
+2. Call the currently active provider capability. On a definite committed result, persist the returned token and provider outcome to the outbox before updating user-facing projections.
+3. On timeout, process death, `outcome_unknown`, or provider replacement, reacquire the capability from the current active persistence instance and call `inspectOperation(id, operationId)` (or retry `retire` with the same key).
+4. If the exact operation mapping is found, reconcile the original token/outcome into the outbox even if the Session has since been restored or purged. Do not substitute the current `inspectById` state for the historical operation result.
+5. If the operation mapping is not found, do not immediately create a new operation ID. First establish provider continuity, authoritative absence, and that the original request could not still be in flight. If any condition is uncertain, leave the outbox pending for retry/operator review.
+6. Only after durable provider outcome and outbox mapping are reconciled may the plugin publish trash/list/accounting projections. Projection writes are idempotent and can be replayed independently.
+7. A projection failure never rolls back provider lifecycle state. Retry projection from the durable outbox; do not call purge or retire again as a projection repair.
+
+### Conformance tests for the error and retry contract
+
+- Stale revision rejects without creating a tombstone, operation mapping, or token.
+- Same operation ID and identical retire request returns the exact original token after response loss, process restart, provider restart, restore, and subsequent purge.
+- Same operation ID reused for another Session or incompatible request returns `operation_id_conflict` and changes nothing.
+- Simulate busy before transaction admission; bounded retry with the same operation ID succeeds once the owner releases.
+- Abort before linearization returns `cancelled_before_commit` and leaves no committed lifecycle change; abort immediately after the commit barrier returns committed result or `outcome_unknown`, never false cancellation.
+- Drop the connection/kill the caller around COMMIT; exact operation inspection or same-key retry resolves to one durable outcome without duplicate generation.
+- Two concurrent restores of one token yield one transition and one idempotent restored result; no duplicate live artifact or generation.
+- Restore racing purge yields exactly one terminally valid winner; loser receives state conflict and cannot mutate the winner's state.
+- Old token after restore-and-retire of the same Session ID continues to identify only its original generation.
+- Replace the Cordis persistence service between request and recovery; old capability use is rejected by consumer identity checks and the new capability must establish provider continuity.
+- Provider replacement to a different backing store with same Session ID must not resolve old token or import/fallback stale legacy data.
+- Outbox crash at every boundary (before provider call, after commit, before token persistence, after token persistence, during projection) converges to one correct projection without repeating destructive intent.
+- Unknown token, expired/compacted mapping, provider corruption, and ambiguous provider continuity all fail closed without automatic filesystem fallback.
+
+### Implementation boundary
+
+This section defines the shared semantic contract only. The existing upstream persistence package currently exports generic persistence errors such as not-found, already-exists, already-owned, ownership-lost, and corruption; it does not yet implement this lifecycle error taxonomy or lifecycle capability. Treat every new error/capability above as a proposal until implemented and covered by the real JSONL and SQLite provider conformance suites.
