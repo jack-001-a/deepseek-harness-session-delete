@@ -99,7 +99,7 @@ async function runIntegration() {
     const host = await createHostContext(sessionRoot)
     ctx = host.ctx
     applySessionDelete(ctx, {})
-    const service = ctx.get('sessionDelete')
+    let service = ctx.get('sessionDelete')
     assert.ok(service, 'Session Delete must register on the real Cordis context')
 
     const capabilities = await service.describe()
