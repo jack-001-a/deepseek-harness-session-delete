@@ -8,7 +8,6 @@ import { spawnSync } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { createRequire } from 'node:module'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { apply as applySessionDelete } from '../index.js'
 
@@ -17,11 +16,19 @@ if (!HARNESS_ROOT) {
   throw new Error('Set DSH_HARNESS_ROOT to a built deepseek-harness checkout before running this optional integration test.')
 }
 const harnessRoot = resolve(HARNESS_ROOT)
-const requireFromHarness = createRequire(join(harnessRoot, 'package.json'))
+const HARNESS_PACKAGES = {
+  '@deepseek-ai/cordis': 'vendor/cordis',
+  '@deepseek-ai/dsh-agent-loop-testkit': 'packages/test-support/agent-loop-testkit',
+  '@deepseek-ai/dsh-agent-loop': 'packages/core/agent-loop',
+  '@deepseek-ai/dsh-session-persistence-jsonl': 'packages/session/session-persistence-jsonl',
+  '@deepseek-ai/dsh-session': 'packages/core/session',
+}
 
 async function importHarnessPackage(name) {
-  const resolved = requireFromHarness.resolve(name)
-  return import(pathToFileURL(resolved).href)
+  const packagePath = HARNESS_PACKAGES[name]
+  if (!packagePath) throw new Error('No pinned workspace path configured for ' + name)
+  const entrypoint = join(harnessRoot, packagePath, 'lib/index.js')
+  return import(pathToFileURL(entrypoint).href)
 }
 
 async function createHostContext(sessionRoot) {
