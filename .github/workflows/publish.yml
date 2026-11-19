@@ -19,7 +19,38 @@ permissions:
   contents: read
 
 jobs:
+  validate:
+    # Run the same complete platform/runtime matrix as ci.yml before any release action.
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node-version: [22, 24, 26]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Check JavaScript syntax
+        run: npm run check
+
+      - name: Run the test suite
+        run: npm test
+
+      - name: Verify the package manifest
+        run: |
+          node -e "const p=require('./package.json'); if (p.private) throw new Error('package.json must not be private'); if (!p.repository?.url) throw new Error('repository.url is required for trusted publishing'); if (!p.engines?.node) throw new Error('engines.node is required'); console.log(p.name, p.version)"
+
+      - name: Inspect the tarball contents
+        run: npm pack --dry-run
+
   publish:
+    needs: validate
     # Manual runs are restricted to main; tag pushes must point to a commit on main.
     if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -67,15 +98,6 @@ jobs:
           fi
           node --version
           npm --version
-
-      - name: Check JavaScript syntax
-        run: npm run check
-
-      - name: Run the test suite
-        run: npm test
-
-      - name: Inspect the tarball contents
-        run: npm pack --dry-run
 
       # A main-branch version bump or a pushed release tag produces both the
       # GitHub Release and its exact changelog notes. Existing releases are
