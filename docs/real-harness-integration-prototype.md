@@ -40,7 +40,8 @@ pnpm install --frozen-lockfile \
   --filter '@deepseek-ai/dsh-typert-generator...' \
   --filter '@deepseek-ai/dsh-agent-loop-testkit...' \
   --filter '@deepseek-ai/dsh-agent-loop...' \
-  --filter '@deepseek-ai/dsh-session-persistence-jsonl...'
+  --filter '@deepseek-ai/dsh-session-persistence-jsonl...' \
+  --filter '@deepseek-ai/dsh-desktop...'
 pnpm run build:native-system
 pnpm exec tsx scripts/compile-referenced-projects.ts host-libraries
 ```

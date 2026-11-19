@@ -52,7 +52,8 @@ jobs:
             --filter '@deepseek-ai/dsh-typert-generator...' \
             --filter '@deepseek-ai/dsh-agent-loop-testkit...' \
             --filter '@deepseek-ai/dsh-agent-loop...' \
-            --filter '@deepseek-ai/dsh-session-persistence-jsonl...'
+            --filter '@deepseek-ai/dsh-session-persistence-jsonl...' \
+            --filter '@deepseek-ai/dsh-desktop...'
 
       - name: Build the upstream native system addon
         working-directory: deepseek-harness
