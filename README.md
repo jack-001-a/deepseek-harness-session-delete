@@ -81,11 +81,20 @@ owner-metadata write failure after creating the lock directory can therefore
 require manual removal of that orphan lock directory after verifying that no
 operation is running.
 
-This coordinates cooperating plugin processes on the same host and a local
-filesystem. It is not a distributed lock: shared network filesystems,
-multiple hosts, PID-namespace mismatches and non-cooperating session writers
-are outside the guarantee. A live but hung process is not force-unlocked; the
-operation times out without changing the session artifact.
+This coordinates cooperating instances of this plugin on the same host
+and a local filesystem. It does **not** make the Host's session store or
+workspace registry participate in the lock protocol. In particular, it cannot
+stop a different Harness process from appending to the same session, nor
+serialize that process's native archive, pin, unpin or workspace-membership
+writes. The activity check and stop request are scoped to the current Host
+instance; they are not a cross-process session-stop protocol. Do not treat
+this lock as protection against another Harness process actively writing the
+same session.
+
+It is not a distributed lock: shared network filesystems, multiple hosts,
+PID-namespace mismatches and non-cooperating session writers are outside the
+guarantee. A live but hung process is not force-unlocked; the operation times
+out without changing the session artifact.
 
 Setting `mode: permanent` in the plugin config removes the intermediate step
 and deletes outright — the dialog then requires the conversation title to be
