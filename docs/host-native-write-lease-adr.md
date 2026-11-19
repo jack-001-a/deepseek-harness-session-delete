@@ -685,3 +685,104 @@ The provider must not infer `lifecycle_enabled` from the presence of a metadata 
 ### Implementation gate
 
 The pinned upstream JSONL provider does not currently implement the provider-root stable lock, read admission, durable lifecycle ledger, or deployment-wide version gate described here. Its existing directory-local writer lease is not a compatibility bridge for lifecycle fencing. The lifecycle capability must remain unsupported until the provider implementation, offline migration tooling, deployment controls, and cross-process fault-injection suite ship together.
+
+
+## Multi-process recovery convergence, isolation, and readiness
+
+Recovery is a repeatable reconciliation protocol over the authoritative per-Session journal and provider artifacts, not a one-time startup script. Any process may discover work; only the process holding that Session's stable lock may reconcile it. A crash releases kernel lock ownership, not durable intent, so another process can safely resume.
+
+### Authority and invariants
+
+- The per-Session lifecycle journal is authoritative for lifecycle intent, generation, operation mappings, tokens, and terminal fences. Artifact/quarantine state is evidence of external effects, not independent lifecycle truth.
+- Global listing indexes, startup caches, in-memory queues, PID files, and process-local recovery markers are derived hints only. None authorizes restore, purge, overwrite, or state promotion.
+- Every reconciliation pass uses the same stable per-Session lock as reads, writes, and lifecycle transitions. Kernel lock ownership is the recovery claim; do not add a time-based distributed lease whose expiry could permit concurrent reconcilers.
+- Recovery is idempotent: repeating it after any completed step yields the same authoritative state without repeating a non-idempotent external effect.
+- Recovery never guesses intent from artifact presence/absence, recreates a missing journal, or converts corruption into an empty/live Session.
+- One Session's inconsistency is scoped to that Session. Root identity, metadata namespace, or lock-protocol corruption is provider-wide and disables lifecycle capability.
+
+### Discovery, scheduling, and lock ownership
+
+1. Validate provider-root identity and metadata namespace before scheduling Session work.
+2. Discover journal names using bounded directory iteration. Validate encoded ID/path relationships; do not trust the global index as discovery authority.
+3. Use a bounded worker pool with limits for active workers, descriptors, queued IDs, bytes read per slice, and total startup work. Apply backpressure rather than allocating one task or loading one journal per Session.
+4. Workers acquire one Session's stable lock, revalidate root identity and journal pathname/object identity, then validate the complete bounded journal before acting.
+5. Re-read the journal from its authoritative descriptor after acquiring the lock. Discovery snapshots are stale hints, never mutation inputs.
+6. Reconcile only that Session, durably append any required recovery record, then release the lock. No worker holds two Session locks.
+7. Use fair scheduling with rotating shard traversal so a hot or failing ID cannot starve unrelated IDs. Retry transient I/O with bounded backoff; corruption is not a retry loop.
+8. Multiple processes may discover the same work. Lock contention makes all but one defer. A crash leaves no durable owner to clean up; another process reacquires the kernel lock and resumes.
+
+A process-local queue may coalesce duplicate IDs, but correctness cannot depend on it. Do not persist a 'recovering=true' flag as a lock substitute; diagnostic progress is advisory and cannot block a later lock holder.
+
+### Deterministic reconciliation matrix
+
+After validating journal chain, root identity, Session ID, generation, operation mapping, and no-follow paths, classify the observed state conservatively:
+
+| Last durable journal state | Filesystem observation | Recovery action |
+| --- | --- | --- |
+| live (or validated legacy Session during offline bootstrap) | Exactly one valid live artifact at recorded generation; no quarantine destination | Keep live; bootstrap may explicitly record initial state |
+| retiring intent | Live source exists; quarantine destination absent | Revalidate source identity/revision; retry the same recorded rename or record a proven pre-effect abort |
+| retiring intent | Source absent; exact quarantine destination exists | Verify destination identity/generation and parent durability; record completion for the original operation |
+| retired | Exact quarantine generation exists; live path absent | Keep retired; preserve token/mapping; do not repeat rename |
+| retired | Live path exists or both locations exist | Mark this Session recovery-required; never overwrite, delete, or choose heuristically |
+| restoring intent | Quarantine source exists; live destination absent | Revalidate token/generation; retry same no-replace promotion or prove abort |
+| restoring intent | Exact live destination exists; quarantine source absent | Verify generation and parent durability; record completion for original restore |
+| restored/live | Exact live generation exists; quarantine path absent | Keep live; old token remains terminal for its generation |
+| purging intent | Quarantine root exists, possibly partially deleted | Resume bounded no-follow deletion under same lock and durable purge authorization |
+| purging intent | Quarantine root absent | Verify parent durability and anti-resurrection fence; record purge completion |
+| purged | Artifacts absent; durable terminal fence and operation mapping exist | Keep purged; never recreate via legacy fallback, index, or stale caller input |
+| any state | Unexpected path, identity mismatch, symlink, duplicate generation, corruption, missing token/mapping, or unknown combination | Mark this Session unavailable/recovery-required; preserve evidence |
+
+Retrying a recorded rename uses the durable operation ID, generation, source identity, and destination from the intent; it does not recompute a destination from mutable configuration. If preconditions cannot be proven, stop and preserve journal and artifacts. Path existence alone is not proof of durability: POSIX requires syncing both affected parent directories; Windows requires tested write-through/no-replace semantics.
+
+### Recovery records and operation semantics
+
+- Recovery records reference the original operation ID, kind, generation, fingerprint, and prior digest. They do not create a second user-visible operation.
+- Recovery retries return the original operation result/token. They never mint a replacement retirement token because a response was lost.
+- An ambiguous external effect remains outcome_unknown until reconciliation proves committed or safely not committed.
+- A pre-effect abort is recorded only when it is provable no external effect occurred. Otherwise preserve the intent; never report cancelled_before_commit.
+- Purge is monotonic: after anti-resurrection fence and purge intent are durable, no restore or write may reopen that generation, even during partial deletion.
+- Preserve operation mappings, exact tokens, generation history, and terminal fences; routine startup does not compact or prune them.
+
+### Readiness: provider-wide versus per-Session
+
+- **Provider-wide ready:** root identity, metadata namespace, stable-lock protocol, journal format, and required global metadata are valid. Unrelated healthy Sessions may be served.
+- **Session ready:** that Session's journal and artifact state have been validated/reconciled under its stable lock.
+- **Session recovery-required:** only that ID rejects operations as appropriate; unrelated validated IDs remain available.
+- **Provider recovery-required:** root identity, namespace, lock implementation, or global metadata is ambiguous/corrupt; all operations requiring lifecycle authority fail closed.
+
+If no operation can be safely admitted until initial inventory completes, retain a provider-wide startup barrier until bounded bootstrap finishes. After bootstrap, later per-Session corruption is isolated. A listing may return validated entries with an explicit partial/degraded indication, or fail as a whole if the API cannot represent partial results. It must never silently omit corrupt IDs and claim completeness. Every operation revalidates its target under that Session's lock.
+
+### Index rebuild and snapshot consistency
+
+- The global index is a cache of validated per-Session state. Rebuild from bounded journal snapshots; validate each under its Session lock.
+- Since Sessions can change during a multi-ID scan, each entry carries a journal sequence/generation watermark and rebuild epoch. This is eventually consistent discovery data, not a global transactional snapshot.
+- Before acting on an index entry, reacquire the Session lock and validate journal sequence, generation, and artifact identity. A stale index may cause a missed/extra candidate, never an unsafe mutation.
+- Publish rebuilt indexes atomically via temp-write, file sync, atomic publish, and directory sync. On failure, retain the old index marked stale.
+- A globally consistent listing requires a separate snapshot protocol; independent per-Session locks do not create an atomic provider-wide view.
+
+### Failure classification, observability, and operator repair
+
+- Distinguish lock contention, transient I/O, capacity/backpressure, scoped Session corruption, and provider-wide identity/namespace failure. Retry only transient classes.
+- Emit bounded structured diagnostics with opaque Session reference, operation ID, journal sequence, state, phase, and stable error code. Never log tokens, event payloads, prompts, frame bytes, or arbitrary caller metadata.
+- Rate-limit repeated errors; retain first causal error and bounded attempt counters.
+- Expose aggregate counts for queued, active, deferred/locked, recovered, degraded, and failed Sessions, plus queue age and worker saturation. Metrics must not leak tokens or content.
+- Operator repair is explicit and offline: preserve byte-for-byte journal/artifact evidence, verify root identity, inspect exact mismatch, and apply a narrowly scoped repair record or restore a complete consistent backup. Never edit a journal in place or delete evidence to make startup pass.
+- Repair documentation must state whether operation idempotency and token recoverability are preserved. If not provable, require an explicit data-loss/restore decision.
+
+### Recovery conformance and fault-injection matrix
+
+- Two or more processes start simultaneously and discover one pending intent; exactly one holds the Session lock, others defer, and no duplicate external effect or terminal record occurs.
+- Kill the lock holder before/after every journal append, file sync, directory sync, rename, promotion, partial unlink, and terminal record; a new process converges deterministically.
+- Crash after external rename but before terminal record; recovery recognizes exact destination and records completion without repeating the move.
+- Crash during purge after each deleted entry; recovery resumes only inside recorded quarantine root and preserves the fence.
+- Hold Session A's lock while recovering Session B; B progresses without global head-of-line blocking.
+- Corrupt Session A while B is healthy; A becomes scoped recovery-required while B remains usable after its own admission checks.
+- Corrupt root identity/lock namespace; all lifecycle operations fail closed and no worker mutates any Session.
+- Test stale/missing index, concurrent rebuild, concurrent Session creation, listing during transitions, bounded consistency, and no index-authorized mutation.
+- Exhaust worker, descriptor, queue, disk, and journal-size limits; verify backpressure and maintenance-required outcomes.
+- Test fairness, transient retry limits, shutdown cancellation, process death, and repeated recovery; no permanent recovery flag may strand a Session.
+- Verify logs/metrics contain no token or user payload and operator repair preserves original evidence.
+
+### Implementation gate
+
+The pinned upstream JSONL provider does not implement this recovery protocol. This is a proposed conformance contract, not runtime support. Lifecycle capability remains unsupported until stable locking, authoritative journals, deterministic reconciliation, scoped readiness, bounded scheduling, and the crash/fault-injection matrix ship together.
