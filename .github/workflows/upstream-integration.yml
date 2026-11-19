@@ -64,5 +64,5 @@ jobs:
 
       - name: Run against real Cordis, AgentLoop testkit, and JSONL provider
         env:
-          DSH_HARNESS_ROOT: ${{ runner.temp }}/deepseek-harness
+          DSH_HARNESS_ROOT: ${{ github.workspace }}/deepseek-harness
         run: npm run test:integration:upstream
