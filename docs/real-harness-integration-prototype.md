@@ -80,6 +80,20 @@ The first successful real-Harness run completed on 2026-11-19:
 
 The runner additionally verifies the pinned JSONL provider's cross-process writer-ownership contract: while a child process holds a real write handle, a parent-process read succeeds and a competing write-open rejects with `SessionAlreadyOwnedError`; after the controller kills the owner with `SIGKILL`, the parent can acquire and close a successor writer. This tests provider-level writer exclusion and kernel release on process death only. It does not test or imply that Session Delete can fence a live writer during destructive mutation. The runner dispatches Cordis `ready` explicitly through `ctx.parallel('ready')` so the registered listener is awaited. This verifies the plugin's real event wiring, but does not reproduce the full production Host boot sequence or independently establish the ordering of every Host service. Cross-process workspace accounting remains outside this prototype.
 
+## Machine-readable conformance manifest
+
+The integration workflow uploads `provider-conformance.json` as a run artifact, including when the integration step fails. Schema version 2 records the pinned upstream commit, runtime environment, run start/finish timestamps, measured run duration, and individual case outcomes with evidence.
+
+The top-level status is deliberately conservative:
+
+- `PASS`: every recorded case passed.
+- `PARTIAL`: the runner completed without a failure, but at least one case was skipped.
+- `FAIL`: an integration assertion, Host disposal, or fixture cleanup failed.
+
+A skipped provider lifecycle probe includes a stable `reasonCode`. For the currently pinned upstream revision, `provider-lifecycle-api-unavailable` means the public provider API does not expose the required lifecycle operation and admission fence. Plugin-level delete/restore/purge tests are reported separately and must not be interpreted as provider lifecycle conformance.
+
+The artifact is evidence from one real integration run, not a release gate by itself. A `PARTIAL` result is expected until the upstream provider exposes a testable lifecycle contract.
+
 ## Upstream write-ownership boundary
 
 The pinned Harness persistence seam exposes `create`, `open`, `stat`, and `list`; `open(id, 'write')` returns a write handle whose ownership is released by `close()`. A competing write-open rejects with `SessionAlreadyOwnedError`. The shipped JSONL provider implements this ownership with a kernel lock held for the write handle's lifetime (POSIX `flock` on the stable `session.lock` inode; Windows named kernel semaphore). The lock is acquired for an existing artifact at write-open, and the kernel releases it when the owning process exits.
