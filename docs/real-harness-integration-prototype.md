@@ -51,7 +51,9 @@ The last command emits the real Host package libraries, including the Cordis, Ag
 4. It loads the real Session Delete \`apply()\` entrypoint and checks capability discovery.
 5. It performs trash delete and lists the trash.
 6. It disposes that Host context, opens a fresh Host composition over the same store, dispatches the real Cordis `ready` event with `ctx.parallel('ready')`, and observes the plugin's committed-delete recovery result.
-7. It restores the session, verifies it through the real provider, deletes it again, and purges it.
+7. It restores the session, verifies it through the real provider, and deletes it again.
+8. It writes a durable `.restoring` marker, promotes the trash artifact back to its original path, disposes the Host context, and opens a fresh composition.
+9. The fresh Host's Cordis `ready` listener recovers the interrupted restore and the real provider verifies the session; the runner then deletes and purges it.
 
 This proves a useful first integration seam: **a session materialized by one real Harness process can be consumed by the plugin running in another real Harness composition**, with a fresh provider instance and real on-disk artifacts.
 
@@ -77,7 +79,7 @@ This is not yet a live-writer contention or full desktop/web Host test:
 - It does not race AgentLoop teardown against delete.
 - It does not claim that Session Delete acquires the JSONL provider's Host-native write lease.
 - It does not validate workspace membership, pin/archive accounting, projection cache, or cross-process workspace transactions.
-- It does not test crash injection during delete/restore/purge or cross-volume promotion.
+- It models the post-promotion interrupted-restore state using a durable marker and filesystem rename, then verifies recovery through a fresh Host's Cordis `ready` listener. It does not kill a process at an instruction-level fault-injection barrier, test interruption during the cross-volume copy itself, or cover crash injection during delete/purge.
 - It does not make the existing plugin-only filesystem lock safe against an independent live Host writer.
 
 Those scenarios remain gated on a public artifact lease/tombstone contract and a full Host lifecycle fixture. Do not run destructive operations against a live writer based on this prototype.
