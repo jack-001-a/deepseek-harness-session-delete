@@ -114,6 +114,20 @@ async function runIntegration() {
     const trashAfterDelete = await service.listTrash()
     assert.ok(trashAfterDelete.entries.some(entry => entry.sessionId === SESSION_ID))
 
+    // Re-open the same durable store through a fresh Host composition. The
+    // startup reconciler must safely replay committed-delete accounting.
+    await ctx.fiber.dispose()
+    const recoveryHost = await createHostContext(sessionRoot)
+    ctx = recoveryHost.ctx
+    applySessionDelete(ctx, {})
+    const recoveryService = ctx.get('sessionDelete')
+    const recovery = await recoveryService.reconcileStartup()
+    assert.deepEqual(recovery, { deleted: 1, restored: 0, preserved: 0 })
+    assert.ok((await recoveryService.listTrash()).entries.some(
+      entry => entry.sessionId === SESSION_ID,
+    ))
+    service = recoveryService
+
     const restored = await service.restore(SESSION_ID)
     assert.equal(restored.restored, true)
     const snapshot = await ctx.sessionPersistence.stat(SESSION_ID)
