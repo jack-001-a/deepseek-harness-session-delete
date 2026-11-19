@@ -148,3 +148,49 @@ A provider is not lifecycle-capable until:
 - unsupported providers demonstrably fail closed.
 
 This plan is not evidence that any gate has passed. It is the proposed work breakdown and acceptance contract.
+
+
+## Gate 0 outcome: recommended capability seam
+
+The upstream review resolves the placement question sufficiently for a concrete proposal:
+
+- The public seam is `packages/session/session-persistence/src/index.ts`, exported from the root of `@deepseek-ai/dsh-session-persistence`.
+- Both shipped providers subclass that service. Cordis exposes the active provider instance as `ctx.sessionPersistence`; the SQLite provider internally composes a JSONL reader for legacy import.
+- The package's documented design is intentionally a seam, not a backend framework: each provider owns its storage runtime. Therefore lifecycle semantic types belong in the shared persistence package, while lifecycle execution remains provider-owned.
+- Prefer a **concrete, non-abstract** `getLifecycleCapability(): SessionLifecycleCapability | undefined` method on `SessionPersistence`, defaulting to `undefined`. Built-in providers override it. This keeps existing third-party subclasses source-compatible and makes unsupported capability explicit without creating a second Cordis service that could be paired with the wrong persistence instance.
+- Do not add mandatory abstract lifecycle methods, inspect provider package versions/names, or infer support from storage paths. Consumers resolve the capability from the active `ctx.sessionPersistence` and fail closed on `undefined`. Cached capabilities must be invalidated when the service's existing `identity` changes.
+- Export the capability interface and shared result/error types from the persistence package root. Do not leak JSONL lock details, SQLite schema/Segment IDs, paths, or implementation classes into the shared package.
+
+This is a recommendation based on the reviewed upstream source, not a change to upstream code. The upstream package currently has no lifecycle method or lifecycle capability.
+
+### Fork and descendant reachability matrix (SQLite)
+
+The shared scenario layer must explicitly exercise the graph cases below. Each fixture records the trace roots, tail Segment IDs, parent links, and bounded fork cuts before the operation; after it, assert exact logical histories for every surviving live or restorable Session and assert that only unreachable private suffixes were reclaimed.
+
+| Fixture / operation | Required invariant |
+|---|---|
+| Parent with one child forked at parent's tail; purge parent | Child history remains complete; shared tail/ancestors remain reachable from child |
+| Parent with child forked at an ancestor prefix; purge parent | The ancestor prefix and child-private suffix remain intact; only parent-private suffix may be reclaimed |
+| Parent → child → grandchild; purge middle child | Parent and grandchild histories remain complete; segments shared with either remain |
+| Parent → child → grandchild; purge parent | Descendants remain readable even when their lineage root is retired/purged |
+| Parent live, child retired; purge parent | Child tombstone remains a GC root and can still restore its exact history |
+| Parent retired, child live; restore parent | Restored parent and live child both retain their exact overlapping histories |
+| Parent retired, child purged, then purge parent | Parent's retained root protects its history until its own purge; then only unreachable segments are reclaimed |
+| Two sibling children share a common ancestor; purge either sibling | Common ancestor and other sibling's branch remain intact |
+| Multiple siblings fork at different bounded cuts in one ancestor | Range/ancestor index updates do not truncate or over-delete overlapping prefixes |
+| Repeated retire/restore/purge with duplicate operation IDs | Root transfer occurs once; retry cannot double-release a shared root or reclaim a still-referenced Segment |
+
+The tombstone is a root, not merely metadata: retire transfers the trace root to the tombstone; restore transfers it back; purge removes it. The GC test oracle must compute reachability from **all** live trace roots and all restorable retired tombstone roots, then verify that a Segment is deleted only when it is outside that root closure and has no remaining child edge.
+
+### SQLite routing-marker crash consistency
+
+The SQLite routing marker is a filesystem sidecar, so it cannot participate atomically in a SQLite transaction. The lifecycle design must not describe a DB commit plus marker rewrite as one atomic transaction. Prefer keeping the marker as a durable routing/identity record and making the SQLite lifecycle row/tombstone authoritative for live/retired/purged state. Retire/restore/purge should not require an unsafe marker rename or deletion. On every selection/list path, consult the DB lifecycle state before deciding whether to return a live trace, hide a retired/purged Session, or permit legacy JSONL fallback.
+
+The DB transaction and marker publication/reconciliation need explicit crash semantics. In particular:
+- A marker whose trace row is absent may correspond to a valid retired/purged tombstone, not necessarily corruption.
+- A retired or purged ID must be fenced from JSONL fallback and legacy import, including after provider restart.
+- A marker must never cause a tombstone to appear in normal live listing.
+- If a marker is missing after a DB commit, reconciliation must be deterministic and must not make an ID visible through the wrong backend.
+- Keep a durable identity fence for purged IDs for as long as legacy artifacts or delayed import paths could otherwise resurrect that ID; define retention/compaction only when resurrection is impossible by construction.
+
+These are additional acceptance requirements; the reviewed provider currently has no lifecycle tombstone or marker reconciliation protocol.

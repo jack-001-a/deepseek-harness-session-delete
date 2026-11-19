@@ -161,3 +161,31 @@ Mock Cordis contexts and plugin-local process-lock tests are useful but do not s
 ## Decision
 
 Do not implement provider-native destructive integration in the plugin until the Host exposes this capability and both built-in providers pass the real multi-process conformance suite. Keep PR #12 as plugin-instance coordination only. Until then, do not claim protection against native Harness writers or cross-process provider mutations.
+
+
+## Public API placement recommendation (upstream review)
+
+The reviewed upstream contract is defined in `packages/session/session-persistence/src/index.ts`. That package explicitly describes itself as the backend-independent service seam; JSONL and SQLite subclass `SessionPersistence`, while each provider owns its storage runtime. The package root exports the abstract service and its public types, and its `package.json` exposes that root as the supported package entry point. Cordis declaration merging exposes the active instance as `ctx.sessionPersistence`.
+
+**Recommended placement: keep lifecycle as an optional capability of that same active `SessionPersistence` instance, with its public capability types exported by `@deepseek-ai/dsh-session-persistence`.** Do not introduce a second independently registered Cordis service for lifecycle operations: a separately resolved service could outlive or become mismatched with a replaced persistence provider. Do not add mandatory abstract methods to `SessionPersistence`, because that would break third-party subclasses.
+
+A source-compatible discovery shape is a concrete default method on the existing abstract service:
+
+```ts
+export abstract class SessionPersistence extends Service {
+  // Existing abstract persistence methods remain unchanged.
+
+  /** Provider-owned lifecycle operations, or undefined when unsupported. */
+  getLifecycleCapability(): SessionLifecycleCapability | undefined {
+    return undefined
+  }
+}
+```
+
+The exported `SessionLifecycleCapability` interface describes the provider-owned operations and their typed results. A built-in provider overrides the method and returns a stable capability object bound to that provider instance. Existing third-party providers inherit the default `undefined` result and remain valid; consumers must fail closed when it is absent. This is preferable to package-version checks, provider-name checks, `instanceof` checks against concrete provider packages, or filesystem/database probing.
+
+Discovery must always start from the currently active `ctx.sessionPersistence` instance. A consumer that caches the capability must also retain and revalidate that service instance's existing `identity` before use; after provider replacement it must reacquire the capability. The capability is not a free-standing handle to a storage root.
+
+Keep the interface and shared semantic types in the persistence seam package, but keep all implementation details in provider packages. The shared package must not import JSONL/SQLite code, expose lock primitives, Segment IDs, database paths, or filesystem layouts. The JSONL and SQLite packages implement the same capability independently. The SQLite package's existing dependency on the JSONL package for legacy import does not change lifecycle ownership: the outer SQLite persistence instance remains authoritative for an ID selected into SQLite and must fence the legacy importer too.
+
+This recommendation is a contract placement proposal for upstream maintainers, not an implementation or a claim that the reviewed upstream commit already contains the method.
