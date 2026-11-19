@@ -42,7 +42,7 @@ async function createHostContext(sessionRoot) {
   const ctx = new Context()
   await testkit.mountAgentLoopTestDependencies(ctx)
   await ctx.plugin(agentLoop.default, { agents: [] })
-  await ctx.plugin(jsonl, { root: sessionRoot, compression: 'none' })
+  await jsonl.apply(ctx, { root: sessionRoot, compression: 'none' })
   return { ctx, session }
 }
 
