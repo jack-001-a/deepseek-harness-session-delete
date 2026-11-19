@@ -546,3 +546,65 @@ Do not synthesize empty frames, truncate a trace to the last readable event, inf
 - After any successful repair, run full graph/frame audit, `foreign_key_check`, and byte-for-byte read comparisons for all retained roots on Linux, macOS, and Windows.
 
 Repair policy summary: rebuild only a proven-derived index from a validated primary graph; preserve and quarantine any database whose primary graph or event bytes are ambiguous. Integrity tooling must never convert uncertainty into silent data loss.
+## SQLite lifecycle schema rollout: old-process fencing and downgrade policy
+
+The upstream SQLite Provider at the pinned Harness revision checks `application_id` and `user_version` during `SqliteStore.initialize()`. Once initialized, ordinary read/write operations use the open `DatabaseSync` connection and prepared statements; they do not re-check `user_version` before every transaction. Consequently, changing `user_version` to v2 does **not** fence an already-running v1 process. SQLite `BEGIN IMMEDIATE` serializes writers only while the transaction is held; after migration commits, an old process can acquire the writer lock and continue issuing v1 SQL.
+
+### Compatibility matrix
+
+| Process / database combination | Required behavior |
+| --- | --- |
+| v1 binary starts on v1 database | Supported under the v1 contract |
+| v2 binary starts on v1 database | Run the explicit migration only under the maintenance procedure below |
+| v2 binary starts on v2 database | Supported after schema, graph, and marker reconciliation checks |
+| v1 binary starts on v2 database | Refuse at initialization due to unsupported schema version; leave DB intact |
+| v1 process already open when v2 migration starts | Unsupported; migration must not proceed until that process is stopped |
+| v1 process resumes after v2 migration | Unsafe; deployment must prevent restart/downgrade until all v2 lifecycle features are disabled and a separately validated downgrade exists |
+| v1 and v2 processes concurrently access the same DB | Unsupported; never claim mixed-version compatibility |
+
+### Mandatory offline migration protocol
+
+1. Enter provider maintenance mode at the deployment/orchestration layer. Stop routing new Session work to every process using the database.
+2. Drain and close all v1 Session handles, append queues, SQLite connections, and background reconciliation tasks. Wait for process termination, not merely a health-check state or an application-level 'idle' flag.
+3. Confirm no old process/container/service can restart against this database during the migration window. A deployment-wide maintenance lock or orchestrator barrier must cover every host sharing the database and its filesystem.
+4. Preserve a consistent, recoverable backup of the database and required WAL state using a SQLite-supported backup/snapshot procedure. Do not copy only the main DB file while WAL writers/readers may exist; do not unlink WAL/SHM files.
+5. Run migration with the already-specified `BEGIN IMMEDIATE` protocol, revalidating application ID, version, exact schema objects, graph, frames, and foreign keys inside the transaction.
+6. Commit schema v2, close the migration connection cleanly, reopen using the v2 implementation, run the full v2 integrity audit, recover lifecycle operations, and reconcile routing markers.
+7. Only after all checks succeed, start v2 processes and reopen Session traffic. Keep the deployment barrier until every serving process is confirmed to run the v2-compatible build.
+8. If any step fails or the commit outcome is unknown, keep the service in maintenance mode. Reopen and inspect the database state; never start a v1 binary against a possibly migrated database.
+
+The database writer lock is a transaction serialization mechanism, not a deployment-wide process fence. The migration tool cannot reliably discover or stop an old process that holds a connection but is currently idle, nor can it prevent that process from reconnecting after the migration. The deployment layer must establish quiescence.
+
+### Runtime defense in the v2 implementation
+
+- Check schema identity/version on every newly opened connection before preparing lifecycle statements.
+- Keep schema migration out of ordinary provider initialization when lifecycle features are enabled; use an explicit administrative migration entry point with a clear maintenance-required result.
+- Ensure the v2 implementation refuses unsupported/future schema versions without attempting downgrade, repair-by-recreation, or database replacement.
+- Lifecycle-aware operations must validate lifecycle state and generation in the same transaction as their trace/Segment mutation. Do not rely on schema version as per-operation authorization.
+- Expose a clear compatibility/maintenance diagnostic so operators can distinguish unsupported schema, maintenance in progress, and corrupt storage.
+- Document that all processes sharing a database must run a compatible provider build; a shared DB path does not imply mixed-version safety.
+
+Do not add a purported SQL trigger fence for old processes unless the provider has a proven connection/session identity mechanism that lets new v2 writes be distinguished from old v1 writes. A global trigger that blocks legacy writes would also block legitimate v2 writes; a marker table alone is not a process fence. Likewise, a process-local lock, file-existence check, or SQLite busy timeout cannot prevent an already-open v1 connection from writing after migration.
+
+### Downgrade and rollback policy
+
+Schema v2 is a forward-only lifecycle boundary once lifecycle metadata or destructive operations are committed. There is no automatic v2-to-v1 downgrade.
+
+- Before migration commits, a failed migration transaction must leave a valid v1 schema and rows; after verifying this by reopening, operators may restore v1 service.
+- After v2 commits but before any lifecycle operation is enabled, rollback to v1 is still **not automatically supported**. It requires a separately designed and tested reverse migration that proves no v2-only objects, metadata, fences, operation mappings, or trigger semantics are lost. Until then, recover forward with v2 or restore a verified pre-migration backup under a documented data-loss decision.
+- After any retire/restore/purge lifecycle operation, do not downgrade to v1. V1 has no semantics for tombstones, operation-generation mappings, purged-ID fences, or GC authorization. Starting v1 could resurrect retired identities, ignore fences, or mutate graph data without lifecycle admission.
+- Never downgrade by dropping v2 tables, setting `user_version=1`, deleting triggers, copying only the main database file, or recreating an empty database.
+- A backup restore is a disaster-recovery action with an explicit recovery point and possible loss of post-backup writes; it is not a schema downgrade. Restore only after all processes are stopped and the DB/WAL state is consistent.
+
+### Mixed-version and downgrade test requirements
+
+- Keep a v1 connection open across a simulated migration attempt; prove the migration procedure refuses to run until the process is stopped. The test harness must model deployment quiescence rather than assume `BEGIN IMMEDIATE` fences future old writes.
+- After v2 migration, start a fresh v1 process and verify it refuses with the unsupported-schema error without changing DB bytes, schema objects, WAL, markers, or lifecycle tables.
+- Demonstrate why an already-open v1 process is unsafe: a test-only legacy writer can issue a valid v1 append after the v2 migration lock is released unless the deployment barrier keeps it stopped. This is a negative compatibility test, not a supported runtime mode.
+- Start multiple v2 processes after migration and verify concurrent lifecycle operations serialize correctly under the provider's shared DB transaction protocol.
+- Inject failure before migration commit and verify v1 restart succeeds with unchanged logical contents; inject ambiguous commit and verify the migration tool does not automatically start either version.
+- After creating tombstones, operation mappings, fences, and at least one purged Session, verify downgrade is refused and v1 startup is never attempted by the orchestrator.
+- Test backup/restore with WAL activity and marker reconciliation; verify the restored DB and markers represent one declared recovery point.
+- Verify maintenance barrier release happens only after v2 audit and marker reconciliation succeed; on every failure path the barrier remains held.
+
+Rollout invariant: no lifecycle consumer, guarded GC, or v2-only operation may be enabled until every process sharing the database is on the v2-compatible build, schema migration and integrity audit have completed, and marker reconciliation has succeeded.
