@@ -104,14 +104,26 @@ coordinating with Host session writers.
 Lease integration needs a separate transaction design. In particular, the
 JSONL provider keeps a POSIX `session.lock` inode for the lifetime of the write
 handle and explicitly warns that unlinking it while held forfeits exclusion.
-Moving the complete session directory while holding the lease can preserve
-that inode; recursively deleting the directory while the lease is held cannot
-be treated as safe. Permanent deletion and trash purge therefore need a
-quarantine-then-cleanup protocol, while restore needs to handle a competing
-writer that opens the artifact after it returns to the store but before the
-restorer can acquire its lease. Until those cases have crash-recovery tests
-against two real Harness processes, this plugin's own lock remains a
-cooperating-plugin-instance lock only.
+Moving the complete session directory can leave a native process holding the
+old inode while a new directory at the original path acquires a different
+lock; preserving the old inode alone does not preserve exclusion at that
+pathname. Recursively deleting the directory while a lease is held is also
+unsafe.
+
+**Current behavior and operational caveat:** this plugin does not acquire the
+Host-native lease. For the shipped JSONL layout, the current delete path moves
+the located session directory (including `session.lock`) into trash, and
+restore moves it back. The plugin lock only coordinates other plugin
+instances; a different Harness process can race these operations. Until a
+provider-owned artifact lease/tombstone API is available and integrated, do
+not run multiple Harness processes against the same session store while
+performing delete, restore or purge. This limitation is documented in the
+[provider compatibility matrix](./docs/provider-compatibility-matrix.md).
+
+Permanent deletion and trash purge likewise have no Host-native writer
+exclusion. The proposed future protocol must be validated with crash-recovery
+tests against two real Harness processes; current plugin tests do not provide
+that coverage.
 
 It is not a distributed lock: shared network filesystems, multiple hosts,
 PID-namespace mismatches and non-cooperating session writers are outside the
@@ -126,7 +138,7 @@ typed before the destructive action unlocks.
 
 | Artifact | Effect |
 |---|---|
-| Session log artifact (`~/.dsh/sessions/<project-key>/<session-id>/`, log + lock file) | moved to the trash, or removed in permanent mode |
+| Session log artifact (`~/.dsh/sessions/<project-key>/<session-id>/`, log + `session.lock`) | currently moved as a directory to trash, or removed in permanent mode; **not coordinated with a native Harness writer in another process** |
 | Projection cache record (`~/.dsh/storages/session_projcache/sessions/<id>.json`) | dropped, then re-checked against a late checkpoint write |
 | Workspace accounting — membership, saved order, pin, archive mark | released |
 | Live session and agent store entries | detached *before* the files are moved, so no writer re-creates the log |
@@ -144,8 +156,8 @@ before anything becomes user-visible:
    store**, 5. release workspace accounting, 6. drop the projection cache,
 7. announce the removal.
 
-- **A failed removal changes nothing.** If the artifact cannot be moved
-  (typically a writer still closing), the request fails with
+- **A failed filesystem move changes nothing.** If the artifact cannot be moved
+  (for example, because the filesystem reports a transient busy/permission error), the request fails with
   `session-delete/io` *before* accounting and cache are touched, so the row is
   still listed and retrying is meaningful.
 - **Retries only transient failures.** `EBUSY` / `EPERM` / `EACCES` /
@@ -364,7 +376,7 @@ DeepSeek Harness 只能归档会话、无法真正删除，日志会一直堆积
 
 **还原是完整的**：文件移回后，插件会按清单重新挂回工作区、回复到原来的显示位置（锚点仍存在时）、重新置顶或归档，并向界面广播 `api-session/added`，所以**不必重启就能在侧边栏重新看到**。重新挂接失败时不会假装成功：结果会给出 `reattached: false` 与 `needsRestart: true`，文件保持在原位，回收站条目保留为 `accounting-pending`，再点一次「恢复」只补做记账、不会重复移动文件。旧版本（0.3.0 及更早）写入的条目没有记账信息，只会尽力按 `cwd` 推断工作区，必要时仍需重启。
 
-**会被处理的**：会话日志目录（日志 + 锁文件，移入回收站）、投影缓存记录、工作区记账（成员关系/排序/置顶/归档标记）。
+**会被处理的**：会话日志目录（当前实现会连同日志与 `session.lock` 一起移入回收站）、投影缓存记录、工作区记账（成员关系/排序/置顶/归档标记）。**重要限制**：插件尚未获取 Harness 原生写租约；插件锁不能阻止另一个 Harness 进程写入同一会话。在原生 artifact lease/tombstone API 与双进程集成测试完成前，不要在多个 Harness 进程共用同一 session store 时执行删除、还原或清理。详见 [Provider Compatibility Matrix](./docs/provider-compatibility-matrix.md)。
 
 **不会删的**：附件目录（按内容寻址、被多个会话共享）、临时 spill 文件、由该对话分叉出的子会话（确认框会提示数量）。
 
