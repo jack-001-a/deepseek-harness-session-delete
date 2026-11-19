@@ -53,6 +53,17 @@ The last command emits the real Host package libraries, including the Cordis, Ag
 
 This proves a useful first integration seam: **a session materialized by one real Harness process can be consumed by the plugin running in another real Harness composition**, with a fresh provider instance and real on-disk artifacts.
 
+## Verified result
+
+The first successful real-Harness run completed on 2026-11-19:
+
+- [Integration workflow run 44509694976](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44509694976) — passed.
+- [Regular CI run 44509694956](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44509694956) — all 9 Linux/macOS/Windows × Node 22/24/26 jobs passed.
+- Plugin unit suite — 97 passed, 0 failed.
+- Real integration — passed using the pinned Harness revision, with a separate-process seed/close followed by delete, trash listing, restore, second delete, and purge from a fresh Host context.
+
+The run verifies the closed-writer artifact lifecycle described above. It is not evidence for live-writer contention, Host-native artifact leases, or cross-process workspace accounting.
+
 ## Deliberate limits
 
 This is not yet a live-writer contention or full desktop/web Host test:
