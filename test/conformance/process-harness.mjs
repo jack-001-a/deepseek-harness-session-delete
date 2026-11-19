@@ -36,6 +36,10 @@ export class ProcessWorker {
         this.#fail(new Error('worker emitted invalid JSON'))
         return
       }
+      if (event?.type === 'protocol-error') {
+        this.#fail(new Error(`worker protocol error: ${event.error || 'unknown'}`))
+        return
+      }
       this.#events.push(event)
       for (const waiter of [...this.#waiters]) waiter()
     })

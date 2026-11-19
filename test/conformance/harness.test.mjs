@@ -20,6 +20,13 @@ test('worker barrier is controlled by the parent process, not sleeps', async () 
   })
 })
 
+test('worker protocol errors fail pending waits immediately', async () => {
+  await withWorkers([{ role: 'protocol-test', caseId: 'protocol-error' }], async ([worker]) => {
+    worker.send({ type: 'run', action: 'barrier', barrier: '', caseId: worker.caseId, role: worker.role })
+    await assert.rejects(worker.waitFor(() => false), /worker protocol error: invalid-barrier-request/)
+  })
+})
+
 test('two worker processes expose distinct PIDs and deterministic barrier ordering', async () => {
   await withWorkers([
     { role: 'writer', caseId: 'cross-process-order' },
