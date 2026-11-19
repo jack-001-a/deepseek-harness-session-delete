@@ -5,7 +5,7 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
@@ -143,6 +143,42 @@ async function runIntegration() {
 
     const removedAgain = await service.delete(SESSION_ID)
     assert.equal(removedAgain.trashed, true)
+
+    // Model a process exit after the restore artifact has been promoted to
+    // its original path but before accounting and marker cleanup complete.
+    const interruptedEntry = (await service.listTrash()).entries.find(
+      entry => entry.sessionId === SESSION_ID,
+    )
+    assert.ok(interruptedEntry, 'the second delete must leave a trash entry')
+    const trashEntryPath = join(dirname(sessionRoot), '.trash', interruptedEntry.trashId)
+    const restoreMarker = join(trashEntryPath, '.restoring')
+    await writeFile(restoreMarker, JSON.stringify({
+      sessionId: SESSION_ID,
+      target: interruptedEntry.originalPath,
+    }))
+    await rename(join(trashEntryPath, 'artifact'), interruptedEntry.originalPath)
+
+    // A new Host composition must finish the interrupted restore from its
+    // durable marker and target state, without moving the artifact twice.
+    await ctx.fiber.dispose()
+    const restoreRecoveryHost = await createHostContext(sessionRoot)
+    ctx = restoreRecoveryHost.ctx
+    applySessionDelete(ctx, {})
+    const restoreRecoveryService = ctx.get('sessionDelete')
+    const reconcileRestore = restoreRecoveryService.reconcileStartup.bind(restoreRecoveryService)
+    let restoreRecovery
+    restoreRecoveryService.reconcileStartup = async () => {
+      restoreRecovery = await reconcileRestore()
+      return restoreRecovery
+    }
+    await ctx.parallel('ready')
+    assert.deepEqual(restoreRecovery, { deleted: 0, restored: 1, preserved: 0 })
+    const recoveredSnapshot = await ctx.sessionPersistence.stat(SESSION_ID)
+    assert.equal(recoveredSnapshot.header.id, SESSION_ID)
+    service = restoreRecoveryService
+
+    const removedAfterRecovery = await service.delete(SESSION_ID)
+    assert.equal(removedAfterRecovery.trashed, true)
     const purged = await service.purge(SESSION_ID)
     assert.equal(purged.purged, true)
 
@@ -153,7 +189,7 @@ async function runIntegration() {
     assert.equal(await ctx.sessionPersistence.stat(SESSION_ID), undefined)
 
     process.stdout.write(
-      'PASS: real Cordis + AgentLoop testkit + JSONL provider; cross-process seed/close; plugin delete/restore/purge\n',
+      'PASS: real Cordis + AgentLoop testkit + JSONL provider; cross-process seed/close; ready-hook delete/restore recovery; purge\n',
     )
   } finally {
     await ctx?.fiber.dispose()
