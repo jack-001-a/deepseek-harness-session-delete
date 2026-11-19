@@ -1256,3 +1256,48 @@ test('concurrent delete of one id shares a single run', async () => {
   assert.equal(runs, 1, 'a double click must not interleave two deletions')
   assert.deepEqual(first, second)
 })
+
+
+test('different trash mutations for one session are serialized', async () => {
+  const h = harness()
+  let release
+  const firstGate = new Promise((resolve) => { release = resolve })
+  const events = []
+  const first = h.service.runTrashOperation('restore', SESSION_ID, async () => {
+    events.push('restore:start')
+    await firstGate
+    events.push('restore:end')
+    return 'restored'
+  })
+  const second = h.service.runTrashOperation('purge', SESSION_ID, async () => {
+    events.push('purge:start')
+    return 'purged'
+  })
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.deepEqual(events, ['restore:start'])
+  release()
+  assert.equal(await first, 'restored')
+  assert.equal(await second, 'purged')
+  assert.deepEqual(events, ['restore:start', 'restore:end', 'purge:start'])
+})
+
+test('same trash mutation joins the in-flight operation', async () => {
+  const h = harness()
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  let runs = 0
+  const run = () => h.service.runTrashOperation('restore', SESSION_ID, async () => {
+    runs += 1
+    await gate
+    return { restored: true }
+  })
+  const first = run()
+  const second = run()
+  await Promise.resolve()
+  assert.equal(runs, 1)
+  release()
+  assert.deepEqual(await first, { restored: true })
+  assert.deepEqual(await second, { restored: true })
+  assert.equal(runs, 1)
+})
