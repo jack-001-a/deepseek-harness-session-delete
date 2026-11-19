@@ -60,11 +60,12 @@ This proves a useful first integration seam: **a session materialized by one rea
 The first successful real-Harness run completed on 2026-11-19:
 
 - [Integration workflow run 44509694976](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44509694976) — passed.
+- [Expanded integration workflow run 44511034933](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44511034933) — passed, including committed-delete startup reconciliation through a fresh Host context.
 - [Regular CI run 44509694956](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44509694956) — all 9 Linux/macOS/Windows × Node 22/24/26 jobs passed.
 - Plugin unit suite — 97 passed, 0 failed.
 - Real integration — passed using the pinned Harness revision, with a separate-process seed/close followed by delete, trash listing, restore, second delete, and purge from a fresh Host context.
 
-The run verifies the closed-writer artifact lifecycle described above, including committed-delete reconciliation through a fresh Host composition. The runner calls `reconcileStartup()` directly; the integration does not independently prove Cordis `ready` event ordering. It is not evidence for live-writer contention, Host-native artifact leases, or cross-process workspace accounting.
+The expanded run verifies the closed-writer artifact lifecycle described above, including committed-delete reconciliation through a fresh Host composition. The runner calls `reconcileStartup()` directly; the integration does not independently prove Cordis `ready` event ordering. It is not evidence for live-writer contention, Host-native artifact leases, or cross-process workspace accounting.
 
 ## Deliberate limits
 
