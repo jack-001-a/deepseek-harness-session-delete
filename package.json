@@ -30,7 +30,8 @@
   },
   "scripts": {
     "check": "node --check index.js && node --check client.js",
-    "test": "node --test"
+    "test": "node --test",
+    "test:conformance": "node --test test/conformance"
   },
   "exports": {
     ".": "./index.js",

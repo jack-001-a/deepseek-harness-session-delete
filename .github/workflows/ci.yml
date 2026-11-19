@@ -38,6 +38,9 @@ jobs:
       - name: Run the test suite
         run: npm test
 
+      - name: Run the conformance harness smoke tests
+        run: npm run test:conformance
+
       - name: Verify the package manifest
         run: |
           node -e "const p=require('./package.json'); if (p.private) throw new Error('package.json must not be private'); if (!p.repository?.url) throw new Error('repository.url is required for trusted publishing'); if (!p.engines?.node) throw new Error('engines.node is required'); console.log(p.name, p.version)"
