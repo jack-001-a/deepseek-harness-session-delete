@@ -2,7 +2,8 @@
 
 - Status: proposed implementation plan; no upstream provider API or adapter is claimed to exist
 - Parent design: [Host-native Session lifecycle ADR](./host-native-write-lease-adr.md)
-- Upstream contract reviewed at: `deepseek-ai/deepseek-harness` master `2e39e70496aa02986ca6a820c5d497e816b69d7e`
+- Upstream contract reviewed at: `deepseek-ai/deepseek-harness` commit `2e39e70496aa02986ca6a820c5d497e816b69d7e` (the current reviewed master tip at inspection time)
+- SQLite implementation evidence: [sqlite.ts](https://github.com/deepseek-ai/deepseek-harness/blob/2e39e70496aa02986ca6a820c5d497e816b69d7e/packages/session/session-persistence-sqlite/src/sqlite.ts), [persistence.ts](https://github.com/deepseek-ai/deepseek-harness/blob/2e39e70496aa02986ca6a820c5d497e816b69d7e/packages/session/session-persistence-sqlite/src/persistence.ts), and [structure.spec.ts](https://github.com/deepseek-ai/deepseek-harness/blob/2e39e70496aa02986ca6a820c5d497e816b69d7e/packages/session/session-persistence-sqlite/tests/structure.spec.ts)
 
 ## Why this plan exists
 
@@ -69,12 +70,35 @@ Each scenario must run on Linux, macOS, and Windows. Platform-specific lock asse
 
 ### SQLite
 
-- The shared database remains openable and healthy throughout single-Session retire/restore/purge.
-- Unrelated Session IDs preserve byte-for-byte logical histories and remain writable.
-- Retire/purge removes only the target Session's owned metadata and event segments.
-- Legacy JSONL import racing retire is serialized; a stale imported history cannot republish a retired Session.
+The reviewed implementation is not a set of Session-owned row bundles. It is a shared, predecessor-linked Segment graph:
+
+- `traces.tail_segment_uuid` points to a Session's tail Segment.
+- Each `segments` row has at most one `parent_segment_uuid`; multiple child Segments can share the same parent and a fork can attach at a bounded prefix inside an ancestor.
+- `frames` belong to Segments, while `segment_ancestors` stores the transitive ancestor/range index used by reads and fork-cut selection.
+- Foreign keys connect traces, segments, frames, and both columns of `segment_ancestors`. `exclusive_trace_head` prevents two traces from using the same tail.
+- The current schema installs `frames_no_delete` and `ancestors_no_delete` triggers, plus immutable ancestry/update guards. Schema version 1 is refused when an incompatible version is encountered; startup does not silently migrate it.
+
+Therefore, a correct purge cannot mean “delete the target trace's tail and its ancestors.” It must perform reachability-aware reclamation:
+
+1. In one provider-owned `BEGIN IMMEDIATE` transaction, commit the target Session's retired/purged lifecycle state and remove its live trace root only at the defined linearization point.
+2. Starting at the removed trace's former tail, consider a Segment reclaimable only when no remaining trace uses it as a tail and no remaining Segment points to it as a parent.
+3. Reclaim only the now-unreferenced tail-to-root chain. For each Segment, remove its frames and all `segment_ancestors` rows that reference it in either role, then delete the Segment; stop at the first still-referenced ancestor.
+4. Keep all shared ancestors and their frames intact while any live or retired Session still needs them for restore. The design must explicitly decide whether retired Sessions retain their references until purge or whether retirement itself may detach only a private suffix.
+5. Run integrity checks after each fault-injected transaction boundary. A partial graph must never become visible as a valid live Session.
+
+This requires a deliberate schema migration: the current no-delete triggers prohibit physical reclamation, and the existing schema-version gate refuses incompatible layouts. Migration must preserve all existing trace headers, Segment ancestry, frames, and routing records. Do not drop immutability guards wholesale; retain no-update/no-reparent protections and narrow delete permission to provider-owned garbage collection.
+
+Additional SQLite requirements:
+
+- The shared database remains openable and healthy throughout single-Session retire/restore/purge; unrelated Session IDs preserve exact logical histories and remain writable.
+- The `.segments` routing marker must agree with lifecycle state. Today a marker whose trace row is absent is treated as missing/corrupt state by listing; retired/purged tombstones need an explicit list/selection interpretation, or the marker must be durably retired in coordination with the DB state.
+- `SqliteSessionPersistence.open()` falls back to legacy JSONL when the Session is not selected in SQLite. A retired Session must not silently reappear through that fallback: lifecycle tombstones must fence both SQLite and legacy JSONL identity/import paths.
+- Existing writer leases combine a database-scoped per-Session lock with the root artifact/creation guard. They do not by themselves fence read handles or an unmaterialized pending create. Lifecycle admission must cover those paths explicitly.
+- Reads materialize event slices through SQLite transactions; define whether a read already in progress may finish before retirement linearizes, and ensure later reads/opens cannot observe retired data. Do not assume an open read handle holds a lease for its entire lifetime.
+- Legacy JSONL import racing retire is serialized; stale imported history cannot republish a retired Session. Specify one global lock order for lifecycle, DB Session lease, root creation guard, and migration ownership.
 - Database busy/unknown-transaction outcomes are typed and recovery-safe; unknown commit outcome fails closed until provider restart/recovery.
-- Segment sharing/fork lineage is accounted for: purging one Session must not remove segments still reachable by another Session.
+- Segment sharing/fork lineage is accounted for: purge one Session must not remove any Segment still reachable from another Session's tail.
+- Define purge semantics precisely. Transactional row/graph removal is logical deletion, not proof of forensic erasure: SQLite pages, WAL files, filesystem snapshots, and backups may retain old bytes. Do not promise secure physical erasure unless a separate, tested database-wide sanitization or cryptographic-erasure design provides it without harming unrelated Sessions.
 
 ## Implementation sequence
 
@@ -98,8 +122,12 @@ Each scenario must run on Linux, macOS, and Windows. Platform-specific lock asse
 ### Gate 3 — SQLite adapter
 
 - Implement lifecycle state in the SQLite provider's own transactional model.
-- Resolve segment reference ownership, fork/shared-prefix semantics, legacy import ordering, and recovery of unknown commit outcomes.
-- Pass all shared scenarios plus SQLite-specific collateral-integrity tests.
+- Implement a schema-versioned migration that safely enables provider-owned GC while preserving existing data and immutable-update invariants.
+- Define tombstone and routing-marker behavior, including preventing legacy JSONL fallback from resurrecting retired IDs.
+- Implement reachability-aware Segment reclamation with deterministic fork/descendant tests and fault injection between trace removal, frame deletion, ancestry-index deletion, and Segment deletion.
+- Define in-flight read and pending-create linearization; fence all later open/create/import paths.
+- Specify logical purge versus forensic erasure and make user-facing claims match the implemented guarantee.
+- Pass all shared scenarios plus SQLite-specific graph-integrity, migration, routing, legacy-import, and collateral-preservation tests.
 
 ### Gate 4 — Plugin integration
 
