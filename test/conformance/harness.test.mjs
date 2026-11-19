@@ -20,6 +20,14 @@ test('worker barrier is controlled by the parent process, not sleeps', async () 
   })
 })
 
+test('worker shutdown acknowledges and exits cleanly', async () => {
+  await withWorkers([{ role: 'shutdown-test', caseId: 'graceful-shutdown' }], async ([worker]) => {
+    const result = await worker.shutdown()
+    assert.equal(result.code, 0)
+    assert.equal(worker.exit instanceof Promise, true)
+  })
+})
+
 test('worker protocol errors fail pending waits immediately', async () => {
   await withWorkers([{ role: 'protocol-test', caseId: 'protocol-error' }], async ([worker]) => {
     worker.send({ type: 'run', action: 'barrier', barrier: '', caseId: worker.caseId, role: worker.role })

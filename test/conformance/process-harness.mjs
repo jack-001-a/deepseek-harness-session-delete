@@ -99,6 +99,7 @@ export class ProcessWorker {
   async shutdown({ timeoutMs = 3_000 } = {}) {
     if (this.#closed) return this.exit
     this.send({ type: 'shutdown' })
+    await this.waitFor((item) => item.type === 'shutdown-ack', { timeoutMs })
     let timer
     try {
       return await Promise.race([
@@ -118,11 +119,23 @@ export class ProcessWorker {
 /** Start workers, await identity handshakes, and always reap every child. */
 export async function withWorkers(options, callback) {
   const workers = options.map((option) => new ProcessWorker(option))
+  let value
+  let callbackError
   try {
     await Promise.all(workers.map((worker) => worker.ready()))
-    return await callback(workers)
-  } finally {
-    for (const worker of workers) worker.kill()
-    await Promise.allSettled(workers.map((worker) => worker.exit))
+    value = await callback(workers)
+  } catch (error) {
+    callbackError = error
   }
+
+  const shutdownResults = await Promise.allSettled(workers.map((worker) => worker.shutdown()))
+  for (let index = 0; index < workers.length; index++) {
+    if (shutdownResults[index].status === 'rejected') workers[index].kill()
+  }
+  await Promise.allSettled(workers.map((worker) => worker.exit))
+
+  if (callbackError) throw callbackError
+  const shutdownErrors = shutdownResults.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
+  if (shutdownErrors.length) throw new AggregateError(shutdownErrors, 'one or more workers failed to shut down cleanly')
+  return value
 }
