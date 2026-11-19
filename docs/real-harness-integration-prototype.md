@@ -1,20 +1,21 @@
 # Real Harness integration prototype
 
-This is an **opt-in integration test**, not part of the default \`npm test\` suite. It runs the actual Session Delete entrypoint inside a real Cordis context composed with the upstream AgentLoop testkit and the shipped JSONL persistence provider.
+This is an **opt-in integration test**, not part of the default `npm test` suite. It runs the actual Session Delete entrypoint inside a real Cordis context composed with the upstream AgentLoop testkit and the shipped JSONL persistence provider.
 
 ## Pin and prerequisites
 
 The prototype was designed against DeepSeek Harness commit:
 
-\`2e39e70496aa02986ca6a820c5d497e816b69d7e\`
+`2e39e70496aa02986ca6a820c5d497e816b69d7e`
 
 Use a checkout of that revision. Install its workspace dependencies and build the host libraries using the repository's documented build workflow. The following package exports must resolve from the Harness workspace:
 
-- \`@deepseek-ai/cordis\`
-- \`@deepseek-ai/dsh-agent-loop-testkit\`
-- \`@deepseek-ai/dsh-agent-loop\`
-- \`@deepseek-ai/dsh-session-persistence-jsonl\`
-- \`@deepseek-ai/dsh-session\`
+- `@deepseek-ai/cordis`
+- `@deepseek-ai/dsh-agent-loop-testkit`
+- `@deepseek-ai/dsh-agent-loop`
+- `@deepseek-ai/dsh-session-persistence-jsonl`
+- `@deepseek-ai/dsh-session-persistence` (exports the typed `SessionAlreadyOwnedError`)
+- `@deepseek-ai/dsh-session`
 
 The testkit mounts the real prerequisite services; AgentLoop and JSONL persistence are loaded as production packages. No fake Cordis context, fake persistence provider, or copied Session Delete helper is used.
 
@@ -22,16 +23,16 @@ The testkit mounts the real prerequisite services; AgentLoop and JSONL persisten
 
 From this plugin checkout:
 
-\`\`\`sh
+```sh
 DSH_HARNESS_ROOT=/absolute/path/to/deepseek-harness npm run test:integration:upstream
-\`\`\`
+```
 
 On PowerShell:
 
-\`\`\`powershell
+```powershell
 $env:DSH_HARNESS_ROOT = 'C:\\path\\to\\deepseek-harness'
 npm run test:integration:upstream
-\`\`\`
+```
 
 The Harness checkout must already be built. For the pinned upstream revision, prepare it from the Harness repository root with Node 24.9+ and pnpm 11.28.5:
 

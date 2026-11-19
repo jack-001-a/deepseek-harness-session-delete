@@ -99,8 +99,8 @@ async function verifyCrossProcessWriterOwnership(ctx, sessionRoot) {
     const timeout = setTimeout(() => {
       worker.kill('SIGKILL')
       finish(new Error(
-        'Writer owner process timed out before acquiring its lease.\\nstdout:\\n'
-          + stdout + '\\nstderr:\\n' + stderr,
+        'Writer owner process timed out before acquiring its lease.\nstdout:\n'
+          + stdout + '\nstderr:\n' + stderr,
       ))
     }, 60_000)
 
@@ -108,15 +108,15 @@ async function verifyCrossProcessWriterOwnership(ctx, sessionRoot) {
     worker.stderr.setEncoding('utf8')
     worker.stdout.on('data', chunk => {
       stdout += chunk
-      if (stdout.includes('writer-held\\n')) finish()
+      if (stdout.includes('writer-held\n')) finish()
     })
     worker.stderr.on('data', chunk => { stderr += chunk })
     worker.once('error', error => finish(error))
     worker.once('close', (code, signal) => {
       finish(new Error(
         'Writer owner process exited before the lease barrier (exit '
-          + code + ', signal ' + signal + ').\\nstdout:\\n'
-          + stdout + '\\nstderr:\\n' + stderr,
+          + code + ', signal ' + signal + ').\nstdout:\n'
+          + stdout + '\nstderr:\n' + stderr,
       ))
     })
   })
@@ -152,7 +152,7 @@ async function verifyCrossProcessWriterOwnership(ctx, sessionRoot) {
 async function holdWriterWorker(sessionRoot) {
   const { ctx } = await createHostContext(sessionRoot)
   await ctx.sessionPersistence.open(SESSION_ID, 'write')
-  process.stdout.write('writer-held\\n')
+  process.stdout.write('writer-held\n')
   // Keep the process alive while its unclosed real provider handle owns the
   // kernel lease. The controller terminates this process with SIGKILL.
   setInterval(() => {}, 60_000)
