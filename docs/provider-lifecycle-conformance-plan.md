@@ -293,3 +293,52 @@ Retirement tombstones and idempotency records have different lifetimes and must 
 - Purged-ID fences may be compacted only after the provider can prove all legacy artifacts and all delayed create/import paths capable of publishing that ID are gone or permanently rejected. A time-based TTL alone is insufficient.
 
 Required retention tests include: provider restart after commit but before caller token persistence; retire A → restore → retire B → recover A and B independently; purge followed by delayed legacy import; stale retry after operation compaction; and provider upgrade with old routing markers still present.
+## SQLite commit-to-routing-marker crash recovery
+
+The reviewed upstream SQLite adapter has a deliberate two-resource publication sequence: SQLite commits the Session row/frames first, then `publish(id)` durably publishes `.segments/<sha256(id)>.json`. The marker is written to a unique temporary file, file-synced, then atomically published (hard-link on POSIX; the provider's Windows-specific publication helper on Windows), followed by directory sync on POSIX. The SQLite commit and filesystem marker publication are not one atomic transaction.
+
+An important existing behavior narrows the recovery problem: `selected(id)` does not treat a missing marker as proof that the Session is JSONL-backed. When the marker is absent, it checks the SQLite database and returns the SQLite snapshot if a row exists; only an absent SQLite row can proceed to legacy JSONL selection. Conversely, a marker that exists but has no corresponding SQLite row is treated as missing/corrupt storage rather than silently falling back. `list()` also detects marker filenames that do not correspond to a known SQLite row.
+
+Therefore the marker is a durable routing/identity guard and database-loss detector, not the sole authority for deciding whether a SQLite row exists. Lifecycle-aware implementations must preserve that distinction and must not turn marker repair into a path that imports legacy data over a retired or purged identity.
+
+### Recovery authority and rules
+
+1. The SQLite lifecycle/trace tables are authoritative for a committed SQLite identity while the configured database is present and passes integrity/schema checks. The marker is a derived durable routing record naming the configured database path.
+2. A committed live SQLite row with a missing marker is a recoverable publication gap. Startup reconciliation may recreate the marker using the same durable temp-file + atomic-publish + directory-sync protocol. Until repaired, reads must continue to resolve the SQLite row, never import JSONL over it.
+3. A retired identity must have a durable tombstone/anti-resurrection record in SQLite. Missing marker must not cause fallback/import to treat its legacy JSONL artifact as live. Lifecycle lookup must precede legacy fallback, and a terminal purged-ID fence must outlive any stale import route.
+4. A marker with no live row is not automatically an orphan to delete. It may represent a retired/purged identity whose tombstone/fence is authoritative, an incomplete/unknown commit outcome, a damaged database, or a genuine missing database. Reconcile it against lifecycle tombstones and database health; if no authoritative explanation exists, fail closed and preserve evidence.
+5. A configured database missing while markers remain is a restore-required condition. Do not create a new empty database and do not delete markers to make startup succeed.
+6. A marker whose `database` path differs from the configured database remains an identity/configuration error. Never rewrite it automatically to point at a different database.
+7. Temporary `.route-*.tmp` files are not committed routing records. They may be cleaned only after validating the naming convention and ensuring no active publisher owns them; use a provider-wide startup/reconciliation lock or age-independent ownership protocol, not a blind wildcard deletion while other processes may be publishing.
+8. Marker reconciliation must be idempotent and safe under multiple provider processes. Acquire the same per-Session creation/artifact guard (or a dedicated provider-owned reconciliation lease) before publishing or changing one identity's route. Atomic create-if-absent handles duplicate publishers; an existing marker must be parsed and identity-checked, never overwritten.
+
+### Required crash-injection matrix
+
+| Crash/fault point | Durable state after restart | Required recovery |
+|---|---|---|
+| Before SQLite transaction commits | No committed trace/tombstone; no marker expected | Retry same operation ID; legacy identity remains unchanged |
+| SQLite COMMIT succeeds; process dies before marker temp file creation | SQLite row/tombstone exists; marker absent | Discover authoritative lifecycle state; publish marker for live SQLite row; never import legacy over retired/purged identity |
+| Temp marker created but file not synced | SQLite state exists; incomplete temp may remain | Ignore temp as uncommitted; recreate marker from authoritative DB state |
+| Temp file synced; crash before atomic publication | SQLite state exists; durable temp may remain; final marker absent | Reconcile from DB and atomically publish final marker; clean temp only under ownership protocol |
+| Atomic link/Windows publication succeeds; crash before directory sync | Final marker may or may not survive power loss | Re-read DB and marker on restart; idempotently republish if absent; validate if present |
+| Directory sync succeeds; caller dies before receiving success | DB and marker exist | Retry with same operation ID returns original durable outcome/token |
+| Retire/purge commit succeeds; marker publication/cleanup fails | Tombstone or terminal fence is authoritative | Keep lifecycle state; report repair debt; do not roll back or expose legacy fallback |
+| Marker exists but trace row is absent and tombstone/fence exists | Retired/purged identity | Apply lifecycle-specific list/open semantics; marker is not interpreted as live trace |
+| Marker exists but database is missing | Database unavailable | Fail closed with restore-required error; preserve marker and legacy artifacts |
+| Two processes reconcile/publish same missing marker | One or both attempt atomic create | Exactly one marker is created; loser validates the winner; no replacement or truncation |
+| Existing marker points to a different DB path | Configuration/storage identity mismatch | Fail closed; no automatic rewrite |
+
+### Startup reconciliation ordering
+
+Run reconciliation only after database open, schema/version validation, and recovery of in-flight lifecycle operations. Then:
+
+- Scan authoritative lifecycle records and trace rows in a consistent DB snapshot; classify each identity as live, retired/restorable, purging/incomplete, or purged/terminal.
+- For live SQLite rows, ensure a valid marker exists and points to the configured DB. Missing markers are repaired atomically.
+- For retired and purged identities, preserve the tombstone/fence and apply the documented marker retention policy; do not recreate a live-looking route unless the route format explicitly encodes lifecycle state.
+- Scan existing marker filenames. Validate each marker against the configured DB and the authoritative lifecycle/trace inventory. Unknown marker-only identities fail closed unless an explicit durable tombstone/fence explains them.
+- Reconcile legacy JSONL identities only after the SQLite lifecycle inventory is authoritative. A matching retired/purged identity must block migration/import even if its marker is missing.
+- Publish a reconciliation-complete watermark only after all records in the scan are processed. If the process dies midway, rerun the idempotent scan; do not rely on an in-memory `publishedRoutes` cache across restart.
+
+Do not make startup reconciliation depend solely on the marker directory scan: it cannot discover a committed SQLite row whose marker was never published. Conversely, do not use the JSONL listing as authority for an identity already represented in SQLite lifecycle state.
+
+Tests must inject process termination at every publication boundary on POSIX and Windows, restart a fresh provider instance, and verify `open`, `stat`, `list`, `create`, and legacy migration behavior. Include concurrent startup reconciliation by two processes, database restore to a different configured path, stale temp files, corrupt marker JSON, and marker/database path mismatch.
