@@ -58,6 +58,14 @@ still puts the files back and tries to infer the owning workspace from the
 stored `cwd`, but when the host cannot resolve it the row reappears only after
 a restart — that is what the startup history bootstrap is for.
 
+On startup, after the Host signals that its workspace and storage services are
+ready, the plugin reconciles up to 50 pending trash transactions. It retries
+the idempotent workspace/cache cleanup for committed deletes, and completes
+restores interrupted after the artifact reached its original path. Entries
+whose source and destination state is ambiguous are preserved and logged
+instead of being deleted or reattached speculatively. A larger backlog is left
+for a later launch.
+
 Setting `mode: permanent` in the plugin config removes the intermediate step
 and deletes outright — the dialog then requires the conversation title to be
 typed before the destructive action unlocks.

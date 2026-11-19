@@ -1592,3 +1592,45 @@ test('the Cordis ready hook starts startup reconciliation after services are rea
   ])
   assert.equal((await stat(join(trashEntry(store, deleted.trashId), 'artifact'))).isDirectory(), true)
 })
+
+test('startup recovery retries workspace accounting when a host write fails', async () => {
+  const store = await makeStore()
+  let failDetach = true
+  const calls = []
+  const workspace = {
+    id: 'ws-1',
+    path: store.root,
+    record: { sessionIds: [SESSION_ID] },
+    detachSession: async (id) => {
+      calls.push(['detach', id])
+      if (failDetach) throw new Error('injected detach failure')
+      workspace.record.sessionIds = workspace.record.sessionIds.filter((entry) => entry !== id)
+    },
+  }
+  const registry = {
+    list: () => [workspace],
+    unpinSession: async (id) => calls.push(['unpin', id]),
+    unarchiveSession: async (id) => calls.push(['unarchive', id]),
+  }
+  const h = harness({ ...storedTarget(store), registry })
+  await h.service.delete(SESSION_ID)
+
+  // The first pass cannot complete membership cleanup and must leave the
+  // committed trash entry eligible for a later retry.
+  workspace.record.sessionIds = [SESSION_ID]
+  calls.length = 0
+  const first = await h.service.reconcileStartup()
+  assert.deepEqual(first, { deleted: 0, restored: 0, preserved: 1 })
+  assert.deepEqual(workspace.record.sessionIds, [SESSION_ID])
+
+  failDetach = false
+  calls.length = 0
+  const second = await h.service.reconcileStartup()
+  assert.deepEqual(second, { deleted: 1, restored: 0, preserved: 0 })
+  assert.deepEqual(workspace.record.sessionIds, [])
+  assert.deepEqual(calls, [
+    ['detach', SESSION_ID],
+    ['unpin', SESSION_ID],
+    ['unarchive', SESSION_ID],
+  ])
+})

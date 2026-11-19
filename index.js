@@ -2345,10 +2345,10 @@ export function apply(ctx, config = {}) {
     ctx.logger?.warn(`sessionDelete: reading the trash failed: ${String(error)}`)
   })
   if (typeof ctx.on === 'function') {
-    ctx.on('ready', () => {
+    ctx.on('ready', () =>
       service.reconcileStartup().catch((error) => {
         ctx.logger?.warn(`sessionDelete: startup recovery failed: ${String(error)}`)
-      })
-    })
+      }),
+    )
   }
 }
