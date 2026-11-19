@@ -354,15 +354,7 @@ class SessionDeleteService {
         'sessionDelete: a session id is required',
       )
     }
-    const running = this.inflight.get(sessionId)
-    if (running !== undefined) return running
-    const task = this.runDelete(sessionId)
-    this.inflight.set(sessionId, task)
-    try {
-      return await task
-    } finally {
-      if (this.inflight.get(sessionId) === task) this.inflight.delete(sessionId)
-    }
+    return this.runTrashOperation('delete', sessionId, () => this.runDelete(sessionId))
   }
 
   /**
@@ -1385,15 +1377,23 @@ class SessionDeleteService {
    * @returns the mutation's outcome.
    */
   async runTrashOperation(action, sessionId, run) {
-    const key = `${action}:${sessionId}`
-    const running = this.trashOps.get(key)
-    if (running !== undefined) return running
-    const task = run()
-    this.trashOps.set(key, task)
+    // One session has one filesystem artifact. Delete, restore and purge must
+    // therefore share a lock: action-specific locks let a restore race a
+    // retention purge and let a delete race a restore.
+    const running = this.trashOps.get(sessionId)
+    if (running !== undefined) {
+      if (running.action === action) return running.promise
+      // Different operations are serialized, not coalesced: after the current
+      // mutation settles, re-evaluate the next operation against fresh state.
+      return running.promise.catch(() => {}).then(() => this.runTrashOperation(action, sessionId, run))
+    }
+    const task = Promise.resolve().then(run)
+    const operation = { action, promise: task }
+    this.trashOps.set(sessionId, operation)
     try {
       return await task
     } finally {
-      if (this.trashOps.get(key) === task) this.trashOps.delete(key)
+      if (this.trashOps.get(sessionId) === operation) this.trashOps.delete(sessionId)
     }
   }
 
@@ -1806,16 +1806,24 @@ class SessionDeleteService {
       const deletedAt = Date.parse(entry.deletedAt)
       if (!Number.isFinite(deletedAt) || deletedAt >= cutoff) continue
       try {
-        await this.removeWithRetries(entry.path, entry.sessionId)
+        const didPurge = await this.runTrashOperation('purge', entry.sessionId, async () => {
+          // The entry may have been restored or replaced while the sweep was
+          // waiting for the per-session lock. Never purge a stale snapshot.
+          const current = await this.trashEntryFor(entry.sessionId)
+          if (current === undefined || current.trashId !== entry.trashId) return false
+          const currentDeletedAt = Date.parse(current.deletedAt)
+          if (!Number.isFinite(currentDeletedAt) || currentDeletedAt >= cutoff) return false
+          await this.removeWithRetries(current.path, current.sessionId)
+          this.forgetTrashEntry(current.trashId)
+          await this.audit('purge', current.sessionId, true, { mode: this.mode })
+          return true
+        })
+        if (didPurge) purged.push(entry.sessionId)
       } catch (error) {
         this.ctx.logger?.warn(
           `sessionDelete: purging the expired trash entry "${entry.trashId}" failed: ${String(error)}`,
         )
-        continue
       }
-      this.forgetTrashEntry(entry.trashId)
-      purged.push(entry.sessionId)
-      await this.audit('purge', entry.sessionId, true, { mode: this.mode })
     }
     return purged
   }
