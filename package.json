@@ -30,7 +30,7 @@
   },
   "scripts": {
     "check": "node --check index.js && node --check client.js && node --check scripts/run-upstream-harness-integration.mjs",
-    "test": "node --test",
+    "test": "node --test test/*.test.mjs",
     "test:integration:upstream": "node scripts/run-upstream-harness-integration.mjs"
   },
   "exports": {
