@@ -242,3 +242,54 @@ The service's existing `identity` symbol is process-local and changes on provide
 The public package should own only provider-neutral interfaces, opaque tokens, typed outcomes/errors, and operation semantics. Provider packages own capability construction, durable operation indexes, recovery, locks, tombstones, and storage-specific tests. Avoid importing either concrete provider into the shared persistence package.
 
 A fake provider passing these compatibility tests proves only that discovery is backward-compatible; it does not count toward lifecycle conformance. A provider is lifecycle-capable only after its real multi-process adapter suite and platform matrix pass.
+## SQLite WAL read admission, purge ordering, and handle lifetime
+
+The reviewed SQLite implementation currently materializes the requested trace metadata and frame BLOBs inside one short `DEFERRED` read transaction. The transaction commits before asynchronous frame decompression and event parsing. A `SqliteSessionHandle` does not pin a WAL read transaction for its entire open lifetime; it calls the store for each read. This distinction should drive the lifecycle contract rather than assuming that an open read handle is a long-lived SQLite snapshot.
+
+Define the read linearization point as the lifecycle-state check performed in the same SQLite read transaction that selects the trace metadata and frame BLOBs:
+
+- If a read transaction establishes its snapshot before the retire transaction commits, that read is admitted and may return its already-materialized events after retirement commits. Decompression/parsing after the snapshot is not a new storage read.
+- If retirement commits before the read transaction establishes its snapshot, the read must observe the retired state and fail with a typed retired/not-found outcome. It must not fall through to legacy JSONL.
+- A read handle opened before retirement has no perpetual entitlement. Every subsequent `read()` repeats the transactional lifecycle check; opening a handle is not a lifecycle lease.
+- Purge may delete rows after retirement has committed without waiting for decompression of bytes already copied into the admitted read's memory. It must not allow a later read on that same handle to acquire a fresh snapshot.
+- The lifecycle row/tombstone lookup, trace lookup, and frame selection must share one SQLite transaction/snapshot. A separate preflight lifecycle query followed by a later trace/frame query is racy.
+
+SQLite WAL permits a writer to commit while an older reader retains its snapshot. Therefore the conformance suite must not assert that retire/purge waits for every already-admitted read to finish decoding. Instead it must assert snapshot consistency and deny every post-retire admission. A read that began before retirement but had not yet established its database snapshot is not admitted; it must observe the retired state.
+
+Required deterministic WAL tests:
+
+| Scenario | Required result |
+|---|---|
+| Reader begins transaction and captures frames; retire commits before decode completes | Reader returns the complete pre-retire slice; retire succeeds without corrupting the read |
+| Retire commits before a new read transaction starts | New read fails as retired; no legacy fallback occurs |
+| Existing read handle calls `read()` again after retire | Second call fails; prior successful open does not bypass lifecycle state |
+| Purge commits after a read has copied frame BLOBs but before decode completes | That admitted read may finish; later reads fail and no deleted rows are re-read |
+| Reader is paused before its first lifecycle/trace SELECT; retire commits; reader resumes | Reader sees retired state in its newly established snapshot and is denied |
+| Two independent processes race read admission and retire | Outcomes correspond to a single serial order at the SQLite snapshot/commit boundary; no partial trace/frame view |
+| Long-lived external WAL reader prevents checkpoint progress | Logical purge remains correct; checkpoint busy/incomplete is reported as maintenance state, not mistaken for failed logical purge |
+
+Do not add a provider-wide read lease solely to wait for asynchronous decompression: the selected frame bytes are already detached from SQLite. If implementation instead streams rows lazily or retains SQLite statements/cursors across awaits, this assumption no longer holds and the design must add explicit reader lifetime coordination before purge.
+
+## WAL checkpointing and physical-byte claims
+
+Logical purge is a database transaction that removes the retired root and unreachable graph rows. It is not forensic erasure. In WAL mode, old page images may remain in the `-wal` file until checkpoint/reuse; database pages, filesystem snapshots, backups, copy-on-write layers, and storage-device remapping may retain historical bytes after checkpointing. A successful `wal_checkpoint(TRUNCATE)` is a space-reclamation/maintenance result, not proof that every prior copy of the bytes was overwritten.
+
+Keep these outcomes separate:
+
+- **Logical purge committed:** lifecycle tombstone is terminally purged, the live trace/root is absent, and unreachable Segment/frame/ancestry rows are gone according to the reachability oracle.
+- **Checkpoint pending or blocked:** one or more readers may prevent full checkpoint/truncation. This does not roll back an already committed logical purge and must be observable as maintenance debt.
+- **Forensic erasure:** unsupported unless a separately designed and independently validated mechanism covers WAL, DB pages, backups, snapshots, and storage behavior. Do not advertise this guarantee from SQL `DELETE`, `VACUUM`, or checkpoint success alone.
+
+Tests should hold a second connection's WAL read transaction open while purging, inspect checkpoint result codes, release the reader, and then verify that checkpoint can make progress. They must assert logical state independently of physical WAL file size. Never make a test's pass condition depend on a WAL file shrinking to zero as proof of deletion.
+
+## Tombstone and operation-record retention
+
+Retirement tombstones and idempotency records have different lifetimes and must not be compacted as one unit:
+
+- A retired Session tombstone remains a Segment GC root and remains restorable until purge commits. Purge removes its data-root role and allows unreachable graph reclamation, but a minimal terminal lifecycle identity fence must remain while any legacy JSONL artifact, delayed importer, routing marker, or stale caller could otherwise resurrect the ID.
+- A committed `operationId` mapping must continue resolving to its original token/outcome even if that Session is subsequently restored and retired under a different operation ID. `inspectById` is not a substitute.
+- The provider cannot infer that the plugin outbox has finished reconciliation merely because a token was inspected once. Do not expire operation mappings based on wall-clock age alone.
+- If operation payloads are compacted, retain a durable deduplication tombstone keyed by `(SessionId, operationId)` so an old retry cannot execute a second retirement. Define an explicit acknowledgement/retention protocol before deleting even that key; absent such a protocol, retain the compact mapping.
+- Purged-ID fences may be compacted only after the provider can prove all legacy artifacts and all delayed create/import paths capable of publishing that ID are gone or permanently rejected. A time-based TTL alone is insufficient.
+
+Required retention tests include: provider restart after commit but before caller token persistence; retire A → restore → retire B → recover A and B independently; purge followed by delayed legacy import; stale retry after operation compaction; and provider upgrade with old routing markers still present.
