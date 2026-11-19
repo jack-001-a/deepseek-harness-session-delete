@@ -29,9 +29,9 @@
     "node": ">=22"
   },
   "scripts": {
-    "check": "node --check index.js && node --check client.js && node --check scripts/test-upstream-harness.mjs",
+    "check": "node --check index.js && node --check client.js && node --check scripts/run-upstream-harness-integration.mjs",
     "test": "node --test",
-    "test:integration:upstream": "node scripts/test-upstream-harness.mjs"
+    "test:integration:upstream": "node scripts/run-upstream-harness-integration.mjs"
   },
   "exports": {
     ".": "./index.js",
