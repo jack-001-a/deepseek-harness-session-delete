@@ -479,3 +479,70 @@ This authorization is an integrity guard against accidental provider code paths,
 - Run on Linux, macOS, and Windows. Include restart-after-SIGKILL cases; in-process exception tests alone do not establish crash safety.
 
 Do not implement incremental or background GC until the single-transaction correctness baseline passes these graph and process-race tests. If GC later becomes chunked across commits, introduce an explicit durable `purging` state and a persisted candidate/work cursor; each chunk must remain invisible to reads and must resume idempotently after restart. Never expose a partially reclaimed graph as a valid live or restorable Session.
+## SQLite graph integrity diagnosis and repair boundaries
+
+The fixed upstream SQLite implementation treats `segments.parent_segment_uuid` / `parent_end_seq` / `base_seq` as the primary immutable graph edges. `segment_ancestors` is a derived transitive range index populated by the `segments_index_ancestors` AFTER INSERT trigger. Read paths use the index to locate candidate ancestors, but also walk parent metadata and validate offsets. Therefore SQLite's page-level integrity checks are necessary but not sufficient to establish Session graph correctness.
+
+### Integrity layers (run in this order)
+
+1. **Database structure:** verify the expected `application_id`, schema version, exact table/index/trigger definitions, `PRAGMA quick_check` (or `integrity_check` for a full audit), and `PRAGMA foreign_key_check`. Any non-`ok` result blocks lifecycle operations and GC.
+2. **Row-level constraints:** validate every Segment row's root/non-root shape, nonnegative sequence values, non-self parent, existing parent, and `child.base_seq = parent.base_seq + child.parent_end_seq`. Validate each trace tail exists and its inherited count and header identity are well-formed.
+3. **Parent graph:** walk every trace tail and every retained lifecycle root through parent edges with a visited set. Reject cycles, missing parents, invalid prefix bounds, impossible sequence arithmetic, and any path that does not terminate at a root Segment. A cycle in an immutable parent graph is corruption even if SQLite accepts the rows.
+4. **Frame ranges:** for each Segment, order frames by `start_seq`; require valid positive intervals, no overlap, and exact coverage of every logical range that a trace or descendant claims to read. A gap outside every retained logical range may be unreachable garbage, but it must not be silently treated as valid history. Check `frame.start_seq` against the Segment's local coordinate system and ensure the frame end does not exceed the Segment's committed local event extent.
+5. **Derived ancestry index:** recompute expected `(descendant, ancestor, end_seq)` rows from the parent graph and compare exact set equality with `segment_ancestors`. This checks missing rows, extra rows, incorrect range values, and rows whose endpoint is not an ancestor.
+6. **Cross-Session consistency:** verify all live trace tails and restorable tombstone roots resolve to complete, readable histories; verify shared ancestors are consistent across every descendant. Do not assume a graph that validates for one trace validates for all roots.
+
+### Frame continuity and event-count rules
+
+Frames are inserted consecutively within a Segment by the provider append path: the next frame starts at the previous frame's end, beginning at the supplied local start. A forked child Segment has its own local coordinate space beginning at zero; `base_seq` maps that local space to the inherited global sequence. `parent_end_seq` is the exclusive prefix endpoint in the parent. These coordinate systems must not be mixed when validating ranges.
+
+Validation must be range-aware. For a requested logical interval, translate it into each Segment's local interval, collect overlapping frames in order, and require exact coverage with no gap or overlap. This matches the read path's fail-on-incomplete behavior. A full audit should additionally establish that each retained trace's entire claimed event range is covered, not merely the range of the last successful read.
+
+Do not infer the event count solely from `MAX(end_seq)` when validating corruption: a missing leading or middle frame can leave the maximum unchanged. Derive expected coverage from the trace's inherited count, Segment base, parent cut, and all ordered frame intervals; compare both lower and upper boundaries.
+
+### What may be repaired automatically
+
+**Potentially repairable: `segment_ancestors` only.** It is a deterministic derived index if and only if the complete parent graph and all sequence/range metadata have first passed validation. Under an exclusive provider maintenance lock and one `BEGIN IMMEDIATE` transaction, the provider may:
+
+- Snapshot the exact parent graph and current trace/lifecycle roots.
+- Recompute the complete expected transitive closure and `end_seq` values from parent edges, detecting cycles and invalid offsets before changing any row.
+- Compare expected and actual index contents and record a diagnostic report.
+- If the parent graph is valid and the only discrepancy is the derived index, delete and rebuild the entire `segment_ancestors` table in the same transaction (or rebuild into a shadow table and atomically swap only if schema constraints/triggers and foreign keys are preserved).
+- Re-read and compare exact set equality, run `foreign_key_check`, verify unchanged Segment/trace/frame row counts and stable identity digests, then commit.
+
+Do not repair a small subset of index rows by guessing which rows are missing. A full deterministic rebuild is easier to reason about and avoids leaving unknown stale entries. Keep the `ancestors_no_update` / `ancestors_no_delete` protections; any repair authorization must be a separate provider-private, row-scoped maintenance permit, distinct from GC authorization. A failed rebuild rolls back to the original index and must leave the provider unavailable for lifecycle mutation until diagnosis.
+
+### What must fail closed (no automatic data rewrite)
+
+- Missing Segment rows, broken parent references, parent cycles, or inconsistent `base_seq` / `parent_end_seq` arithmetic.
+- Missing, overlapping, malformed, or out-of-range frame payloads in any retained history.
+- Trace tail/header identity mismatch, invalid inherited count, or a trace whose logical range cannot be reconstructed exactly.
+- `segment_ancestors` mismatch when the primary parent graph itself is invalid or ambiguous.
+- Unexpected schema objects, altered triggers, wrong application ID/version, failed SQLite integrity checks, or foreign-key violations.
+- Any uncertainty about whether a committed operation or external marker publication occurred.
+
+Do not synthesize empty frames, truncate a trace to the last readable event, infer missing events from neighboring Sessions, rewrite parent edges, or choose one of multiple conflicting histories. Those actions are data-loss policies, not integrity repairs, and require an explicit separately reviewed recovery/import workflow with operator-visible evidence and backups.
+
+### Startup and runtime behavior
+
+- On startup, perform cheap database and schema checks before exposing the provider. Run full graph/frame/index audit before enabling lifecycle GC; a configurable background audit may supplement but must not replace the pre-GC safety check.
+- If only the derived ancestry index is inconsistent and the primary graph validates, mark the provider as maintenance-required and run the deterministic rebuild under exclusive maintenance ownership. Do not serve fork/cut/read/GC paths that rely on the index during repair.
+- If any primary graph, frame, or trace invariant fails, mark the provider unhealthy and fail closed. Preserve the database and WAL/SHM files for diagnosis; do not unlink, replace, vacuum, or checkpoint as a purported repair.
+- Emit diagnostics with database identity, schema version, affected Session/Segment IDs, invariant name, and operation ID where applicable. Avoid logging frame payloads or sensitive event content.
+- After repair, rerun the entire audit and verify byte-identical reads for every retained trace before returning the provider to service.
+- Never mutate filesystem routing markers as part of the SQLite repair transaction. Reconcile markers only after the database audit/repair commits, using the separately specified marker recovery protocol.
+
+### Required integrity and repair tests
+
+- Valid chain, fork, bounded-prefix fork, sibling branches, grandchild branches, and shared-ancestor fixtures produce exact closure equality.
+- Delete one ancestry row, add an extra row, change one `end_seq`, and attach a valid-looking row to a non-ancestor; each discrepancy is detected.
+- Rebuild a corrupted derived index and prove parent rows, trace rows, frame BLOB bytes, event streams, marker bytes, and operation mappings are unchanged.
+- Inject process termination during index rebuild; restart observes either the original index or the complete rebuilt index, never a partial closure.
+- Parent cycle, missing parent, wrong base sequence, invalid parent cut, trace tail missing, and foreign-key violation all block repair and GC.
+- Frame gap at the beginning, middle, and end; overlapping intervals; duplicate starts; invalid codec; truncated payload; and out-of-range frame are detected without rewriting data.
+- A trace with a valid `MAX(end_seq)` but a missing interior frame must still fail full coverage validation.
+- SQLite `quick_check` success combined with a semantically corrupt parent graph or frame coverage must still fail the application-level audit.
+- Two processes racing repair with fork/append/GC: repair owns exclusive maintenance state; mutators wait or fail typed unavailable, and no process observes a half-rebuilt index.
+- After any successful repair, run full graph/frame audit, `foreign_key_check`, and byte-for-byte read comparisons for all retained roots on Linux, macOS, and Windows.
+
+Repair policy summary: rebuild only a proven-derived index from a validated primary graph; preserve and quarantine any database whose primary graph or event bytes are ambiguous. Integrity tooling must never convert uncertainty into silent data loss.
