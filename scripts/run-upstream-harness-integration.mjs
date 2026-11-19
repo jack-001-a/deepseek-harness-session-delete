@@ -126,11 +126,9 @@ async function runIntegration() {
 
     const remaining = await service.listTrash()
     assert.equal(remaining.entries.some(entry => entry.sessionId === SESSION_ID), false)
-    await assert.rejects(
-      ctx.sessionPersistence.stat(SESSION_ID),
-      error => error?.code === 'SESSION_PERSISTENCE_NOT_FOUND'
-        || error?.name === 'SessionPersistenceNotFoundError',
-    )
+    // The persistence contract intentionally models stat() as an optional
+    // observation: absence is returned as undefined, not thrown as an error.
+    assert.equal(await ctx.sessionPersistence.stat(SESSION_ID), undefined)
 
     process.stdout.write(
       'PASS: real Cordis + AgentLoop testkit + JSONL provider; cross-process seed/close; plugin delete/restore/purge\n',
