@@ -91,6 +91,28 @@ instance; they are not a cross-process session-stop protocol. Do not treat
 this lock as protection against another Harness process actively writing the
 same session.
 
+### Host-native session write leases (not yet integrated)
+
+The current Harness persistence seam exposes
+`ctx.sessionPersistence.open(sessionId, 'write')`. The shipped JSONL provider
+uses a kernel-backed cross-process lease for that write handle; a competing
+writer is rejected with `SessionAlreadyOwnedError`. Other persistence providers
+must document their own cross-process guarantee. This plugin currently does
+**not** acquire that Host-native lease, so PR #12 must not be interpreted as
+coordinating with Host session writers.
+
+Lease integration needs a separate transaction design. In particular, the
+JSONL provider keeps a POSIX `session.lock` inode for the lifetime of the write
+handle and explicitly warns that unlinking it while held forfeits exclusion.
+Moving the complete session directory while holding the lease can preserve
+that inode; recursively deleting the directory while the lease is held cannot
+be treated as safe. Permanent deletion and trash purge therefore need a
+quarantine-then-cleanup protocol, while restore needs to handle a competing
+writer that opens the artifact after it returns to the store but before the
+restorer can acquire its lease. Until those cases have crash-recovery tests
+against two real Harness processes, this plugin's own lock remains a
+cooperating-plugin-instance lock only.
+
 It is not a distributed lock: shared network filesystems, multiple hosts,
 PID-namespace mismatches and non-cooperating session writers are outside the
 guarantee. A live but hung process is not force-unlocked; the operation times
