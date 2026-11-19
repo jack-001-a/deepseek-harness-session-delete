@@ -1,14 +1,14 @@
 # Persistence provider compatibility matrix
 
 - Status: current implementation inventory and future integration requirements
-- Reviewed against: plugin PR #12, Host-native lease ADR in PR #13, and the shipped Harness JSONL provider contract
+- Reviewed against: plugin PR #12, Host-native lease ADR in PR #13, and the built-in Harness JSONL and SQLite provider implementations
 - Scope: filesystem artifact lifecycle only; this is not a claim of end-to-end workspace transaction isolation
 
 ## Executive summary
 
 The plugin's cross-process filesystem lock coordinates **cooperating instances of this plugin**. It does not acquire the Harness persistence provider's native session write lease and does not serialize native workspace-registry mutations from another Harness process.
 
-The shipped JSONL provider has a provider-specific cross-process write lease. That fact must not be generalized to every `SessionPersistence` implementation, and it does not currently protect this plugin's delete, restore, or purge operations because the plugin does not acquire it.
+The built-in JSONL and SQLite providers both implement provider-specific cross-process write ownership for their own write handles. Those are backend implementation details, not a generic `SessionPersistence` lifecycle API. Neither currently protects this plugin's delete, restore, or purge operations because the plugin does not acquire a provider-owned lifecycle lease.
 
 **Operational constraint:** until a provider-owned artifact lease/tombstone API is available and integrated, do not run multiple Harness processes against the same session store while using destructive Session Delete actions. The plugin's lock is not a substitute for native writer coordination.
 
@@ -17,9 +17,18 @@ The shipped JSONL provider has a provider-specific cross-process write lease. Th
 | Provider / mechanism | Cross-process writer exclusion | Can lease an absent artifact for restore? | What this plugin currently uses |
 |---|---|---|---|
 | Shipped Harness JSONL provider | Yes, for its own write handles: POSIX `flock(2)` on the `session.lock` inode; Windows named kernel semaphore derived from the session path | No, not through `open(id, 'write')`: the provider resolves an existing log before acquiring the lease, so an absent log returns not-found | **Nothing.** The plugin does not call `sessionPersistence.open(id, 'write')` to acquire this lease |
+| Built-in Harness SQLite provider | Yes, for its own write handles: a database-scoped per-Session kernel lease plus the root artifact/creation lock; the shared lease uses POSIX `flock(2)` or a Windows named kernel semaphore | No public consumer API. Internal migration code can acquire a lease from a `SessionHeader`, but that helper is not exposed by `SessionPersistence` and is not a delete/retire contract | **Nothing.** The plugin does not acquire the SQLite provider's internal ownership locks; SQLite snapshots also omit a per-Session filesystem `location` because history is stored in the shared database |
 | Generic `SessionPersistence` contract | Do not assume cross-process exclusion. The abstract contract's single-writer guarantee is backend-instance scoped unless a provider documents more | Not specified by the generic contract | No provider capability is inferred from `locate()` or a package version |
 | Other / third-party persistence providers | Unknown until the provider documents and tests its own mechanism | Unknown | The plugin currently uses its own filesystem operation lock and store locator/path validation only |
 | Session Delete plugin operation lock | Serializes cooperating plugin instances using the same canonicalized local session-store path; stale-lock reclamation is conservative and fail-closed | Not applicable; this is not a Host persistence lease | Used by delete, restore, purge, retention cleanup, startup reconciliation, and interrupted trash-move recovery |
+
+### Built-in SQLite provider details
+
+- SQLite stores Session metadata and event frames in the shared `<root>/.segments/sessions.sqlite` database; it does not expose one movable per-Session log directory. Its `stat()` snapshots omit `location`, so a consumer cannot derive a safe per-Session filesystem artifact from the generic snapshot.
+- A SQLite write handle acquires two internal ownership locks: a database-scoped per-Session lock under the database's `.session-locks` sibling directory, and a root artifact/creation lock. The lock implementation uses POSIX `flock(2)` or a Windows named kernel semaphore. Legacy JSONL import also coordinates against the legacy artifact lock.
+- The internal `SqliteStore.acquireSessionLease(header)` helper is used by migration. It is not part of the public `SessionPersistence` service surface, is not exposed as a provider capability to plugins, and does not define atomic delete, restore, quarantine, or retirement semantics.
+- The SQLite provider documentation requires all processes writing imported Sessions to use SQLite. Do not mix JSONL and SQLite writers for one imported Session.
+- Consequently, the current Session Delete filesystem trash implementation has no verified destructive support for SQLite-backed histories. Do not treat the database file as a per-Session artifact or move/delete it to remove one Session.
 
 ### Platform-specific JSONL details
 
@@ -67,6 +76,9 @@ See [the Host-native write-lease ADR](./host-native-write-lease-adr.md) for the 
 | Plugin lock path convergence through symlink aliases | Covered by plugin tests |
 | Plugin lock reclamation after owner process exits | Covered by plugin tests |
 | Shipped JSONL provider's POSIX/Windows write lease contract | Inspected/documented; not integrated by this plugin |
+| Built-in SQLite provider's database-scoped and artifact write-ownership locks | Inspected/documented; not integrated by this plugin |
+| SQLite per-Session filesystem artifact location | Not exposed by `stat()`; history resides in the shared database |
+| Public provider-owned lifecycle lease / tombstone / retirement API (JSONL or SQLite) | **No public capability verified** |
 | Two real Harness processes contending on the provider lease while delete/restore/purge runs | **Not tested** |
 | Provider-owned lease for temporarily absent artifacts | **No public capability verified** |
 | Third-party provider compatibility | **Unknown; provider-specific evidence required** |
@@ -79,5 +91,5 @@ Mock Cordis contexts and independent Node processes validate the plugin lock imp
 - Keep the current guarantee narrowly worded: cooperating plugin instances on the same host and local filesystem.
 - Do not claim protection against native Harness writers or cross-process workspace mutations.
 - Do not infer provider guarantees from the generic persistence interface.
-- Do not add JSONL-specific destructive filesystem handling until the Host exposes a stable artifact lifecycle capability and the real multi-process acceptance tests pass.
+- Do not add JSONL- or SQLite-specific destructive storage handling until the Host exposes a stable artifact lifecycle capability and the real multi-process acceptance tests pass.
 - Until then, users should avoid concurrent Harness processes sharing the same session store when performing delete, restore, or purge.
