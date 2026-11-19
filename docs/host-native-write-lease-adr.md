@@ -189,3 +189,57 @@ Discovery must always start from the currently active `ctx.sessionPersistence` i
 Keep the interface and shared semantic types in the persistence seam package, but keep all implementation details in provider packages. The shared package must not import JSONL/SQLite code, expose lock primitives, Segment IDs, database paths, or filesystem layouts. The JSONL and SQLite packages implement the same capability independently. The SQLite package's existing dependency on the JSONL package for legacy import does not change lifecycle ownership: the outer SQLite persistence instance remains authoritative for an ID selected into SQLite and must fence the legacy importer too.
 
 This recommendation is a contract placement proposal for upstream maintainers, not an implementation or a claim that the reviewed upstream commit already contains the method.
+
+## Concrete capability contract (refinement)
+
+The following is the recommended public shape for upstream review. Names may change during review, but the compatibility and retry semantics below are normative.
+
+```ts
+export interface SessionLifecycleRetireOptions {
+  /** Caller-persisted idempotency key; reuse unchanged after timeout or process death. */
+  readonly operationId: string
+  /** Compared against a snapshot from this same active persistence instance and Session ID. */
+  readonly expectedRevision?: SessionPersistenceRevision
+  readonly signal?: AbortSignal
+}
+
+export interface SessionLifecycleOptions {
+  readonly signal?: AbortSignal
+}
+
+export type SessionLifecycleTerminalState = 'retired' | 'restored' | 'purged'
+
+export interface SessionLifecycleRecord {
+  readonly id: SessionId
+  /** Opaque provider-issued token; never a path, database key, or Segment identifier. */
+  readonly token: string
+  readonly state: SessionLifecycleTerminalState
+}
+
+export interface SessionLifecycleRestoreResult {
+  /** The same durable retirement identity, now in state 'restored'. */
+  readonly retirement: SessionLifecycleRecord
+  /** Current live snapshot after restoration. */
+  readonly snapshot: SessionPersistenceSnapshot
+}
+
+export interface SessionLifecycleCapability {
+  retire(id: SessionId, options: SessionLifecycleRetireOptions): Promise<SessionLifecycleRecord>
+  restore(token: string, options?: SessionLifecycleOptions): Promise<SessionLifecycleRestoreResult>
+  purge(token: string, options?: SessionLifecycleOptions): Promise<SessionLifecycleRecord>
+  inspect(token: string, options?: SessionLifecycleOptions): Promise<SessionLifecycleRecord | undefined>
+  inspectById(id: SessionId, options?: SessionLifecycleOptions): Promise<SessionLifecycleRecord | undefined>
+}
+```
+
+Contract details that the signature alone cannot express:
+
+- A repeated `retire(id, { operationId })` returns the same token and committed result, even if the original response was lost. Reusing an operation ID for a different Session is a typed conflict. Once an operation ID has committed, retry resolution takes precedence over re-checking its original expected revision.
+- A stale `expectedRevision` rejects before retirement begins. Revisions are only comparable within the same active persistence instance and Session ID, matching the existing `SessionPersistenceRevision` contract; they are not durable cross-restart versions.
+- Repeated `restore(token)` returns the same restored outcome and current snapshot. Repeated `purge(token)` returns the same purged outcome. Restore-after-purge and purge-after-restore return typed terminal-state conflicts; neither may recreate or delete data.
+- `inspectById(id)` must return enough durable state to reconcile a caller that committed `operationId` but died before persisting the returned token. Its retention/compaction rules must not discard an outcome while a corresponding caller operation could still be in its recovery window.
+- Provider crash recovery is an initialization responsibility: the provider must reconcile incomplete durable phases before exposing the persistence service as ready. It is not a plugin-callable `recover()` method, because callers cannot safely decide when another process's recovery is complete.
+- The capability object is bound to exactly one persistence instance. Consumers obtain it from that instance and must reacquire it after service replacement; no global singleton or separately registered Cordis service is permitted.
+
+Use typed errors for unsupported capability (discovery returns `undefined`, so this is normally a consumer-side refusal), revision conflict, operation-ID conflict, writer busy/cancelled, not-found, and illegal terminal transition. The provider must document which outcomes are retryable and whether cancellation occurred before or after the linearization point.
+

@@ -194,3 +194,16 @@ The DB transaction and marker publication/reconciliation need explicit crash sem
 - Keep a durable identity fence for purged IDs for as long as legacy artifacts or delayed import paths could otherwise resurrect that ID; define retention/compaction only when resurrection is impossible by construction.
 
 These are additional acceptance requirements; the reviewed provider currently has no lifecycle tombstone or marker reconciliation protocol.
+
+## Gate 0 contract refinements
+
+The proposed public capability signature is specified in the parent ADR's **Concrete capability contract** section. Reviewers should resolve these semantics before adapter work:
+
+- **Retire idempotency:** `operationId` is caller-persisted before the provider call, scoped durably to the Session identity, and returns the same token after a lost response. Reusing it for another Session is a typed conflict. A retry of an already committed operation returns its committed result before evaluating the original expected revision again.
+- **Revision scope:** `expectedRevision` uses the existing opaque `SessionPersistenceRevision` and is valid only for the same active persistence instance and Session ID. It protects a stale in-process UI/action; it is not a cross-restart concurrency token.
+- **Terminal retries:** repeated restore and purge return their already-committed outcomes. Restore-after-purge and purge-after-restore are typed terminal conflicts, never implicit resurrection or destructive retries.
+- **Recovery lookup retention:** `inspectById` must retain enough outcome identity to recover a lost response until the plugin outbox can no longer legitimately reference that operation. Token/operation compaction needs an explicit retention rule.
+- **Startup readiness:** provider-owned incomplete-phase recovery completes before the provider exposes `ctx.sessionPersistence` as ready. Do not expose a plugin-callable generic `recover()` method whose invocation could race another process or bypass provider startup ordering.
+- **Cancellation:** every method documents whether abort is observed only before linearization or can interrupt an in-progress operation. After a commit may have happened, callers must resolve ambiguity through the same operation ID or token inspection, not by generating a new operation ID.
+- **Capability lifetime:** a capability obtained from a persistence instance cannot be used after that service is replaced. Consumers reacquire from the current instance; tests must replace the provider and prove no cached capability routes work to the old backend.
+
