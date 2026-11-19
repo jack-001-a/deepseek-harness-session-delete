@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { ProcessWorker, withWorkers } from './process-harness.mjs'
 import { assertProviderAdapter } from './fixture-contract.mjs'
 import { BarrierController, FaultPlan } from './orchestration.mjs'
@@ -33,7 +34,7 @@ test('already-started workers are reaped if a later worker cannot be constructed
   ].join('\\n'))
   try {
     await assert.rejects(withWorkers([
-      { role: 'first', caseId: 'partial-construction', script: new URL('file://' + script), env: { SHUTDOWN_MARKER: markerPath } },
+      { role: 'first', caseId: 'partial-construction', script: pathToFileURL(script), env: { SHUTDOWN_MARKER: markerPath } },
       { role: '', caseId: 'invalid-second-worker' },
     ], async () => {}), /role and caseId are required/)
     assert.equal(await readFile(markerPath, 'utf8'), 'closed')
