@@ -33,7 +33,18 @@ $env:DSH_HARNESS_ROOT = 'C:\\path\\to\\deepseek-harness'
 npm run test:integration:upstream
 \`\`\`
 
-The Harness checkout must already be built. This script deliberately resolves package exports from that checkout rather than adding Harness runtime packages as dependencies of the distributable plugin.
+The Harness checkout must already be built. For the pinned upstream revision, prepare it from the Harness repository root with Node 24.9+ and pnpm 11.28.5:
+
+```sh
+pnpm install --frozen-lockfile \
+  --filter '@deepseek-ai/dsh-agent-loop-testkit...' \
+  --filter '@deepseek-ai/dsh-agent-loop...' \
+  --filter '@deepseek-ai/dsh-session-persistence-jsonl...'
+pnpm run build:native-system
+pnpm exec tsx scripts/compile-referenced-projects.ts host-libraries
+```
+
+The last command emits the real Host package libraries, including the Cordis, AgentLoop testkit, and JSONL provider exports consumed by this runner. The script deliberately resolves package exports from that checkout rather than adding Harness runtime packages as dependencies of the distributable plugin. The repository's `upstream-integration` workflow automates this Linux setup against the pinned commit.
 
 ## What the prototype exercises
 

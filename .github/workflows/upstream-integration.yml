@@ -1,0 +1,72 @@
+name: upstream-integration
+
+on:
+  pull_request:
+    paths:
+      - "index.js"
+      - "package.json"
+      - "scripts/run-upstream-harness-integration.mjs"
+      - "docs/real-harness-integration-prototype.md"
+      - ".github/workflows/upstream-integration.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-harness:
+    name: real Harness / Linux / Node 24
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out Session Delete
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check out pinned DeepSeek Harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: 2e39e70496aa02986ca6a820c5d497e816b69d7e
+          path: deepseek-harness
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.9.0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v5.0.0
+        with:
+          version: 11.28.5
+          package_json_file: deepseek-harness/package.json
+
+      - name: Install the upstream Host dependency closure
+        working-directory: deepseek-harness
+        run: |
+          pnpm install --frozen-lockfile \
+            --filter '@deepseek-ai/dsh-agent-loop-testkit...' \
+            --filter '@deepseek-ai/dsh-agent-loop...' \
+            --filter '@deepseek-ai/dsh-session-persistence-jsonl...'
+
+      - name: Build the upstream native system addon
+        working-directory: deepseek-harness
+        run: pnpm run build:native-system
+
+      - name: Build the upstream Host libraries
+        working-directory: deepseek-harness
+        run: pnpm exec tsx scripts/compile-referenced-projects.ts host-libraries
+
+      - name: Check Session Delete and run its unit suite
+        run: |
+          npm run check
+          npm test
+
+      - name: Run against real Cordis, AgentLoop testkit, and JSONL provider
+        env:
+          DSH_HARNESS_ROOT: ${{ github.workspace }}/deepseek-harness
+        run: npm run test:integration:upstream
