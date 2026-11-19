@@ -1709,7 +1709,7 @@ test('a dead same-host lock owner is reclaimed after process exit', async () => 
     apply(ctx, { mode: 'permanent' })
     await provided.get('sessionDelete').withProcessLock(sessionId, async () => {
       await appendFile(marker, 'held\\n')
-      await new Promise((resolve) => setTimeout(resolve, 60000))
+      process.exit(0)
     })
   `
   const child = spawn(process.execPath, ['--input-type=module', '-e', worker, moduleUrl, store.root, SESSION_ID, marker], {
