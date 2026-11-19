@@ -49,7 +49,9 @@ The last command emits the real Host package libraries, including the Cordis, Ag
 2. That process creates a persisted session, appends a minimal completed turn, flushes, closes the write handle, and disposes its Host context.
 3. The parent process creates a fresh Host context over the same isolated session root.
 4. It loads the real Session Delete \`apply()\` entrypoint and checks capability discovery.
-5. It performs trash delete, lists the trash, restores the session, verifies it through the real provider, deletes it again, and purges it.
+5. It performs trash delete and lists the trash.
+6. It disposes that Host context, opens a fresh Host composition over the same store, and explicitly runs `reconcileStartup()` to verify committed-delete recovery.
+7. It restores the session, verifies it through the real provider, deletes it again, and purges it.
 
 This proves a useful first integration seam: **a session materialized by one real Harness process can be consumed by the plugin running in another real Harness composition**, with a fresh provider instance and real on-disk artifacts.
 
@@ -62,7 +64,7 @@ The first successful real-Harness run completed on 2026-11-19:
 - Plugin unit suite — 97 passed, 0 failed.
 - Real integration — passed using the pinned Harness revision, with a separate-process seed/close followed by delete, trash listing, restore, second delete, and purge from a fresh Host context.
 
-The run verifies the closed-writer artifact lifecycle described above. It is not evidence for live-writer contention, Host-native artifact leases, or cross-process workspace accounting.
+The run verifies the closed-writer artifact lifecycle described above, including committed-delete reconciliation through a fresh Host composition. The runner calls `reconcileStartup()` directly; the integration does not independently prove Cordis `ready` event ordering. It is not evidence for live-writer contention, Host-native artifact leases, or cross-process workspace accounting.
 
 ## Deliberate limits
 
