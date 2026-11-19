@@ -1809,6 +1809,7 @@ class SessionDeleteService {
         const didPurge = await this.runTrashOperation('purge', entry.sessionId, async () => {
           // The entry may have been restored or replaced while the sweep was
           // waiting for the per-session lock. Never purge a stale snapshot.
+          await this.refreshTrash()
           const current = await this.trashEntryFor(entry.sessionId)
           if (current === undefined || current.trashId !== entry.trashId) return false
           const currentDeletedAt = Date.parse(current.deletedAt)
