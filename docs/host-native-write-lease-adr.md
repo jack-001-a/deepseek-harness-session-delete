@@ -228,6 +228,9 @@ export interface SessionLifecycleCapability {
   restore(token: string, options?: SessionLifecycleOptions): Promise<SessionLifecycleRestoreResult>
   purge(token: string, options?: SessionLifecycleOptions): Promise<SessionLifecycleRecord>
   inspect(token: string, options?: SessionLifecycleOptions): Promise<SessionLifecycleRecord | undefined>
+  /** Exact recovery lookup for a previously submitted retire operation. */
+  inspectOperation(id: SessionId, operationId: string, options?: SessionLifecycleOptions): Promise<SessionLifecycleRecord | undefined>
+  /** Current lifecycle record for diagnostics; not a substitute for operation-ID lookup. */
   inspectById(id: SessionId, options?: SessionLifecycleOptions): Promise<SessionLifecycleRecord | undefined>
 }
 ```
@@ -243,3 +246,10 @@ Contract details that the signature alone cannot express:
 
 Use typed errors for unsupported capability (discovery returns `undefined`, so this is normally a consumer-side refusal), revision conflict, operation-ID conflict, writer busy/cancelled, not-found, and illegal terminal transition. The provider must document which outcomes are retryable and whether cancellation occurred before or after the linearization point.
 
+
+
+### Exact recovery identity
+
+`inspectById(id)` is useful for observing the Session's current lifecycle state, but it is not a sufficient lost-response recovery key by itself. The same Session may be restored and retired again under a new operation ID; a later retirement must not be mistaken for the earlier operation whose response was lost.
+
+The normative recovery path is therefore `inspectOperation(id, operationId)` (or retrying `retire` with that exact same operation ID). The provider durably indexes the operation ID to its committed result and returns the original token/state even if the Session has since moved to another lifecycle state. `inspectById` remains diagnostic/current-state lookup only. The provider must not compact an operation mapping while the plugin outbox may still reference it.
