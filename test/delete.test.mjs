@@ -1683,3 +1683,59 @@ test('filesystem session locks serialize two independent Node processes', async 
   const events = (await readFile(marker, 'utf8')).trim().split('\n')
   assert.deepEqual(events, ['start', 'end', 'start', 'end'])
 })
+
+test('a dead same-host lock owner is reclaimed after process exit', async () => {
+  const store = await makeStore()
+  const marker = join(store.base, 'stale-lock-events.txt')
+  const moduleUrl = new URL('../index.js', import.meta.url).href
+  const worker = `
+    import { appendFile } from 'node:fs/promises'
+    const [moduleUrl, root, sessionId, marker] = process.argv.slice(1)
+    const { apply } = await import(moduleUrl)
+    const provided = new Map()
+    const sessions = { get: () => undefined, store: new Map() }
+    const persistence = { root, stat: async () => undefined, list: async () => [] }
+    const ctx = {
+      sessions,
+      sessionPersistence: persistence,
+      get: (name) => name === 'sessions' ? sessions : name === 'sessionPersistence' ? persistence : undefined,
+      reflect: { provide: (name, value) => provided.set(name, value) },
+      on: () => {},
+      waterfall: async (_name, _payload, base) => base(),
+      parallel: async () => {},
+      emit: () => {},
+      logger: { warn: () => {} },
+    }
+    apply(ctx, { mode: 'permanent' })
+    await provided.get('sessionDelete').withProcessLock(sessionId, async () => {
+      await appendFile(marker, 'held\\n')
+      await new Promise((resolve) => setTimeout(resolve, 60000))
+    })
+  `
+  const child = spawn(process.execPath, ['--input-type=module', '-e', worker, moduleUrl, store.root, SESSION_ID, marker], {
+    stdio: 'ignore',
+  })
+  try {
+    let ready = false
+    for (let attempt = 0; attempt < 200; attempt++) {
+      try {
+        ready = (await readFile(marker, 'utf8')).includes('held')
+        if (ready) break
+      } catch {}
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    assert.equal(ready, true, 'the child must acquire the lock before it is terminated')
+  } finally {
+    child.kill()
+    await new Promise((resolve, reject) => {
+      child.once('error', reject)
+      child.once('exit', resolve)
+    })
+  }
+
+  const h = harness({ ...storedTarget(store) })
+  await h.service.withProcessLock(SESSION_ID, async () => {
+    await appendFile(marker, 'reclaimed\\n')
+  })
+  assert.deepEqual((await readFile(marker, 'utf8')).trim().split('\\n'), ['held', 'reclaimed'])
+})
