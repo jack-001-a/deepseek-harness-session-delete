@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Optional integration prototype against a real DeepSeek Harness checkout.
- * The seed process closes its real JSONL handle before any destructive action.
+ * The runner probes upstream writer ownership separately and closes it before destructive actions.
  */
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
@@ -21,6 +21,7 @@ const HARNESS_PACKAGES = {
   '@deepseek-ai/dsh-agent-loop-testkit': 'packages/test-support/agent-loop-testkit',
   '@deepseek-ai/dsh-agent-loop': 'packages/core/agent-loop',
   '@deepseek-ai/dsh-session-persistence-jsonl': 'packages/session/session-persistence-jsonl',
+  '@deepseek-ai/dsh-session-persistence': 'packages/session/session-persistence',
   '@deepseek-ai/dsh-session': 'packages/core/session',
 }
 
@@ -32,11 +33,12 @@ async function importHarnessPackage(name) {
 }
 
 async function createHostContext(sessionRoot) {
-  const [{ Context }, testkit, agentLoop, jsonl, session] = await Promise.all([
+  const [{ Context }, testkit, agentLoop, jsonl, persistence, session] = await Promise.all([
     importHarnessPackage('@deepseek-ai/cordis'),
     importHarnessPackage('@deepseek-ai/dsh-agent-loop-testkit'),
     importHarnessPackage('@deepseek-ai/dsh-agent-loop'),
     importHarnessPackage('@deepseek-ai/dsh-session-persistence-jsonl'),
+    importHarnessPackage('@deepseek-ai/dsh-session-persistence'),
     importHarnessPackage('@deepseek-ai/dsh-session'),
   ])
   const ctx = new Context()
@@ -67,6 +69,94 @@ async function seedInSeparateProcess(sessionRoot) {
     )
   }
   assert.match(worker.stdout, /seeded-and-closed/)
+}
+
+async function verifyCrossProcessWriterOwnership(ctx, sessionRoot) {
+  const worker = spawn(
+    process.execPath,
+    [fileURLToPath(import.meta.url), '--hold-writer', sessionRoot],
+    {
+      cwd: harnessRoot,
+      env: { ...process.env, DSH_HARNESS_ROOT: harnessRoot },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  )
+  let stdout = ''
+  let stderr = ''
+  const closed = new Promise(resolvePromise => {
+    worker.once('close', (code, signal) => resolvePromise({ code, signal }))
+  })
+
+  await new Promise((resolvePromise, rejectPromise) => {
+    let settled = false
+    const finish = (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      if (error) rejectPromise(error)
+      else resolvePromise()
+    }
+    const timeout = setTimeout(() => {
+      worker.kill('SIGKILL')
+      finish(new Error(
+        'Writer owner process timed out before acquiring its lease.\\nstdout:\\n'
+          + stdout + '\\nstderr:\\n' + stderr,
+      ))
+    }, 60_000)
+
+    worker.stdout.setEncoding('utf8')
+    worker.stderr.setEncoding('utf8')
+    worker.stdout.on('data', chunk => {
+      stdout += chunk
+      if (stdout.includes('writer-held\\n')) finish()
+    })
+    worker.stderr.on('data', chunk => { stderr += chunk })
+    worker.once('error', error => finish(error))
+    worker.once('close', (code, signal) => {
+      finish(new Error(
+        'Writer owner process exited before the lease barrier (exit '
+          + code + ', signal ' + signal + ').\\nstdout:\\n'
+          + stdout + '\\nstderr:\\n' + stderr,
+      ))
+    })
+  })
+
+  let probeError
+  try {
+    const reader = await ctx.sessionPersistence.open(SESSION_ID, 'read')
+    assert.equal(reader.header.id, SESSION_ID)
+    await reader.close()
+
+    await assert.rejects(
+      ctx.sessionPersistence.open(SESSION_ID, 'write'),
+      error => error?.name === 'SessionAlreadyOwnedError',
+      'a second process must not acquire an active writer lease',
+    )
+  } catch (error) {
+    probeError = error
+  } finally {
+    worker.kill('SIGKILL')
+  }
+
+  const exit = await closed
+  if (probeError) throw probeError
+  assert.equal(exit.signal, 'SIGKILL', 'the controller must kill the live writer owner')
+
+  // Kernel ownership must be released by process death, without relying on
+  // the dead process to run SessionHandle.close() or Host teardown.
+  const successor = await ctx.sessionPersistence.open(SESSION_ID, 'write')
+  assert.equal(successor.header.id, SESSION_ID)
+  await successor.close()
+}
+
+async function holdWriterWorker(sessionRoot) {
+  const { ctx } = await createHostContext(sessionRoot)
+  await ctx.sessionPersistence.open(SESSION_ID, 'write')
+  process.stdout.write('writer-held\\n')
+  // Keep the process alive while its unclosed real provider handle owns the
+  // kernel lease. The controller terminates this process with SIGKILL.
+  setInterval(() => {}, 60_000)
+  await new Promise(() => {})
 }
 
 async function seedWorker(sessionRoot) {
@@ -185,6 +275,10 @@ async function runIntegration() {
     assert.equal(capabilities.supported, true)
     assert.equal(capabilities.canRestore, true)
 
+    // Verify provider-level writer exclusion in a separate process; this does
+    // not imply that Session Delete can fence a live writer during mutation.
+    await verifyCrossProcessWriterOwnership(ctx, sessionRoot)
+
     const removed = await service.delete(SESSION_ID)
     assert.equal(removed.removed, true)
     assert.equal(removed.trashed, true)
@@ -255,7 +349,7 @@ async function runIntegration() {
     assert.equal(await ctx.sessionPersistence.stat(SESSION_ID), undefined)
 
     process.stdout.write(
-      'PASS: real Cordis + AgentLoop testkit + JSONL provider; cross-process seed/close; ready-hook delete/restore recovery; purge\n',
+      'PASS: real Cordis + AgentLoop testkit + JSONL provider; cross-process seed/close and writer exclusion/release; ready-hook delete/restore recovery; purge\n',
     )
   } finally {
     await ctx?.fiber.dispose()
@@ -267,6 +361,8 @@ if (process.argv[2] === '--seed') {
   await seedWorker(resolve(process.argv[3]))
 } else if (process.argv[2] === '--interrupt-restore') {
   await interruptRestoreWorker(resolve(process.argv[3]))
+} else if (process.argv[2] === '--hold-writer') {
+  await holdWriterWorker(resolve(process.argv[3]))
 } else {
   await runIntegration()
 }

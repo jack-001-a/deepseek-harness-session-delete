@@ -51,10 +51,10 @@ The last command emits the real Host package libraries, including the Cordis, Ag
 4. It loads the real Session Delete \`apply()\` entrypoint and checks capability discovery.
 5. It performs trash delete and lists the trash.
 6. It disposes that Host context, opens a fresh Host composition over the same store, dispatches the real Cordis `ready` event with `ctx.parallel('ready')`, and observes the plugin's committed-delete recovery result.
-7. It restores the session, verifies it through the real provider, and deletes it again.
-8. A separate real Host child writes the `.restoring` marker and promotes the trash artifact back to its original path.
-9. The controller kills that child with `SIGKILL` at the explicit post-promotion stdout barrier, before graceful Host disposal, accounting replay, or marker cleanup.
-10. A fresh Host composition's Cordis `ready` listener recovers the interrupted restore and the real provider verifies the session; the runner then deletes and purges it.
+9. It restores the session, verifies it through the real provider, and deletes it again.
+10. A separate real Host child writes the `.restoring` marker and promotes the trash artifact back to its original path.
+11. The controller kills that child with `SIGKILL` at the explicit post-promotion stdout barrier, before graceful Host disposal, accounting replay, or marker cleanup.
+12. A fresh Host composition's Cordis `ready` listener recovers the interrupted restore and the real provider verifies the session; the runner then deletes and purges it.
 
 This proves a useful first integration seam: **a session materialized by one real Harness process can be consumed by the plugin running in another real Harness composition**, with a fresh provider instance and real on-disk artifacts.
 
@@ -72,7 +72,7 @@ The first successful real-Harness run completed on 2026-11-19:
 - Plugin unit suite — 97 passed, 0 failed.
 - Real integration — passed using the pinned Harness revision, with a separate-process seed/close, committed-delete recovery through a fresh Host `ready` listener, restore, a simulated post-promotion interrupted restore recovered through another fresh Host `ready` listener, and final delete/purge. The interrupted-restore assertion returned `{ deleted: 0, restored: 1, preserved: 0 }`.
 
-The run 44514626145 verifies the controller-driven child-process kill at the post-promotion barrier and subsequent recovery through a fresh Host composition's Cordis `ready` listener. Its job log confirms all 97 unit tests passed and the integration runner emitted its PASS result. The regular CI run 44514626100 passed all nine operating-system/Node-version matrix jobs. The runner dispatches Cordis `ready` explicitly through `ctx.parallel('ready')` so the registered listener is awaited. This verifies the plugin's real event wiring, but does not reproduce the full production Host boot sequence or independently establish the ordering of every Host service. It is not evidence for live-writer contention, Host-native artifact leases, or cross-process workspace accounting.
+The runner additionally verifies the pinned JSONL provider's cross-process writer-ownership contract: while a child process holds a real write handle, a parent-process read succeeds and a competing write-open rejects with `SessionAlreadyOwnedError`; after the controller kills the owner with `SIGKILL`, the parent can acquire and close a successor writer. This tests provider-level writer exclusion and kernel release on process death only. It does not test or imply that Session Delete can fence a live writer during destructive mutation. The runner dispatches Cordis `ready` explicitly through `ctx.parallel('ready')` so the registered listener is awaited. This verifies the plugin's real event wiring, but does not reproduce the full production Host boot sequence or independently establish the ordering of every Host service. Cross-process workspace accounting remains outside this prototype.
 
 ## Upstream write-ownership boundary
 
@@ -84,13 +84,13 @@ Consequently this prototype deliberately closes the seed writer before destructi
 
 ## Deliberate limits
 
-This is not yet a live-writer contention or full desktop/web Host test:
+This is not yet a destructive live-writer fencing or full desktop/web Host test:
 
-- The seed process closes its write handle before the lifecycle process deletes the artifact.
+- The seed process closes its write handle before the lifecycle process deletes the artifact; the writer-contention probe is completed and its child owner is killed before any destructive action.
 - It does not race AgentLoop teardown against delete.
-- It does not claim that Session Delete acquires the JSONL provider's Host-native write lease.
+- It does not claim that Session Delete acquires or participates in the JSONL provider's Host-native write lease.
 - It does not validate workspace membership, pin/archive accounting, projection cache, or cross-process workspace transactions.
 - The runner now prepares the post-promotion interrupted-restore state in a separate real Host child process and the controller sends `SIGKILL` after the child reports the completed marker+rename barrier. A fresh Host then verifies recovery through its Cordis `ready` listener. This is one deterministic process-death point, not a general instruction-level fault-injection framework; it does not test interruption during the cross-volume copy itself or crash injection during delete/purge.
 - It does not make the existing plugin-only filesystem lock safe against an independent live Host writer.
 
-Those scenarios remain gated on a public artifact lease/tombstone contract and a full Host lifecycle fixture. Do not run destructive operations against a live writer based on this prototype.
+Preventing Session Delete from beginning a destructive operation while a live Harness writer exists remains gated on a public provider-owned artifact lease/tombstone contract and a full Host lifecycle fixture. The writer probe above validates only the provider's own write-open exclusion. Do not run destructive operations against a live writer based on this prototype.
