@@ -451,3 +451,122 @@ Unknown or conflicting path states are not automatically repaired. The provider 
 ### Implementation status and safety gate
 
 This section is a proposed provider contract, not a claim that the pinned upstream JSONL Provider already supports lifecycle operations. The current writer lease is directory-local, reads do not establish lifecycle admission under a stable lock, and there is no provider-owned durable lifecycle ledger/quarantine protocol in the pinned revision. Until all three are implemented and the cross-process crash matrix passes on supported platforms, JSONL destructive lifecycle operations must remain unsupported and fail closed. The plugin must not move or delete Session directories itself.
+## JSONL lifecycle ledger: record format, durability, recovery, and scale
+
+The lifecycle ledger is provider metadata, not a user Session artifact. It must survive quarantine and purge, and its correctness must not depend on a single mutable JSON document or a rebuildable directory listing. The initial implementation should prefer a simple per-Session append-only journal over a global index or a mutable whole-provider manifest.
+
+### Namespace and sharding
+
+Use a provider-owned metadata root that is outside all Session and quarantine directories and is bound to a canonical provider-root identity. Store one journal per encoded Session ID in a deterministic sharded namespace, for example `.lifecycle-ledger/<first-two-hex-of-hash>/<encoded-session-id>.journal`. Sharding avoids huge flat directories; one journal per Session avoids a global write bottleneck. The stable per-Session kernel lock from the preceding section serializes journal access and every corresponding artifact transition.
+
+- The Session ID is encoded as one safe path component; the shard is derived from a cryptographic hash of the canonical Session ID, not from caller-controlled path fragments.
+- Journal records repeat the full Session ID and provider-root identity. On open, verify both against the requested identity and the namespace path; a mismatch is corruption, not a reason to try another path.
+- A global listing index is only a cache/projection. It can be rebuilt from validated journals and live artifact headers; it never authorizes open, restore, or purge.
+- Do not place all Sessions in one JSON file, one SQLite database shared with user artifacts, or one global lock. Per-Session journals and locks permit unrelated Sessions to progress independently.
+- Journal creation is itself durable: create the shard directory safely, sync its parent when required, create the journal without replacement, sync the new file, then sync the containing directory before reporting the first durable lifecycle intent.
+
+### Versioned append-only record envelope
+
+Each journal is a sequence of bounded, length-delimited records. A record contains a fixed magic value, format version, record type, monotonically increasing per-Session sequence number, payload length, canonical payload bytes, and checksum. The encoding must be deterministic and reject duplicate keys, invalid UTF-8, non-canonical integer encodings, unknown mandatory fields, oversized lengths, and trailing bytes.
+
+Recommended record envelope fields:
+
+- `magic`, `formatVersion`, `recordType`, `sequence`, `payloadLength`.
+- `providerRootId`, `sessionId`, `generation`, `revision`.
+- `operationId`, `operationKind`, stable request fingerprint, and previous-record digest.
+- `state` and only the transition-specific data required to resume or inspect the operation.
+- `checksum` over the complete envelope and payload; a cryptographic digest chain links each record to its predecessor.
+
+Use a well-specified canonical binary encoding (or rigorously canonical JSON with explicit byte framing); do not depend on ordinary `JSON.stringify` object property order as a storage protocol. Set hard limits for record size, journal size, string lengths, and number of outstanding operations. Unknown optional fields may be skipped only when the format version explicitly permits it; unknown mandatory record types or fields fail closed.
+
+The checksum detects torn/corrupt records; it is not an authenticity boundary against an attacker who can rewrite provider files. If hostile local file modification is in scope, use a separately protected key and authenticated records, with a defined key provisioning/rotation/recovery design. Do not imply that CRC or a hash chain prevents a privileged filesystem writer from forging state.
+
+### Append and durability contract
+
+While holding the stable per-Session lock:
+
+1. Open the journal with no-follow semantics and verify it is a regular provider-owned file beneath the metadata root; reject symlinks, hard-link surprises where detectable, unexpected owner/ACL/mode, or root identity changes.
+2. Read and validate the last committed record, sequence, and digest. Never accept a sequence rollback or a journal whose identity differs from the requested Session.
+3. Append one complete framed record. Handle short writes and interruptions; never assume a single write call writes the entire record.
+4. Flush userspace buffers and sync the journal file before treating the record as durable. The provider must document the actual OS/filesystem primitive used and its failure semantics.
+5. For a newly created journal or newly created shard, sync the containing directory after the entry is published. A durable file body without a durable directory entry is not sufficient.
+6. Only after the durable append may the provider cross the next external filesystem boundary (quarantine rename, restore rename, purge deletion) or return a committed operation result.
+
+A sync error or process death around append has an ambiguous outcome. Reopen and scan the journal under the stable lock. If the complete record is present and validates, treat it as committed; if only an incomplete final tail is present, apply the tail-recovery rule below; if the result cannot be established, return `outcome_unknown` and retain the same operation ID. Never append a conflicting retry under a new operation ID.
+
+### Torn-tail recovery versus corruption
+
+On startup or journal access, scan records from the beginning and validate framing, sequence monotonicity, identity, checksum, and digest chain.
+
+- A strictly incomplete final record (for example, fewer bytes than its declared bounded length at EOF) may be truncated to the last fully validated record only while holding the stable lock, followed by file sync. This is safe only because the append protocol writes records serially and syncs before advancing the external state machine.
+- A complete final record with an invalid checksum, invalid sequence, wrong previous digest, malformed payload, or impossible transition is corruption. Do not silently truncate it.
+- Any invalid record followed by additional bytes is interior corruption and must fail closed; do not scan forward looking for a plausible magic marker.
+- If an incomplete final record could have preceded an external rename or deletion, the state machine must prove that no external transition was permitted before the append became durable. If that ordering cannot be proven for a historical format, mark recovery-required rather than truncate.
+- Keep the original journal and diagnostic evidence. Do not automatically replace it with an empty file, rebuild it from artifact directories, or fall back to legacy JSONL as if no lifecycle record existed.
+
+### State machine and operation mapping
+
+Journal records are immutable facts; current state is a fold over the validated sequence. The minimum state transitions are:
+
+| Current state | Record | Next state | Required durable ordering |
+| --- | --- | --- | --- |
+| absent/live | `retire_intent` | `retiring` | Append + sync before quarantine rename |
+| retiring | `retire_committed` | `retired` | Rename + parent sync before append + sync |
+| retired | `restore_intent` | `restoring` | Append + sync before restore rename |
+| restoring | `restore_committed` | `live` | Rename + parent sync before append + sync |
+| retired | `purge_intent` | `purging` | Append + sync + anti-resurrection fence before deletion |
+| purging | `purge_committed` | `purged` | Destination absent + parent sync before append + sync |
+
+Every successful retire stores an operation mapping keyed by `(SessionId, operationId)` and binds it to operation kind, request fingerprint, generation, and exact opaque token. A repeated matching operation returns the exact original result, even if later generations exist. Reusing the same operation ID with a different Session ID, operation kind, or fingerprint returns `operation_id_conflict`. A new retirement after restore creates a new generation and new operation mapping.
+
+Do not store only a token digest: after a lost response, the provider must be able to return the original opaque token. Store the high-entropy token bytes in the protected provider metadata journal, or define a separately protected deterministic derivation scheme with a durable key lifecycle. The simpler initial contract is to store the token bytes, restrict metadata-root access, avoid logging tokens, and make clear that token possession alone is not a substitute for caller authorization.
+
+Operation mappings and terminal purged-ID fences must outlive the artifact directory. Do not compact them based only on wall-clock TTL. A mapping can be reduced to a minimal deduplication record only when the exact original token/outcome remains recoverable and no caller can legitimately retry the operation.
+
+### Snapshotting and compaction
+
+Do not implement compaction in the first lifecycle release. Per-Session journals are expected to be small, and correctness is more valuable than premature rewrite logic. Enforce conservative size/count limits and surface a maintenance-required condition before reaching them; do not silently discard dedupe mappings or fences.
+
+If compaction becomes necessary, it is a separate versioned protocol:
+
+1. Under the same stable Session lock, validate the entire journal and fold it into a canonical snapshot containing current state, all still-required operation mappings/tokens, generation fences, last sequence, and last digest.
+2. Write snapshot to a unique temporary file in the same metadata directory; sync it; publish it with no-replace/atomic replacement semantics; sync the directory.
+3. Only after the snapshot is durably published, create a new journal segment whose header references the snapshot sequence and digest; sync the segment and directory.
+4. Atomically publish a small manifest selecting the snapshot + segment set, then sync the directory. Recovery validates both old and new sets and selects only a manifest whose referenced files and digests all validate.
+5. Retain the previous snapshot/segment set until the new manifest is durable and verified. Cleanup is a later idempotent maintenance step, never part of the critical compaction commit.
+6. Crash injection at every file write, sync, rename, manifest publish, and cleanup boundary must prove recovery selects a complete old or complete new representation, never a mixture.
+
+Compaction must preserve the exact token and outcome for every retryable operation and every anti-resurrection fence. It may not erase history merely because the Session is purged or the corresponding artifact directory is gone.
+
+### Multi-Session scaling and recovery isolation
+
+- A Session journal append holds only that Session's stable lock; no provider-wide lock is held during ordinary lifecycle transitions.
+- Provider startup may discover shard directories, but it must not eagerly load every journal into unbounded memory. Use bounded workers, bounded file descriptors, and per-journal validation on demand.
+- A global index is derived and rebuildable. If it is stale or missing, rebuild it from validated per-Session journals before using it for listing; never use it to authorize a destructive operation.
+- Recovery of one corrupt journal must not block unrelated healthy Session IDs, but that ID remains unavailable and the provider reports a scoped degraded state. Provider-wide root identity or metadata-root corruption disables all lifecycle operations.
+- Recovery must be idempotent and safe across processes. The stable per-Session lock serializes one journal; any shard-wide maintenance operation has a separate lock acquired only after the per-Session lock in a documented global order.
+- Bound concurrent recovery and quarantine cleanup. Do not hold a single provider-wide lock while recursively deleting large Session directories.
+
+### Security and integrity boundaries
+
+- Metadata root and lock namespace must be created with restrictive permissions/ACLs and verified on every open. POSIX mode bits alone are not a substitute for ownership checks; Windows ACL inheritance must be explicitly tested.
+- Reject symlink traversal and path substitution at every component. Use directory-relative/no-follow operations where supported; revalidate file identity immediately before rename/delete.
+- Bind journal records to provider-root identity so copying a journal into another configured root does not authorize operations there. A copied root restored as a whole is a separate disaster-recovery scenario requiring explicit root identity restoration.
+- Never put event payloads, prompt content, frame bytes, or arbitrary caller metadata in lifecycle records. Store only bounded identity, transition, token, and recovery data.
+- Checksums and hash chains provide accidental-corruption/torn-write detection, not encryption, authorization, or protection from an attacker with write access to the metadata root.
+- Backups must capture journal files, lock namespace metadata as applicable, quarantine artifacts, and root identity consistently. Restoring only journals or only artifact directories can create ambiguous state and must trigger reconciliation/fail-closed behavior.
+
+### Ledger conformance and fault-injection tests
+
+- Short write at every byte boundary; EINTR; disk full; file sync failure; directory sync failure; process kill before/after sync; ambiguous append result and same-operation retry.
+- Incomplete final header/payload may be truncated only when no external transition could have followed; complete checksum failure and interior corruption fail closed.
+- Wrong Session ID, provider-root ID, shard path, generation, sequence, previous digest, duplicate operation ID with different fingerprint, unknown mandatory record type, oversized length, malformed UTF-8, and trailing bytes all reject.
+- Concurrent processes append to different Session journals independently; same Session appends serialize; no global index lock serializes unrelated Sessions.
+- Missing/stale global index rebuilds from validated journals; corrupt one Session journal does not authorize fallback or disable unrelated IDs.
+- Token survives lost response and restart; exact same operation returns same token; token is not logged; permissions/ACL tests deny unrelated users/processes.
+- Snapshot/manifest crash matrix is mandatory before compaction ships; initial release tests assert compaction remains disabled.
+- Backup/restore combinations (journal-only, quarantine-only, complete consistent root) produce explicit safe outcomes; partial restore never reopens an ambiguous Session.
+
+### Implementation gate
+
+This is a proposed storage contract. The pinned upstream JSONL Provider currently has no lifecycle ledger, no generation-scoped durable operation journal, and no cross-resource recovery protocol. Until the journal format, sync semantics, stable lock, quarantine protocol, and fault-injection tests are implemented together, the plugin must continue to treat JSONL lifecycle capability as unsupported.
