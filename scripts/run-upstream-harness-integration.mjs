@@ -400,17 +400,31 @@ async function runIntegration() {
     record('JSONL-INTEGRATION-RUN', 'FAIL', String(error?.stack || error).slice(0, 1800))
     throw error
   } finally {
+    const finalizationErrors = []
+    try {
+      await ctx?.fiber.dispose()
+    } catch (error) {
+      finalizationErrors.push('Host disposal failed: ' + String(error?.stack || error))
+    }
+    for (const path of [sessionRoot, trashRootFor(sessionRoot)]) {
+      try {
+        await rm(path, { recursive: true, force: true })
+      } catch (error) {
+        finalizationErrors.push('Fixture cleanup failed for ' + path + ': ' + String(error?.stack || error))
+      }
+    }
+    if (finalizationErrors.length) {
+      runStatus = 'FAIL'
+      record('JSONL-INTEGRATION-FINALIZATION', 'FAIL', finalizationErrors.join('\n').slice(0, 1800))
+    }
     manifest.status = runStatus
     manifest.finishedAt = new Date().toISOString()
     manifest.durationMs = Number((process.hrtime.bigint() - runStartedAt) / 1_000_000n)
-    await ctx?.fiber.dispose()
     await mkdir(dirname(manifestPath), { recursive: true })
     const temporaryManifest = manifestPath + '.tmp-' + process.pid
-    await writeFile(temporaryManifest, JSON.stringify(manifest, null, 2) + '\n', { flag: 'w', mode: 0o600 })
+    await writeFile(temporaryManifest, JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx', mode: 0o600 })
     await rename(temporaryManifest, manifestPath)
     process.stdout.write('Conformance manifest: ' + manifestPath + '\n')
-    await rm(sessionRoot, { recursive: true, force: true })
-    await rm(trashRootFor(sessionRoot), { recursive: true, force: true })
   }
 }
 
