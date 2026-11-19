@@ -21,7 +21,7 @@ jobs:
   real-harness:
     name: real Harness / Linux / Node 24
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Check out Session Delete
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -45,15 +45,9 @@ jobs:
           version: 11.28.5
           package_json_file: deepseek-harness/package.json
 
-      - name: Install the upstream Host dependency closure
+      - name: Install the upstream workspace dependency graph
         working-directory: deepseek-harness
-        run: |
-          pnpm install --frozen-lockfile \
-            --filter '@deepseek-ai/dsh-typert-generator...' \
-            --filter '@deepseek-ai/dsh-agent-loop-testkit...' \
-            --filter '@deepseek-ai/dsh-agent-loop...' \
-            --filter '@deepseek-ai/dsh-session-persistence-jsonl...' \
-            --filter '@deepseek-ai/dsh-desktop...'
+        run: pnpm install --frozen-lockfile
 
       - name: Build the upstream native system addon
         working-directory: deepseek-harness
