@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL, fileURLToPath } from 'node:url'
-import { apply as applySessionDelete } from '../../index.js'
+import { apply as applySessionDelete } from '../index.js'
 
 const HARNESS_ROOT = process.env.DSH_HARNESS_ROOT
 if (!HARNESS_ROOT) {
