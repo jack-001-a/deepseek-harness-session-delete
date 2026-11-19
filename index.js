@@ -408,50 +408,62 @@ class SessionDeleteService {
     await mkdir(root, { recursive: true })
     const startedAt = Date.now()
 
+    const claim = async () => {
+      await mkdir(lockPath)
+      const owner = { pid: process.pid, host: hostname(), token: randomUUID(), createdAt: Date.now() }
+      try {
+        await writeFile(join(lockPath, PROCESS_LOCK_OWNER_FILE), `${JSON.stringify(owner)}\\n`, { flag: 'wx' })
+      } catch (error) {
+        await rm(lockPath, { recursive: true, force: true }).catch(() => {})
+        throw error
+      }
+      this.processLockTokens.set(sessionId, owner.token)
+      return async () => {
+        const current = await this.readProcessLockOwner(lockPath)
+        if (current?.token !== owner.token || current.pid !== process.pid || current.host !== owner.host) {
+          this.ctx.logger?.warn(`sessionDelete: lock ownership changed for "${sessionId}"; the lock was left untouched`)
+          return
+        }
+        try {
+          await rm(lockPath, { recursive: true })
+        } catch (error) {
+          this.ctx.logger?.warn(`sessionDelete: releasing the lock for "${sessionId}" failed: ${String(error)}`)
+        } finally {
+          if (this.processLockTokens.get(sessionId) === owner.token) this.processLockTokens.delete(sessionId)
+        }
+      }
+    }
+
     while (true) {
       try {
-        await mkdir(lockPath)
-        const owner = { pid: process.pid, host: hostname(), token: randomUUID(), createdAt: Date.now() }
-        try {
-          await writeFile(join(lockPath, PROCESS_LOCK_OWNER_FILE), `${JSON.stringify(owner)}\\n`, { flag: 'wx' })
-        } catch (error) {
-          await rm(lockPath, { recursive: true, force: true }).catch(() => {})
-          throw error
-        }
-        this.processLockTokens.set(sessionId, owner.token)
-        return async () => {
-          const current = await this.readProcessLockOwner(lockPath)
-          if (current?.token !== owner.token || current.pid !== process.pid || current.host !== owner.host) {
-            this.ctx.logger?.warn(`sessionDelete: lock ownership changed for "${sessionId}"; the lock was left untouched`)
-            return
-          }
-          try {
-            await rm(lockPath, { recursive: true })
-          } catch (error) {
-            this.ctx.logger?.warn(`sessionDelete: releasing the lock for "${sessionId}" failed: ${String(error)}`)
-          } finally {
-            if (this.processLockTokens.get(sessionId) === owner.token) this.processLockTokens.delete(sessionId)
-          }
-        }
+        return await claim()
       } catch (error) {
         if (error?.code !== 'EEXIST') throw error
       }
 
       const owner = await this.readProcessLockOwner(lockPath)
       if (owner !== undefined && owner.host === hostname() && !this.isProcessAlive(owner.pid)) {
-        // rename is the atomic claim on a dead lock. Only one contender can
-        // move this exact directory; the next owner can then mkdir lockPath.
+        // Rename is the atomic claim on a dead lock. Immediately create our
+        // replacement at the canonical path before yielding again; otherwise
+        // a second stale-lock observer could rename the replacement and split
+        // ownership between two live processes.
         const quarantine = `${lockPath}.stale-${randomUUID()}`
         try {
           await rename(lockPath, quarantine)
           const movedOwner = await this.readProcessLockOwner(quarantine)
           if (movedOwner?.token === owner.token && movedOwner.pid === owner.pid && !this.isProcessAlive(owner.pid)) {
-            await rm(quarantine, { recursive: true, force: true })
-            continue
+            try {
+              const release = await claim()
+              await rm(quarantine, { recursive: true, force: true })
+              return release
+            } catch (error) {
+              // Another contender may have won the canonical path between
+              // rename and mkdir. Keep the quarantined directory for review.
+              if (error?.code !== 'EEXIST') throw error
+            }
+          } else {
+            this.ctx.logger?.warn(`sessionDelete: stale lock metadata changed for "${sessionId}"; preserved "${quarantine}"`)
           }
-          // Preserve unexpected metadata rather than deleting a directory we
-          // can no longer prove belongs to the dead owner.
-          this.ctx.logger?.warn(`sessionDelete: stale lock metadata changed for "${sessionId}"; preserved "${quarantine}"`)
         } catch (error) {
           if (error?.code !== 'ENOENT' && error?.code !== 'EEXIST') {
             this.ctx.logger?.warn(`sessionDelete: reclaiming a dead lock for "${sessionId}" failed: ${String(error)}`)
