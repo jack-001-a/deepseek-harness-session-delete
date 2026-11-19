@@ -1738,7 +1738,7 @@ test('a dead same-host lock owner is reclaimed after process exit', async () => 
 
   const h = harness({ ...storedTarget(store) })
   await h.service.withProcessLock(SESSION_ID, async () => {
-    await appendFile(marker, 'reclaimed\\n')
+    await appendFile(marker, 'reclaimed\n')
   })
   assert.deepEqual((await readFile(marker, 'utf8')).trim().split('\n'), ['held', 'reclaimed'])
 })
