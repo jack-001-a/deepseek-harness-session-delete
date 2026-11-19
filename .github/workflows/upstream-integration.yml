@@ -65,4 +65,14 @@ jobs:
       - name: Run against real Cordis, AgentLoop testkit, and JSONL provider
         env:
           DSH_HARNESS_ROOT: ${{ github.workspace }}/deepseek-harness
+          DSH_CONFORMANCE_MANIFEST_PATH: ${{ github.workspace }}/artifacts/provider-conformance.json
         run: npm run test:integration:upstream
+
+      - name: Upload provider conformance evidence
+        if: always() && hashFiles('artifacts/provider-conformance.json') != ''
+        uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v4.3.6
+        with:
+          name: jsonl-provider-conformance-manifest
+          path: artifacts/provider-conformance.json
+          if-no-files-found: error
+          retention-days: 30
