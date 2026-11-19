@@ -412,7 +412,7 @@ class SessionDeleteService {
       await mkdir(lockPath)
       const owner = { pid: process.pid, host: hostname(), token: randomUUID(), createdAt: Date.now() }
       try {
-        await writeFile(join(lockPath, PROCESS_LOCK_OWNER_FILE), `${JSON.stringify(owner)}\\n`, { flag: 'wx' })
+        await writeFile(join(lockPath, PROCESS_LOCK_OWNER_FILE), `${JSON.stringify(owner)}\n`, { flag: 'wx' })
       } catch (error) {
         await rm(lockPath, { recursive: true, force: true }).catch(() => {})
         throw error
@@ -454,7 +454,9 @@ class SessionDeleteService {
           if (movedOwner?.token === owner.token && movedOwner.pid === owner.pid && !this.isProcessAlive(owner.pid)) {
             try {
               const release = await claim()
-              await rm(quarantine, { recursive: true, force: true })
+              await rm(quarantine, { recursive: true, force: true }).catch((error) => {
+                this.ctx.logger?.warn(`sessionDelete: removing stale lock quarantine "${quarantine}" failed: ${String(error)}`)
+              })
               return release
             } catch (error) {
               // Another contender may have won the canonical path between
@@ -1657,7 +1659,19 @@ class SessionDeleteService {
     const task = Promise.resolve().then(() => this.withProcessLock(sessionId, async () => {
       // Each process has its own index. Refresh from disk after acquiring the
       // shared lock so decisions cannot rely on another process's stale view.
-      await this.refreshTrash({ recoverMoves: false, force: true })
+      const entries = await this.refreshTrash({ recoverMoves: false, force: true })
+      const interruptedMove = entries.find((entry) => entry.sessionId === sessionId)
+      if (interruptedMove !== undefined && await this.pathExists(join(interruptedMove.path, COPYING_MARKER_FILE_NAME))) {
+        const manifest = await this.readManifest(interruptedMove.path)
+        if (manifest === undefined || !(await this.recoverTrashMove(interruptedMove.path, manifest))) {
+          throw new SessionDeleteError(
+            'session-delete/recovery-pending',
+            `sessionDelete: the interrupted trash move for "${sessionId}" could not be verified; both paths were preserved and no further operation was attempted`,
+            { sessionId, trashId: interruptedMove.trashId },
+          )
+        }
+        await this.refreshTrash({ recoverMoves: false, force: true })
+      }
       return run()
     }))
     const operation = { action, promise: task }
