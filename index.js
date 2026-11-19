@@ -80,6 +80,8 @@ const MANIFEST_FILE_NAME = 'meta.json'
 const ARTIFACT_DIR_NAME = 'artifact'
 /** Marker for a trash move that may need crash recovery. */
 const COPYING_MARKER_FILE_NAME = '.copying'
+/** Marker for a restore move that may need crash recovery. */
+const RESTORING_MARKER_FILE_NAME = '.restoring'
 /** Suffix for an incomplete cross-device copy, never exposed as the artifact. */
 const COPY_STAGE_SUFFIX = '.partial'
 /** Most child ids one deletion reports; the true count is reported apart. */
@@ -1040,20 +1042,17 @@ class SessionDeleteService {
   /**
    * Compare two artifact trees without following symlinks.
    *
-   * Crash recovery uses content equality rather than directory timestamps or
-   * inode metadata, which vary across filesystems. Unsupported special files
-   * fail closed so neither copy is discarded.
-   * @param left - first artifact path.
-   * @param right - second artifact path.
+   * This is used only to resolve a restore interrupted after a cross-device
+   * copy was promoted but before its trash-side source was removed. Unknown
+   * special files fail closed, preserving both copies.
+   * @param left - the trash-side artifact.
+   * @param right - the restored artifact.
    * @returns whether both trees have identical names, types and contents.
    */
   async artifactsMatch(left, right) {
     const leftStat = await lstat(left).catch(() => undefined)
     const rightStat = await lstat(right).catch(() => undefined)
-    if (!leftStat || !rightStat) return false
-    if (leftStat.isDirectory() !== rightStat.isDirectory() ||
-      leftStat.isFile() !== rightStat.isFile() ||
-      leftStat.isSymbolicLink() !== rightStat.isSymbolicLink()) return false
+    if (!leftStat || !rightStat || leftStat.isDirectory() !== rightStat.isDirectory()) return false
     if (leftStat.isDirectory()) {
       const [leftNames, rightNames] = await Promise.all([readdir(left), readdir(right)])
       if (leftNames.length !== rightNames.length) return false
@@ -1069,11 +1068,12 @@ class SessionDeleteService {
       const [leftBytes, rightBytes] = await Promise.all([readFile(left), readFile(right)])
       return leftBytes.equals(rightBytes)
     }
-    if (leftStat.isSymbolicLink()) {
+    try {
       const [leftLink, rightLink] = await Promise.all([readlink(left), readlink(right)])
       return leftLink === rightLink
+    } catch {
+      return false
     }
-    return false
   }
 
   /**
@@ -1563,12 +1563,23 @@ class SessionDeleteService {
     const artifact = join(entry.path, ARTIFACT_DIR_NAME)
     const targetExists = await this.pathExists(target)
     const artifactExists = await this.pathExists(artifact)
-    // A previous restore may have moved the artifact back and stopped before
-    // finishing the accounting (a failed reattachment keeps the entry, and a
-    // crash can interrupt any step). That is a retry, not a conflict: the move
-    // is skipped and only the remaining bookkeeping runs.
-    const alreadyMoved = targetExists && !artifactExists
-    if (targetExists && !alreadyMoved) {
+    const restoreMarker = join(entry.path, RESTORING_MARKER_FILE_NAME)
+    const restoreInProgress = await this.pathExists(restoreMarker)
+    // A completed move can be retried while accounting is pending. A marker
+    // distinguishes that state from an unrelated file that occupied target.
+    const alreadyMoved = targetExists && !artifactExists && (restoreInProgress || entry.restoreState !== undefined)
+    if (targetExists && artifactExists) {
+      if (!restoreInProgress || !(await this.artifactsMatch(artifact, target))) {
+        throw new SessionDeleteError(
+          'session-delete/conflict',
+          `sessionDelete: the original location of session "${sessionId}" is occupied; both copies were preserved`,
+          { sessionId, path: target, reason: 'restore-copy-conflict' },
+        )
+      }
+      // The cross-device copy was promoted before the process stopped. Verify
+      // byte-for-byte equality before dropping the trash-side source.
+      await this.removeWithRetries(artifact, sessionId)
+    } else if (targetExists && !alreadyMoved) {
       throw new SessionDeleteError(
         'session-delete/conflict',
         `sessionDelete: the original location of session "${sessionId}" is occupied; nothing was restored`,
@@ -1582,9 +1593,12 @@ class SessionDeleteService {
         { sessionId, path: artifact, reason: 'missing-artifact' },
       )
     }
-    if (!alreadyMoved) {
+    if (!alreadyMoved && !(targetExists && artifactExists)) {
       try {
         await mkdir(dirname(target), { recursive: true })
+        if (!restoreInProgress) {
+          await writeFile(restoreMarker, JSON.stringify({ sessionId, target }), { encoding: 'utf8', flag: 'wx' })
+        }
         await this.moveArtifact(artifact, target)
       } catch (error) {
         throw new SessionDeleteError(
@@ -1594,6 +1608,9 @@ class SessionDeleteService {
         )
       }
     }
+    // Once only the restored copy remains, the marker has served its purpose.
+    // If marker removal is interrupted, the retry still recognizes this state.
+    await rm(restoreMarker, { force: true }).catch(() => {})
     // The files are back; from here on every step reports rather than throws.
     // The store is asked for the header again so the reattachment and the
     // browser summary use the real stored header, not only the identifying
