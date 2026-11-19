@@ -417,7 +417,11 @@ async function runIntegration() {
       runStatus = 'FAIL'
       record('JSONL-INTEGRATION-FINALIZATION', 'FAIL', finalizationErrors.join('\n').slice(0, 1800))
     }
-    manifest.status = runStatus
+    manifest.status = runStatus === 'FAIL'
+      ? 'FAIL'
+      : manifest.cases.some(testCase => testCase.status === 'SKIP')
+        ? 'PARTIAL'
+        : 'PASS'
     manifest.finishedAt = new Date().toISOString()
     manifest.durationMs = Number((process.hrtime.bigint() - runStartedAt) / 1_000_000n)
     await mkdir(dirname(manifestPath), { recursive: true })
