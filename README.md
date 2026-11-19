@@ -70,13 +70,16 @@ for a later launch.
 
 Delete, restore, purge, retention cleanup and startup recovery share an
 atomic filesystem lock per session. Lock directories are stored beside the
-session-store root, not inside the project tree. Each lock records its host,
-PID and a random ownership token; a contender waits for a live owner and only
-reclaims a lock after the same-host PID is confirmed absent and the lock
-directory is atomically moved aside. Unknown, malformed, foreign-host or
-permission-denied lock state fails closed. A crash between creating the lock
-directory and writing its owner record can therefore require manual removal
-of that orphan lock directory after verifying that no operation is running.
+session-store root, not inside the project tree. The exposed session-store
+path is canonicalized before deriving the lock directory, so processes that
+reach the same store through symlink aliases use the same lock location. Each
+lock records its host, PID and a random ownership token; a contender waits for
+a live owner and only reclaims a lock after the same-host PID is confirmed
+absent and the lock directory is atomically moved aside. Unknown, malformed,
+foreign-host or permission-denied lock state fails closed. A crash or
+owner-metadata write failure after creating the lock directory can therefore
+require manual removal of that orphan lock directory after verifying that no
+operation is running.
 
 This coordinates cooperating plugin processes on the same host and a local
 filesystem. It is not a distributed lock: shared network filesystems,

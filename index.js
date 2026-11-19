@@ -348,21 +348,34 @@ class SessionDeleteService {
    * It lives beside (not inside) the store so the store's project scanner cannot
    * mistake lock metadata for a project directory.
    */
-  processLockRoot() {
+  async processLockRoot() {
     const storeRoot = this.storeRoot()
     const anchor = storeRoot ?? (this.configuredTrashRoot !== undefined
       ? resolve(this.configuredTrashRoot)
       : process.cwd())
+    let canonicalAnchor
+    try {
+      // Different Harness processes may reach the same store through a
+      // symlinked path. Resolve existing ancestors before deriving the shared
+      // lock directory so those aliases converge on one filesystem location.
+      canonicalAnchor = await resolveThroughExistingAncestors(anchor)
+    } catch (error) {
+      throw new SessionDeleteError(
+        'session-delete/lock-unavailable',
+        'sessionDelete: the session-store location could not be canonicalized; no operation was started',
+        { path: anchor, causeCode: error?.code },
+      )
+    }
     const parent = storeRoot !== undefined || this.configuredTrashRoot !== undefined
-      ? dirname(anchor)
-      : anchor
+      ? dirname(canonicalAnchor)
+      : canonicalAnchor
     return join(parent, '.session-delete-locks')
   }
 
   /** A filesystem-safe, fixed-length lock name for an arbitrary session id. */
-  processLockPath(sessionId) {
+  async processLockPath(sessionId) {
     const key = createHash('sha256').update(sessionId).digest('hex')
-    return join(this.processLockRoot(), `${key}.lock`)
+    return join(await this.processLockRoot(), `${key}.lock`)
   }
 
   /** Whether a PID is still present on this host; uncertain errors fail safe. */
@@ -403,8 +416,8 @@ class SessionDeleteService {
    * intentionally leaves a fail-closed orphan for manual inspection.
    */
   async acquireProcessLock(sessionId) {
-    const root = this.processLockRoot()
-    const lockPath = this.processLockPath(sessionId)
+    const lockPath = await this.processLockPath(sessionId)
+    const root = dirname(lockPath)
     await mkdir(root, { recursive: true })
     const startedAt = Date.now()
 
@@ -414,7 +427,13 @@ class SessionDeleteService {
       try {
         await writeFile(join(lockPath, PROCESS_LOCK_OWNER_FILE), `${JSON.stringify(owner)}\n`, { flag: 'wx' })
       } catch (error) {
-        await rm(lockPath, { recursive: true, force: true }).catch(() => {})
+        // Never remove the canonical path blindly here: if ownership changed
+        // between mkdir and this failure, recursive removal could erase a
+        // different process's newly-claimed lock. An ownerless directory is
+        // deliberately fail-closed and can be inspected by an operator.
+        this.ctx.logger?.warn(
+          `sessionDelete: writing lock ownership for "${sessionId}" failed; the lock directory was preserved for inspection: ${String(error)}`,
+        )
         throw error
       }
       this.processLockTokens.set(sessionId, owner.token)

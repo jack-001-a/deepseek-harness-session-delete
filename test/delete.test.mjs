@@ -1642,6 +1642,19 @@ test('startup recovery retries workspace accounting when a host write fails', as
   ])
 })
 
+test('filesystem session locks use one canonical path for symlinked store roots', async () => {
+  const store = await makeStore()
+  const alias = join(store.base, 'sessions-alias')
+  await symlink(store.root, alias, process.platform === 'win32' ? 'junction' : 'dir')
+
+  const direct = harness({ root: store.root })
+  const linked = harness({ root: alias })
+  assert.equal(
+    await direct.service.processLockPath(SESSION_ID),
+    await linked.service.processLockPath(SESSION_ID),
+  )
+})
+
 test('filesystem session locks serialize two independent Node processes', async () => {
   const store = await makeStore()
   const marker = join(store.base, 'lock-events.txt')
