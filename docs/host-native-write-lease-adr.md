@@ -895,3 +895,105 @@ A disaster restore may roll the durable state backward to its backup point; ther
 ### Implementation gate
 
 The pinned upstream Harness persistence APIs are keyed primarily by public Session ID and do not currently provide durable incarnation identity, generation-scoped lifecycle tokens, or stale-handle fencing. This section is a proposed storage protocol, not implemented upstream behavior. Do not enable lifecycle capability or Session ID reuse until the provider implements the complete identity binding and conformance suite. If that implementation is deferred, the safe initial policy is to prohibit ID reuse after purge and retain a permanent ID tombstone.
+
+
+## Unified operation ordering across create, open, read, write, and lifecycle transitions
+
+The lifecycle contract is incomplete unless ordinary persistence operations participate in the same admission protocol. A lock around only `retire`, `restore`, and `purge` leaves races with delayed create materialization, lazy reads, queued appends, and handles that outlive the call which created them. This section defines the provider-neutral ordering contract while allowing JSONL and SQLite to retain different storage implementations.
+
+### Coordination primitives and lock order
+
+For each canonical `(providerRootId, sessionId)`, the provider needs two logically distinct coordination roles:
+
+1. **Stable admission gate:** a non-movable per-Session gate in the provider-owned namespace. It serializes short admission decisions and lifecycle state publication. It is never stored inside an artifact directory that may be renamed or deleted.
+2. **Writer ownership lease:** the provider's existing cross-process writer exclusion, or its v2 stable equivalent, retained from successful write-handle admission until all queued writes have drained and close has completed. It prevents two writers from committing concurrently and lets lifecycle wait for admitted writers to finish.
+
+Do not assume these roles are interchangeable. In particular, do not make every read hold an exclusive writer lease for the full read-handle lifetime merely to reuse an existing lock. That would silently change provider concurrency semantics and can cause starvation. If the platform cannot implement a required shared/exclusive primitive consistently, use an explicit provider-owned gate protocol and test its cross-process behavior rather than pretending a Windows semaphore is a reader/writer lock.
+
+The normative acquisition order is:
+
+1. stable admission gate;
+2. writer ownership lease, only for a write admission or lifecycle drain;
+3. provider storage transaction / file operation;
+4. durable lifecycle journal append when the operation changes lifecycle state.
+
+No code path may acquire the admission gate while already holding the writer lease. No path may nest two Session gates. Release in reverse order. A lifecycle operation may hold the gate while waiting for the writer lease so that new writers cannot continually enter ahead of it; it must use a bounded wait/cancellation policy and return `busy` or `cancelled_before_commit` without publishing a false terminal result. The exact gate primitive must guarantee process-death release.
+
+A provider may internally combine the gate and writer lease only if it proves the same admission, drain, fairness, and crash semantics on every supported platform. The abstract roles remain distinct even when an implementation shares a kernel object.
+
+### Admission and linearization rules
+
+All operations resolve the authoritative incarnation and generation while holding the admission gate. They must not check state, release the gate, and later reopen by Session ID without revalidation.
+
+| Operation | Admission protocol | Linearization / visibility rule |
+| --- | --- | --- |
+| `create(id)` | Gate; verify no live/nonterminal incarnation; durably reserve identity and creation operation; publish artifact with no-replace semantics; record ready state | The new Session becomes discoverable only after identity and artifact publication are durable |
+| `open(id, 'write')` | Gate; resolve live incarnation/generation; acquire writer lease; revalidate state and identity; expose handle; release gate while retaining writer lease | Successful admission occurs only after the handle is bound to the captured identity and writer ownership is held |
+| `open(id, 'read')` | Gate; resolve live identity; open the required file descriptor or materialize a consistent DB read snapshot; bind the read handle to incarnation/generation; release gate | Read admission is the successful descriptor/snapshot acquisition, not a prior metadata lookup |
+| `append/flush` | Require the admitted writer lease; serialize queued writes; verify captured identity; persist provider data using provider-native commit rules | Each acknowledged flush follows the provider's durable append/commit guarantee |
+| `close(writeHandle)` | Stop accepting new writes; drain queued writes; flush or report failure; release writer lease only after drain is complete | Close completion means no callback from that handle can later commit |
+| `retire(id)` | Gate; resolve exact live identity; acquire/drain writer lease; revalidate revision; durably publish `retiring`; perform provider-owned quarantine; durably publish `retired`; release locks | `retired` is committed only after both the data transition and terminal lifecycle record meet the provider's durability contract |
+| `restore(token)` | Gate; resolve token's historical incarnation/generation; validate terminal token state and destination; publish `restoring`; restore with no-replace; publish new live generation; release locks | New generation is visible only after artifact promotion and durable live-state publication |
+| `purge(token)` | Gate; resolve exact retired identity; publish `purging` and anti-resurrection fence; delete only that generation; sync required parents; publish terminal fence/result; release locks | Purge is committed only after the generation is absent and its durable terminal fence prevents resurrection |
+
+A failed or ambiguous storage step is not converted to success because a later pathname lookup happens to find no artifact. Use the previously defined typed outcomes and recovery journal. In particular, cancellation after a durable intent is a recovery request, not proof that the operation was cancelled before commit.
+
+### Read handles and snapshot lifetime
+
+A read handle is bound to the immutable incarnation/generation admitted at open. The provider must choose and document one of these models:
+
+- **Pinned descriptor/snapshot:** open all required resources, or establish a storage snapshot that pins the generation, while holding the admission gate. Reads may finish after retirement commits using only those pinned resources. They may not lazily reopen a pathname or switch to a newer generation.
+- **Re-admitted incremental reads:** each later read call reacquires the admission gate, verifies the same incarnation/generation is still readable, and obtains its own consistent descriptor/DB snapshot before releasing the gate. After the retirement barrier, a new read call fails with a typed state outcome.
+
+Do not mix the models implicitly. A handle that pins only a header but later resolves event files by Session ID is not a pinned read. A read that materializes bytes before retirement and decodes them asynchronously may finish after retirement; the contract must say that the bytes were admitted before the barrier. Purge may reclaim provider storage only when the chosen provider model proves no later read will need to reopen it. If open descriptors remain valid across rename/unlink on a platform, that fact alone does not justify deleting other lazily accessed files.
+
+For SQLite, the read admission point must include the transaction/snapshot that selects trace metadata and the relevant frame bytes. If the provider returns a fully materialized byte buffer from a short transaction, later decode can finish after the transaction; if it streams multiple frame queries, each query must stay inside the same snapshot or be re-admitted and generation-checked. A handle must not combine pre-retire metadata with post-restore frames from a different generation.
+
+### Writer handles, delayed create, and close semantics
+
+- A write handle owns the writer lease for its entire lifetime, not merely during individual append calls. The lease is acquired before the handle is returned and released only after close has rejected new writes, drained queued appends, completed the final flush, and settled all callbacks.
+- A pending create is an admitted operation even before its artifact is materialized. Its reservation/operation ID is durable and visible to lifecycle arbitration. Retire cannot conclude that the Session is absent and purge/reuse its ID while a create for that identity is pending.
+- A create retry uses the same durable creation operation ID and request fingerprint. It resumes or returns the original result; it does not adopt an unrelated directory/trace that appeared at the same public ID.
+- A failed flush keeps the handle from reporting a successful close. If persistence outcome is ambiguous, the provider reports an unknown outcome and requires same-operation recovery; it must not release lifecycle authority as though the append were definitely absent.
+- Once close resolves, no timer, promise continuation, event listener, or callback owned by that handle may append. Implementations should make close idempotent and test double-close and append-vs-close races.
+
+### Provider-specific realization
+
+**JSONL Provider**
+
+- Keep the stable admission namespace outside movable Session artifact directories. The legacy in-directory `session.lock` remains a writer-ownership object only during a controlled v1 period; it is not a safe substitute for the v2 gate and must never be moved as a migration bridge.
+- A v2 writer admission acquires the stable gate, validates the lifecycle journal and current incarnation/generation, then obtains the stable writer lease before returning the handle. The lease remains held through final flush and close.
+- A read admission opens the exact immutable generation file(s) while holding the gate and captures their identity. If reads need multiple files or lazy generation-log access, pin them all or use re-admitted incremental reads; do not later resolve the current Session directory by ID.
+- Lifecycle holds the gate before draining writer ownership, preventing new create/write admissions. It records intent before rename and uses the already-defined same-volume/no-replace rename and directory-sync protocol.
+- Do not claim compatibility with a running v1 process: v1 readers and writers do not participate in the v2 admission gate. The offline migration barrier remains mandatory.
+
+**SQLite Provider**
+
+- The stable gate coordinates lifecycle admission with create/open/read selection; the existing DB-scoped per-Session writer lease continues to serialize write handles unless and until the provider replaces it with a proven equivalent.
+- A write handle obtains the gate, validates the live incarnation/generation and pending-create state, acquires the DB-scoped writer lease, then releases the gate while retaining the lease through close.
+- Read admission establishes a SQLite snapshot containing lifecycle state, trace identity, and frame selection. All bytes for one logical read must come from that snapshot; do not check lifecycle in one transaction and fetch frames in another unrelated snapshot.
+- Retire obtains the gate before waiting for the writer lease, then performs tombstone/trace state changes in the same SQLite transaction boundary specified by the schema protocol. It never moves the shared DB or relies on filesystem markers as the authoritative state.
+- Legacy JSONL import/fallback must acquire the same gate and follow one documented lock order. An import that began before retirement cannot publish a trace after the retirement fence; a post-fence open cannot fall through to legacy files.
+
+### Cross-provider conformance and race tests
+
+Run deterministic barrier-controlled tests across multiple processes, not only in-process mocks:
+
+1. create reservation vs retire, including crash before artifact materialization and retry after restart;
+2. write-open vs retire at every point before/after writer lease acquisition and handle return;
+3. append vs close, flush vs close, double close, and a callback deliberately released after close;
+4. read-open vs retire, including descriptor acquisition immediately before and after the retirement barrier;
+5. pinned read finishing after retire, and incremental read rejected after retire;
+6. purge vs a read handle that would otherwise lazily open a second generation file;
+7. restore vs old read/write handle and vs a new open by the same public Session ID;
+8. SQLite read metadata/frame snapshot vs retire/restore commit, proving no cross-generation mixture;
+9. SQLite legacy import vs retire, proving no post-fence import or fallback resurrection;
+10. two processes racing writer admission, lifecycle drain, and cancellation; assert the documented fairness/busy behavior;
+11. process kill while a writer lease is held, proving kernel release and durable append recovery;
+12. process kill during close after flush but before response, proving retry/inspect returns the original append/close outcome;
+13. verify no lock-order inversion by stress-testing all operation pairs with watchdog timeouts on Linux, macOS, and Windows;
+14. verify all returned handles and diagnostics remain bound to the admitted incarnation/generation and never silently re-resolve by Session ID.
+
+### Implementation gate
+
+The pinned upstream JSONL and SQLite providers do not yet expose this complete lifecycle admission contract. Existing writer locks are not by themselves a lifecycle fence, and current read paths do not uniformly pin a generation through handle lifetime. This section is a proposed cross-provider contract, not implemented behavior. Keep destructive lifecycle capability unsupported until both providers pass the same semantic conformance suite with provider-specific storage adapters. The initial rollout must remain offline/no-mixed-version and must not weaken existing read/write compatibility to simulate support.
