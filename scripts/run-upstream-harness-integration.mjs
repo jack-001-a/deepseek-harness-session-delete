@@ -116,8 +116,8 @@ async function interruptRestoreInSeparateProcess(sessionRoot) {
     const timeout = setTimeout(() => {
       worker.kill('SIGKILL')
       finish(new Error(
-        'Restore interruption worker timed out before the promotion barrier.\\nstdout:\\n'
-          + stdout + '\\nstderr:\\n' + stderr,
+        'Restore interruption worker timed out before the promotion barrier.\nstdout:\n'
+          + stdout + '\nstderr:\n' + stderr,
       ))
     }, 60_000)
 
@@ -125,7 +125,7 @@ async function interruptRestoreInSeparateProcess(sessionRoot) {
     worker.stderr.setEncoding('utf8')
     worker.stdout.on('data', chunk => {
       stdout += chunk
-      if (!killedAtPromotionBarrier && stdout.includes('restore-promoted\\n')) {
+      if (!killedAtPromotionBarrier && stdout.includes('restore-promoted\n')) {
         killedAtPromotionBarrier = true
         // Kill the real child immediately after promotion, before teardown.
         worker.kill('SIGKILL')
@@ -139,8 +139,8 @@ async function interruptRestoreInSeparateProcess(sessionRoot) {
       } else {
         finish(new Error(
           'Restore interruption worker did not die at the promotion barrier '
-            + '(exit ' + code + ', signal ' + signal + ').\\nstdout:\\n'
-            + stdout + '\\nstderr:\\n' + stderr,
+            + '(exit ' + code + ', signal ' + signal + ').\nstdout:\n'
+            + stdout + '\nstderr:\n' + stderr,
         ))
       }
     })
@@ -162,9 +162,10 @@ async function interruptRestoreWorker(sessionRoot) {
     target: entry.originalPath,
   }))
   await rename(join(trashEntryPath, 'artifact'), entry.originalPath)
-  process.stdout.write('restore-promoted\\n')
+  process.stdout.write('restore-promoted\n')
   // Intentionally leave the Host context undisposed; the controller kills
   // this process so graceful teardown and cleanup handlers cannot run.
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 60_000))
 }
 
 
