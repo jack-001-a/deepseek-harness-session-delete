@@ -66,6 +66,24 @@ whose source and destination state is ambiguous are preserved and logged
 instead of being deleted or reattached speculatively. A larger backlog is left
 for a later launch.
 
+### Cross-process operation locking
+
+Delete, restore, purge, retention cleanup and startup recovery share an
+atomic filesystem lock per session. Lock directories are stored beside the
+session-store root, not inside the project tree. Each lock records its host,
+PID and a random ownership token; a contender waits for a live owner and only
+reclaims a lock after the same-host PID is confirmed absent and the lock
+directory is atomically moved aside. Unknown, malformed, foreign-host or
+permission-denied lock state fails closed. A crash between creating the lock
+directory and writing its owner record can therefore require manual removal
+of that orphan lock directory after verifying that no operation is running.
+
+This coordinates cooperating plugin processes on the same host and a local
+filesystem. It is not a distributed lock: shared network filesystems,
+multiple hosts, PID-namespace mismatches and non-cooperating session writers
+are outside the guarantee. A live but hung process is not force-unlocked; the
+operation times out without changing the session artifact.
+
 Setting `mode: permanent` in the plugin config removes the intermediate step
 and deletes outright — the dialog then requires the conversation title to be
 typed before the destructive action unlocks.

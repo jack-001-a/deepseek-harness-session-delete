@@ -9,6 +9,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1634,4 +1635,46 @@ test('startup recovery retries workspace accounting when a host write fails', as
     ['unpin', SESSION_ID],
     ['unarchive', SESSION_ID],
   ])
+})
+
+test('filesystem session locks serialize two independent Node processes', async () => {
+  const store = await makeStore()
+  const marker = join(store.base, 'lock-events.txt')
+  const moduleUrl = new URL('../index.js', import.meta.url).href
+  const worker = `
+    import { appendFile } from 'node:fs/promises'
+    const [moduleUrl, root, sessionId, marker, holdMs] = process.argv.slice(1)
+    const { apply } = await import(moduleUrl)
+    const provided = new Map()
+    const sessions = { get: () => undefined, store: new Map() }
+    const persistence = { root, stat: async () => undefined, list: async () => [] }
+    const ctx = {
+      sessions,
+      sessionPersistence: persistence,
+      get: (name) => name === 'sessions' ? sessions : name === 'sessionPersistence' ? persistence : undefined,
+      reflect: { provide: (name, value) => provided.set(name, value) },
+      on: () => {},
+      waterfall: async (_name, _payload, base) => base(),
+      parallel: async () => {},
+      emit: () => {},
+      logger: { warn: () => {} },
+    }
+    apply(ctx, { mode: 'permanent' })
+    const service = provided.get('sessionDelete')
+    await service.withProcessLock(sessionId, async () => {
+      await appendFile(marker, 'start\\n')
+      await new Promise((resolve) => setTimeout(resolve, Number(holdMs)))
+      await appendFile(marker, 'end\\n')
+    })
+  `
+  const launch = () => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', worker, moduleUrl, store.root, SESSION_ID, marker, '250'], {
+      stdio: 'ignore',
+    })
+    child.once('error', reject)
+    child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`lock worker exited with ${code}`)))
+  })
+  await Promise.all([launch(), launch()])
+  const events = (await readFile(marker, 'utf8')).trim().split('\\n')
+  assert.deepEqual(events, ['start', 'end', 'start', 'end'])
 })

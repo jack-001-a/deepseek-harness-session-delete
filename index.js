@@ -26,6 +26,8 @@
  * would have to be a Node built-in.
  */
 import { appendFile, cp, lstat, mkdir, readFile, readlink, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
+import { hostname } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 /** Cordis service key of this plugin's service. */
@@ -92,6 +94,12 @@ const SWEEP_ENTRY_LIMIT = 500
 const SWEEP_PURGE_LIMIT = 50
 /** Most startup recovery operations, so plugin readiness stays bounded. */
 const STARTUP_RECOVERY_LIMIT = 50
+/** Maximum time an operation waits for another process to release a session lock. */
+const PROCESS_LOCK_WAIT_MS = 15000
+/** Poll interval while another process owns a session lock. */
+const PROCESS_LOCK_POLL_MS = 50
+/** Lock owner metadata stored inside each atomically-created lock directory. */
+const PROCESS_LOCK_OWNER_FILE = '.owner.json'
 /** Most audit records the trail file keeps before it is trimmed. */
 const AUDIT_MAX_RECORDS = 1000
 /** Minimum gap between two retention sweeps. */
@@ -302,6 +310,8 @@ class SessionDeleteService {
     this.inflight = new Map()
     /** Trash mutations in flight, keyed by action and session id. */
     this.trashOps = new Map()
+    /** Session locks held by this process are coordinated by the filesystem. */
+    this.processLockTokens = new Map()
     /** Whether the artifact is relocated into a trash or removed outright. */
     this.mode = config?.mode === 'permanent' ? 'permanent' : 'trash'
     /** Days a trashed artifact is kept before the sweep purges it. */
@@ -331,6 +341,143 @@ class SessionDeleteService {
       serviceKey: SERVICE_KEY,
       namespace: NAMESPACE,
     })
+  }
+
+  /**
+   * Stable lock directory shared by plugin instances using the same session store.
+   * It lives beside (not inside) the store so the store's project scanner cannot
+   * mistake lock metadata for a project directory.
+   */
+  processLockRoot() {
+    const storeRoot = this.storeRoot()
+    const anchor = storeRoot ?? (this.configuredTrashRoot !== undefined
+      ? resolve(this.configuredTrashRoot)
+      : process.cwd())
+    const parent = storeRoot !== undefined || this.configuredTrashRoot !== undefined
+      ? dirname(anchor)
+      : anchor
+    return join(parent, '.session-delete-locks')
+  }
+
+  /** A filesystem-safe, fixed-length lock name for an arbitrary session id. */
+  processLockPath(sessionId) {
+    const key = createHash('sha256').update(sessionId).digest('hex')
+    return join(this.processLockRoot(), `${key}.lock`)
+  }
+
+  /** Whether a PID is still present on this host; uncertain errors fail safe. */
+  isProcessAlive(pid) {
+    if (!Number.isSafeInteger(pid) || pid <= 0) return true
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch (error) {
+      return error?.code === 'ESRCH' ? false : true
+    }
+  }
+
+  /** Read and validate lock metadata without treating malformed state as stale. */
+  async readProcessLockOwner(lockPath) {
+    try {
+      const owner = JSON.parse(await readFile(join(lockPath, PROCESS_LOCK_OWNER_FILE), 'utf8'))
+      if (
+        owner === null ||
+        typeof owner !== 'object' ||
+        !Number.isSafeInteger(owner.pid) ||
+        typeof owner.host !== 'string' ||
+        typeof owner.token !== 'string' ||
+        owner.token.length === 0
+      ) return undefined
+      return owner
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Acquire a cross-process session lock using atomic mkdir.
+   *
+   * Only a lock whose owner is on this host and whose PID is definitely gone
+   * may be reclaimed. Unknown, malformed, foreign-host and permission-denied
+   * states are never guessed stale. A crash between mkdir and owner metadata
+   * intentionally leaves a fail-closed orphan for manual inspection.
+   */
+  async acquireProcessLock(sessionId) {
+    const root = this.processLockRoot()
+    const lockPath = this.processLockPath(sessionId)
+    await mkdir(root, { recursive: true })
+    const startedAt = Date.now()
+
+    while (true) {
+      try {
+        await mkdir(lockPath)
+        const owner = { pid: process.pid, host: hostname(), token: randomUUID(), createdAt: Date.now() }
+        try {
+          await writeFile(join(lockPath, PROCESS_LOCK_OWNER_FILE), `${JSON.stringify(owner)}\\n`, { flag: 'wx' })
+        } catch (error) {
+          await rm(lockPath, { recursive: true, force: true }).catch(() => {})
+          throw error
+        }
+        this.processLockTokens.set(sessionId, owner.token)
+        return async () => {
+          const current = await this.readProcessLockOwner(lockPath)
+          if (current?.token !== owner.token || current.pid !== process.pid || current.host !== owner.host) {
+            this.ctx.logger?.warn(`sessionDelete: lock ownership changed for "${sessionId}"; the lock was left untouched`)
+            return
+          }
+          try {
+            await rm(lockPath, { recursive: true })
+          } catch (error) {
+            this.ctx.logger?.warn(`sessionDelete: releasing the lock for "${sessionId}" failed: ${String(error)}`)
+          } finally {
+            if (this.processLockTokens.get(sessionId) === owner.token) this.processLockTokens.delete(sessionId)
+          }
+        }
+      } catch (error) {
+        if (error?.code !== 'EEXIST') throw error
+      }
+
+      const owner = await this.readProcessLockOwner(lockPath)
+      if (owner !== undefined && owner.host === hostname() && !this.isProcessAlive(owner.pid)) {
+        // rename is the atomic claim on a dead lock. Only one contender can
+        // move this exact directory; the next owner can then mkdir lockPath.
+        const quarantine = `${lockPath}.stale-${randomUUID()}`
+        try {
+          await rename(lockPath, quarantine)
+          const movedOwner = await this.readProcessLockOwner(quarantine)
+          if (movedOwner?.token === owner.token && movedOwner.pid === owner.pid && !this.isProcessAlive(owner.pid)) {
+            await rm(quarantine, { recursive: true, force: true })
+            continue
+          }
+          // Preserve unexpected metadata rather than deleting a directory we
+          // can no longer prove belongs to the dead owner.
+          this.ctx.logger?.warn(`sessionDelete: stale lock metadata changed for "${sessionId}"; preserved "${quarantine}"`)
+        } catch (error) {
+          if (error?.code !== 'ENOENT' && error?.code !== 'EEXIST') {
+            this.ctx.logger?.warn(`sessionDelete: reclaiming a dead lock for "${sessionId}" failed: ${String(error)}`)
+          }
+        }
+      }
+
+      if (Date.now() - startedAt >= PROCESS_LOCK_WAIT_MS) {
+        throw new SessionDeleteError(
+          'session-delete/lock-timeout',
+          `sessionDelete: another process holds the operation lock for "${sessionId}", or its ownership cannot be verified; no filesystem changes were made`,
+          { sessionId, lockPath, ownerPid: owner?.pid, ownerHost: owner?.host },
+        )
+      }
+      await delay(PROCESS_LOCK_POLL_MS)
+    }
+  }
+
+  /** Run a session mutation while holding its cross-process filesystem lock. */
+  async withProcessLock(sessionId, run) {
+    const release = await this.acquireProcessLock(sessionId)
+    try {
+      return await run()
+    } finally {
+      await release()
+    }
   }
 
   /**
@@ -1495,7 +1642,12 @@ class SessionDeleteService {
       // mutation settles, re-evaluate the next operation against fresh state.
       return running.promise.catch(() => {}).then(() => this.runTrashOperation(action, sessionId, run))
     }
-    const task = Promise.resolve().then(run)
+    const task = Promise.resolve().then(() => this.withProcessLock(sessionId, async () => {
+      // Each process has its own index. Refresh from disk after acquiring the
+      // shared lock so decisions cannot rely on another process's stale view.
+      await this.refreshTrash({ recoverMoves: false, force: true })
+      return run()
+    }))
     const operation = { action, promise: task }
     this.trashOps.set(sessionId, operation)
     try {
@@ -1909,7 +2061,7 @@ class SessionDeleteService {
    * entry without a readable manifest is skipped rather than guessed at.
    * @returns the trash entries, newest first.
    */
-  async readTrashEntries() {
+  async readTrashEntries({ recoverMoves = true } = {}) {
     const root = this.trashRoot()
     if (root === undefined) return []
     let names
@@ -1931,7 +2083,16 @@ class SessionDeleteService {
       const path = join(root, item.name)
       const manifest = await this.readManifest(path)
       if (manifest === undefined) continue
-      if (!(await this.recoverTrashMove(path, manifest))) continue
+      if (recoverMoves && (await this.pathExists(join(path, COPYING_MARKER_FILE_NAME)))) {
+        const sessionId = typeof manifest.sessionId === 'string' ? manifest.sessionId : ''
+        if (sessionId.length === 0) continue
+        const recovered = await this.runTrashOperation(
+          'move-recovery',
+          sessionId,
+          () => this.recoverTrashMove(path, manifest),
+        )
+        if (!recovered) continue
+      }
       entries.push({
         trashId: item.name,
         sessionId: typeof manifest.sessionId === 'string' ? manifest.sessionId : '',
@@ -2024,10 +2185,10 @@ class SessionDeleteService {
    * knows what an earlier run left in the trash.
    * @returns the trash entries, newest first.
    */
-  async refreshTrash() {
-    if (this.trashRefreshPromise !== undefined) return this.trashRefreshPromise
+  async refreshTrash({ recoverMoves = true, force = false } = {}) {
+    if (!force && this.trashRefreshPromise !== undefined) return this.trashRefreshPromise
     const revision = this.trashRevision
-    const task = this.readTrashEntries().then((entries) => {
+    const task = this.readTrashEntries({ recoverMoves }).then((entries) => {
       // A mutation that landed while the disk was read would be lost by a
       // plain replacement, so the fresh entries are merged into the index.
       this.setTrashIndex(entries, revision !== this.trashRevision)
@@ -2035,7 +2196,7 @@ class SessionDeleteService {
     }).finally(() => {
       if (this.trashRefreshPromise === task) this.trashRefreshPromise = undefined
     })
-    this.trashRefreshPromise = task
+    if (!force) this.trashRefreshPromise = task
     return task
   }
 
@@ -2065,7 +2226,7 @@ class SessionDeleteService {
       try {
         const outcome = await this.runTrashOperation('startup-recovery', snapshot.sessionId, async () => {
           // Re-read under the same per-session lock as delete/restore/purge.
-          await this.refreshTrash()
+          await this.refreshTrash({ recoverMoves: false, force: true })
           const current = await this.trashEntryFor(snapshot.sessionId)
           if (current === undefined || current.trashId !== snapshot.trashId) return 'stale'
 
@@ -2164,7 +2325,7 @@ class SessionDeleteService {
         const didPurge = await this.runTrashOperation('purge', entry.sessionId, async () => {
           // The entry may have been restored or replaced while the sweep was
           // waiting for the per-session lock. Never purge a stale snapshot.
-          await this.refreshTrash()
+          await this.refreshTrash({ recoverMoves: false, force: true })
           const current = await this.trashEntryFor(entry.sessionId)
           if (current === undefined || current.trashId !== entry.trashId) return false
           const currentDeletedAt = Date.parse(current.deletedAt)
