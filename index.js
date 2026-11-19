@@ -314,6 +314,8 @@ class SessionDeleteService {
     this.trashBySession = new Map()
     /** Whether the trash index has been read at least once. */
     this.trashLoaded = false
+    /** One in-process disk refresh shared by overlapping callers. */
+    this.trashRefreshPromise = undefined
     /** Counts the index changes, so an overlapping refresh can merge. */
     this.trashRevision = 0
     /** When the last retention sweep ran. */
@@ -2023,12 +2025,18 @@ class SessionDeleteService {
    * @returns the trash entries, newest first.
    */
   async refreshTrash() {
+    if (this.trashRefreshPromise !== undefined) return this.trashRefreshPromise
     const revision = this.trashRevision
-    const entries = await this.readTrashEntries()
-    // A mutation that landed while the disk was read would be lost by a
-    // plain replacement, so the fresh entries are merged into the index.
-    this.setTrashIndex(entries, revision !== this.trashRevision)
-    return entries
+    const task = this.readTrashEntries().then((entries) => {
+      // A mutation that landed while the disk was read would be lost by a
+      // plain replacement, so the fresh entries are merged into the index.
+      this.setTrashIndex(entries, revision !== this.trashRevision)
+      return entries
+    }).finally(() => {
+      if (this.trashRefreshPromise === task) this.trashRefreshPromise = undefined
+    })
+    this.trashRefreshPromise = task
+    return task
   }
 
   /**
