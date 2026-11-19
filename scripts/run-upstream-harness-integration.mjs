@@ -5,7 +5,7 @@
  */
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
@@ -268,9 +268,23 @@ async function interruptRestoreWorker(sessionRoot) {
 
 async function runIntegration() {
   const sessionRoot = await mkdtemp(join(tmpdir(), 'dsh-session-delete-host-'))
+  const manifest = {
+    schemaVersion: 1,
+    sourceCommit: '2e39e70496aa02986ca6a820c5d497e816b69d7e',
+    provider: 'deepseek-harness-jsonl',
+    environment: { os: process.platform, runtime: process.version, architecture: process.arch },
+    startedAt: new Date().toISOString(),
+    cases: [],
+  }
+  const record = (id, status, details) => manifest.cases.push({
+    id, status, durationMs: 0, expected: null, observed: null, details,
+  })
+  const manifestPath = resolve(process.env.DSH_CONFORMANCE_MANIFEST_PATH
+    || join(process.cwd(), 'artifacts', 'provider-conformance.json'))
   let ctx
   try {
     await seedInSeparateProcess(sessionRoot)
+    record('JSONL-SEED-CROSS-PROCESS', 'PASS', 'Child Host created, flushed, closed, and disposed a real JSONL writer; parent opens a fresh Host over the same root.')
     const host = await createHostContext(sessionRoot)
     ctx = host.ctx
     applySessionDelete(ctx, { trashRoot: trashRootFor(sessionRoot) })
@@ -284,6 +298,11 @@ async function runIntegration() {
     // Verify provider-level writer exclusion in a separate process; this does
     // not imply that Session Delete can fence a live writer during mutation.
     await verifyCrossProcessWriterOwnership(ctx, host.persistence, sessionRoot)
+    record('JSONL-WRITER-EXCLUSION-001', 'PASS', 'While a child held the real write handle, parent read-open succeeded and competing write-open rejected with SessionAlreadyOwnedError.')
+    record('JSONL-WRITER-CRASH-RELEASE-001', 'PASS', 'Controller SIGKILLed the writer owner; parent acquired and closed a successor writer, proving kernel lease release after process death.')
+    for (const operation of ['RETIRE', 'RESTORE', 'PURGE']) {
+      record(`JSONL-PROVIDER-${operation}-001`, 'SKIP', 'Pinned upstream revision exposes no public provider-owned lifecycle operation or admission fence; plugin filesystem behavior is not provider conformance.')
+    }
 
     const removed = await service.delete(SESSION_ID)
     assert.equal(removed.removed, true)
@@ -355,10 +374,18 @@ async function runIntegration() {
     assert.equal(await ctx.sessionPersistence.stat(SESSION_ID), undefined)
 
     process.stdout.write(
-      'PASS: real Cordis + AgentLoop testkit + JSONL provider; cross-process seed/close and writer exclusion/release; ready-hook delete/restore recovery; purge\n',
+      'PASS: real Cordis + AgentLoop testkit + JSONL provider; cross-process seed/close and writer exclusion/release; ready-hook plugin delete/restore recovery; purge\n',
     )
+  } catch (error) {
+    record('JSONL-INTEGRATION-RUN', 'FAIL', String(error?.stack || error).slice(0, 1800))
+    throw error
   } finally {
     await ctx?.fiber.dispose()
+    await mkdir(dirname(manifestPath), { recursive: true })
+    const temporaryManifest = manifestPath + '.tmp-' + process.pid
+    await writeFile(temporaryManifest, JSON.stringify(manifest, null, 2) + '\n', { flag: 'w', mode: 0o600 })
+    await rename(temporaryManifest, manifestPath)
+    process.stdout.write('Conformance manifest: ' + manifestPath + '\n')
     await rm(sessionRoot, { recursive: true, force: true })
     await rm(trashRootFor(sessionRoot), { recursive: true, force: true })
   }
