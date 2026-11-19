@@ -417,3 +417,65 @@ Because a normal SQL caller with write access to the private database could theo
 ### Rollout constraint
 
 Do not ship a lifecycle-capable consumer against schema v1. The v2 migration, lifecycle tables, routing reconciliation, guarded GC, and crash-injection suite must land and pass together in the provider implementation. Until then, the design remains proposal-only and the current SQLite provider must continue to refuse unsupported lifecycle operations.
+## SQLite Segment graph GC: reachability, ordering, and writer serialization
+
+The Segment graph is a shared predecessor DAG, not a Session-owned tree. A Segment can be an ancestor of multiple branches, and a fork can point to a bounded prefix of an ancestor. The `segment_ancestors` table is a transitive range index (`segment_uuid` descendant, `ancestor_uuid` ancestor); it is not itself the ownership authority. `traces.tail_segment_uuid` and retained lifecycle tombstone roots define which histories remain required.
+
+### Correctness predicate
+
+A Segment is reclaimable only if it is not reachable by following `parent_segment_uuid` from any retained root. The root set includes every live trace tail and every restorable retired lifecycle root. Operation records, token records, and terminal purged-ID fences must not accidentally retain a Segment root after the operation's retention policy releases it; conversely, an in-progress purge must not release its root before the purge transaction reaches its defined terminal commit.
+
+Do not use any one of these weaker predicates: no trace points directly to the Segment; no tombstone points directly to it; it has no frames; or it is not the current tail of the purged Session. A live descendant may depend on it through one or more parent edges, and another child may fork from a bounded prefix.
+
+### Recommended mark-and-sweep transaction
+
+Use one `BEGIN IMMEDIATE` transaction for lifecycle state transition, root-set change, reachability calculation, and GC. SQLite's single-writer reservation serializes this transaction against other writers to the same database, including fork/append/create/restore/purge, provided every such provider path uses this same database transaction and performs lifecycle admission inside it.
+
+1. Validate `(session_id, operation_id)`, expected lifecycle generation/revision, and the exact retirement token. If the operation already has a durable terminal outcome, return that outcome without rerunning GC.
+2. Verify the target is in the required retired state. For purge, transition it to `purging` and remove its restorable root only within this same uncommitted transaction. A rollback restores both the prior state and root.
+3. Build the root set from all live `traces.tail_segment_uuid` values plus all lifecycle rows whose state retains history for restore or recovery. Include any provider-defined migration/recovery roots explicitly; do not infer roots from operation history alone.
+4. Compute the transitive parent closure from those roots using a recursive CTE or an equivalent bounded, cycle-detecting traversal. The retained set is the union of roots and every ancestor reached by repeatedly following `segments.parent_segment_uuid`.
+5. Candidate set = every Segment not in the retained closure. Before deleting anything, validate that the candidate graph is acyclic, all parent references resolve, all frame ranges are valid, and `segment_ancestors` agrees with the parent graph for the affected closure. If validation fails, abort the entire transaction.
+6. Reclaim candidates in leaf-first batches: select candidate Segments that have no remaining child Segment (`child.parent_segment_uuid = candidate.segment_uuid`), delete their `frames`, delete every `segment_ancestors` row where the candidate appears in either `segment_uuid` or `ancestor_uuid`, then delete the Segment. Repeat until no candidates remain. If candidates remain but no candidate leaf exists, treat this as graph corruption/cycle and roll back; never fall back to arbitrary deletion order.
+7. Before commit, assert that no remaining row references a deleted Segment, no retained root was deleted, no live trace/tombstone lost its reachable closure, all foreign keys pass, and the GC authorization table is empty.
+8. Persist the terminal purged outcome, operation mapping, and permanent anti-resurrection fence in the same transaction as root release and graph reclamation. Commit once. The purge linearization point is this commit; before it, restore/recovery can still win after rollback, and after it, restore must reject.
+
+The full mark-and-sweep may scan a large database. An incremental candidate walk can be introduced only if it is proven equivalent: start at the purged root, stop when any retained root or any remaining child references a candidate, and continue to the parent only after the child has been safely deleted. It must still account for multiple children, bounded-prefix forks, all tombstone roots, and stale/unrooted descendants. Prefer the simpler full closure as the correctness baseline before optimizing.
+
+### Why the leaf-first deletion order matters
+
+`segments.parent_segment_uuid` is a foreign key to `segments.segment_uuid`. Deleting a parent before its children violates referential integrity. For every candidate leaf, remove its frames first, then all closure-index rows in both roles, then the Segment row. When a candidate is a parent of a retained Segment, that child is reachable from a retained root and the parent must be in the retained closure; it must never enter the candidate set.
+
+The `segment_ancestors` cleanup must include both predicates: `segment_uuid = candidate` and `ancestor_uuid = candidate`. Removing only descendant rows leaves foreign-key references in the ancestor role; removing only ancestor rows leaves rows owned by the deleted descendant. Never disable foreign keys to make GC pass.
+
+### Fork, restore, purge, and append race semantics
+
+- **Fork vs purge:** both must acquire the same SQLite writer reservation. If fork commits first, its new child trace is a root and the parent's required closure is retained. If purge commits first, a later fork must fail lifecycle admission and must not create a child from the purged identity.
+- **Restore vs purge:** both validate and change lifecycle state inside `BEGIN IMMEDIATE`. The first successful commit wins. If restore commits first, purge retry sees `live` and fails its retired-state precondition. If purge commits first, restore sees the terminal purged fence and fails permanently.
+- **Append vs retire:** an append admitted and committed before retire is included in the retained tail. If retire commits first, a later append must fail lifecycle admission. Do not rely on a process-local writer lease alone.
+- **Fork vs retire:** fork must validate the source lifecycle state in the same transaction that creates the child Segment/trace root. A preflight read outside the write transaction is a TOCTOU race.
+- **Two purges:** unique `(session_id, operation_id)` plus generation-scoped lifecycle state ensures the same retry returns the same result, while a different operation ID cannot purge a later restored generation by accident.
+- **Reader vs purge:** already materialized BLOB bytes may finish decoding under the previously specified read admission semantics. A new read transaction after retire/purge commit must observe lifecycle state and reject. Do not keep a SQLite cursor/statement open across asynchronous decode unless a reader-lifetime protocol is added.
+
+### GC authorization must be row-scoped
+
+Replace the unconditional delete triggers with provider-private guards, not an unrestricted boolean switch. A transaction-local-in-practice `gc_authorization` row should identify the exact GC operation and the specific Segment UUID being reclaimed. `frames` and `segments` delete triggers require a matching permit for `OLD.segment_uuid`; `segment_ancestors` delete trigger requires a permit for the candidate UUID in either `OLD.segment_uuid` or `OLD.ancestor_uuid`. Insert permits only after the candidate set has been validated, and remove them before commit. The final empty-permit assertion is mandatory.
+
+This authorization is an integrity guard against accidental provider code paths, not a security boundary against a hostile process that can write arbitrary SQL to the private database. Do not expose this table or arbitrary SQL capability publicly. A missing, stale, mismatched-operation, or leaked permit must abort the transaction or block startup.
+
+### Required adversarial graph and concurrency tests
+
+- One root with a linear chain; purge it and verify every Segment/frame/ancestry row is reclaimed.
+- Two live traces sharing an ancestor through sibling branches; purge one branch and verify the sibling and shared prefix remain byte-identical.
+- A bounded-prefix fork where the child ends before the parent's tail; purge the parent and verify the child's inherited range and reads remain exact.
+- A grandchild fork with multiple children at different ancestor depths; delete one branch and verify the other branch's full closure remains.
+- A retired but restorable Session sharing ancestors with a live Session; verify retirement keeps its root and restore is byte-for-byte exact.
+- Purge a retired root while another retired root shares its ancestry; retain shared ancestors until the second root is purged.
+- Deliberately corrupt `segment_ancestors` in a fixture; GC must detect mismatch and roll back without deleting graph data.
+- Inject failure after permit insert, after each frame deletion, after each of the two ancestry-index deletion roles, after Segment deletion, before terminal fence insert, and during COMMIT. Every pre-commit failure leaves the original root and graph intact.
+- Fork/append/restore/purge races across independent processes with deterministic barriers around writer acquisition and commit. Assert exactly the serialization outcomes above.
+- Attempt direct SQL deletes without a permit, with a permit for another Segment, and with a stale operation ID; all must fail.
+- After every test, run `PRAGMA foreign_key_check`, verify closure equality against a recursive traversal of `parent_segment_uuid`, and compare unaffected Session event streams byte-for-byte.
+- Run on Linux, macOS, and Windows. Include restart-after-SIGKILL cases; in-process exception tests alone do not establish crash safety.
+
+Do not implement incremental or background GC until the single-transaction correctness baseline passes these graph and process-race tests. If GC later becomes chunked across commits, introduce an explicit durable `purging` state and a persisted candidate/work cursor; each chunk must remain invisible to reads and must resume idempotently after restart. Never expose a partially reclaimed graph as a valid live or restorable Session.
