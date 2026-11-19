@@ -29,8 +29,9 @@
     "node": ">=22"
   },
   "scripts": {
-    "check": "node --check index.js && node --check client.js",
-    "test": "node --test"
+    "check": "node --check index.js && node --check client.js && node --check test/upstream-harness/session-delete.integration.mjs",
+    "test": "node --test",
+    "test:integration:upstream": "node test/upstream-harness/session-delete.integration.mjs"
   },
   "exports": {
     ".": "./index.js",
@@ -48,9 +49,6 @@
     "CHANGELOG.md",
     "LICENSE"
   ],
-  "publishConfig": {
-    "access": "public"
-  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

@@ -1,0 +1,141 @@
+#!/usr/bin/env node
+/**
+ * Optional integration prototype against a real DeepSeek Harness checkout.
+ * The seed process closes its real JSONL handle before any destructive action.
+ */
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { createRequire } from 'node:module'
+import { pathToFileURL, fileURLToPath } from 'node:url'
+import { apply as applySessionDelete } from '../../index.js'
+
+const HARNESS_ROOT = process.env.DSH_HARNESS_ROOT
+if (!HARNESS_ROOT) {
+  throw new Error('Set DSH_HARNESS_ROOT to a built deepseek-harness checkout before running this optional integration test.')
+}
+const harnessRoot = resolve(HARNESS_ROOT)
+const requireFromHarness = createRequire(join(harnessRoot, 'package.json'))
+
+async function importHarnessPackage(name) {
+  const resolved = requireFromHarness.resolve(name)
+  return import(pathToFileURL(resolved).href)
+}
+
+async function createHostContext(sessionRoot) {
+  const [{ Context }, testkit, agentLoop, jsonl, session] = await Promise.all([
+    importHarnessPackage('@deepseek-ai/cordis'),
+    importHarnessPackage('@deepseek-ai/dsh-agent-loop-testkit'),
+    importHarnessPackage('@deepseek-ai/dsh-agent-loop'),
+    importHarnessPackage('@deepseek-ai/dsh-session-persistence-jsonl'),
+    importHarnessPackage('@deepseek-ai/dsh-session'),
+  ])
+  const ctx = new Context()
+  await testkit.mountAgentLoopTestDependencies(ctx)
+  await ctx.plugin(agentLoop.default, { agents: [] })
+  await ctx.plugin(jsonl, { root: sessionRoot, compression: 'none' })
+  return { ctx, session }
+}
+
+const SESSION_ID = 'session-delete-real-host-fixture'
+
+async function seedInSeparateProcess(sessionRoot) {
+  const worker = spawnSync(
+    process.execPath,
+    [fileURLToPath(import.meta.url), '--seed', sessionRoot],
+    {
+      cwd: harnessRoot,
+      encoding: 'utf8',
+      env: { ...process.env, DSH_HARNESS_ROOT: harnessRoot },
+      timeout: 60_000,
+    },
+  )
+  if (worker.error) throw worker.error
+  if (worker.status !== 0) {
+    throw new Error(
+      'Harness seed process failed (exit ' + worker.status + ').\nstdout:\n'
+        + worker.stdout + '\nstderr:\n' + worker.stderr,
+    )
+  }
+  assert.match(worker.stdout, /seeded-and-closed/)
+}
+
+async function seedWorker(sessionRoot) {
+  const { ctx, session } = await createHostContext(sessionRoot)
+  try {
+    const handle = await ctx.sessionPersistence.create({
+      version: session.SESSION_FORMAT_VERSION,
+      id: SESSION_ID,
+      createdAt: Date.now(),
+      cwd: harnessRoot,
+      isSeeded: false,
+    })
+    await handle.append([
+      { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
+      { type: 'turn/end', seq: 1, time: 2, data: { turn: 1, reason: { kind: 'completed' } } },
+    ])
+    await handle.flush()
+    await handle.close()
+    process.stdout.write('seeded-and-closed\n')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+}
+
+async function runIntegration() {
+  const sessionRoot = await mkdtemp(join(tmpdir(), 'dsh-session-delete-host-'))
+  let ctx
+  try {
+    await seedInSeparateProcess(sessionRoot)
+    const host = await createHostContext(sessionRoot)
+    ctx = host.ctx
+    applySessionDelete(ctx, {})
+    const service = ctx.get('sessionDelete')
+    assert.ok(service, 'Session Delete must register on the real Cordis context')
+
+    const capabilities = await service.describe()
+    assert.equal(capabilities.supported, true)
+    assert.equal(capabilities.canRestore, true)
+
+    const removed = await service.delete(SESSION_ID)
+    assert.equal(removed.removed, true)
+    assert.equal(removed.trashed, true)
+    assert.equal(removed.stored, true)
+
+    const trashAfterDelete = await service.listTrash()
+    assert.ok(trashAfterDelete.entries.some(entry => entry.sessionId === SESSION_ID))
+
+    const restored = await service.restore(SESSION_ID)
+    assert.equal(restored.restored, true)
+    const snapshot = await ctx.sessionPersistence.stat(SESSION_ID)
+    assert.equal(snapshot.header.id, SESSION_ID)
+
+    const removedAgain = await service.delete(SESSION_ID)
+    assert.equal(removedAgain.trashed, true)
+    const purged = await service.purge(SESSION_ID)
+    assert.equal(purged.purged, true)
+
+    const remaining = await service.listTrash()
+    assert.equal(remaining.entries.some(entry => entry.sessionId === SESSION_ID), false)
+    await assert.rejects(
+      ctx.sessionPersistence.stat(SESSION_ID),
+      error => error?.code === 'SESSION_PERSISTENCE_NOT_FOUND'
+        || error?.name === 'SessionPersistenceNotFoundError',
+    )
+
+    process.stdout.write(
+      'PASS: real Cordis + AgentLoop testkit + JSONL provider; cross-process seed/close; plugin delete/restore/purge\n',
+    )
+  } finally {
+    await ctx?.fiber.dispose()
+    await rm(sessionRoot, { recursive: true, force: true })
+  }
+}
+
+if (process.argv[2] === '--seed') {
+  await seedWorker(resolve(process.argv[3]))
+} else {
+  await runIntegration()
+}
