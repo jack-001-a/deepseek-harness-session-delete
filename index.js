@@ -1112,7 +1112,15 @@ class SessionDeleteService {
         }),
         { encoding: 'utf8', flag: 'wx' },
       )
-      await this.moveArtifact(artifact.target, join(entryPath, ARTIFACT_DIR_NAME))
+      const tombstone = join(dirname(artifact.target), `.session-delete-${trashId}.moving`)
+      await this.moveArtifact(artifact.target, join(entryPath, ARTIFACT_DIR_NAME), {
+        afterPromote: async (source) => {
+          // Rename on the source volume is atomic. If removal is interrupted,
+          // recovery can safely finish deleting this private tombstone.
+          await rename(source, tombstone)
+          await this.removeWithRetries(tombstone, sessionId)
+        },
+      })
       await this.recoverTrashMove(entryPath, manifest)
     } catch (error) {
       const copiedArtifact = await this.pathExists(join(entryPath, ARTIFACT_DIR_NAME))
@@ -1214,7 +1222,7 @@ class SessionDeleteService {
    * @param source - the absolute path to move.
    * @param destination - the absolute path to move it to.
    */
-  async moveArtifact(source, destination) {
+  async moveArtifact(source, destination, options = {}) {
     try {
       await rename(source, destination)
       return
@@ -1228,7 +1236,11 @@ class SessionDeleteService {
     // Promotion is atomic because staging and destination share the trash
     // volume. Recovery can distinguish a partial stage from a complete copy.
     await rename(staging, destination)
-    await rm(source, { recursive: true, force: true })
+    if (typeof options.afterPromote === 'function') {
+      await options.afterPromote(source)
+    } else {
+      await rm(source, { recursive: true, force: true })
+    }
   }
 
   /**
@@ -1747,14 +1759,27 @@ class SessionDeleteService {
         )
         return false
       }
-      await this.removeWithRetries(source, manifest.sessionId)
+    }
+
+    // Once the complete copy is visible, move the original to a deterministic
+    // tombstone on its own volume before recursively removing it. A crash
+    // during rm then cannot leave a partial directory at the live session path.
+    if (typeof source !== 'string' || source.length === 0) return false
+    const tombstone = join(dirname(source), `.session-delete-${basename(path)}.moving`)
+    const tombstoneExists = await this.pathExists(tombstone)
+    if (sourceExists && tombstoneExists) {
+      this.ctx.logger?.warn(`sessionDelete: both source and tombstone exist for interrupted move "${path}"`)
+      return false
+    }
+    if (sourceExists) await rename(source, tombstone)
+    if (await this.pathExists(tombstone)) {
+      await this.removeWithRetries(tombstone, manifest.sessionId)
     }
 
     await rm(markerPath, { force: true })
     await rm(staging, { recursive: true, force: true })
     return true
   }
-
   /**
    * Read every trash entry from the disk.
    *
