@@ -1726,16 +1726,19 @@ test('a dead same-host lock owner is reclaimed after process exit', async () => 
     }
     assert.equal(ready, true, 'the child must acquire the lock before it is terminated')
   } finally {
-    child.kill()
-    await new Promise((resolve, reject) => {
-      child.once('error', reject)
-      child.once('exit', resolve)
-    })
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise((resolve, reject) => {
+        child.once('error', reject)
+        child.once('exit', resolve)
+      })
+      child.kill()
+      await exited
+    }
   }
 
   const h = harness({ ...storedTarget(store) })
   await h.service.withProcessLock(SESSION_ID, async () => {
     await appendFile(marker, 'reclaimed\\n')
   })
-  assert.deepEqual((await readFile(marker, 'utf8')).trim().split('\\n'), ['held', 'reclaimed'])
+  assert.deepEqual((await readFile(marker, 'utf8')).trim().split('\n'), ['held', 'reclaimed'])
 })
