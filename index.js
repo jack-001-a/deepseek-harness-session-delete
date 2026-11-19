@@ -1771,7 +1771,16 @@ class SessionDeleteService {
       this.ctx.logger?.warn(`sessionDelete: both source and tombstone exist for interrupted move "${path}"`)
       return false
     }
-    if (sourceExists) await rename(source, tombstone)
+    if (sourceExists) {
+      try {
+        await rename(source, tombstone)
+      } catch (error) {
+        // Another recovery pass may already have completed the atomic rename
+        // and removed the tombstone. Treat ENOENT as complete only after
+        // confirming the source is absent; other failures remain actionable.
+        if (error?.code !== 'ENOENT' || (await this.pathExists(source))) throw error
+      }
+    }
     if (await this.pathExists(tombstone)) {
       await this.removeWithRetries(tombstone, manifest.sessionId)
     }
