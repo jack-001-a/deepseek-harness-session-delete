@@ -5,9 +5,9 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { apply as applySessionDelete } from '../index.js'
 
