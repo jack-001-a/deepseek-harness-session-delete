@@ -10,6 +10,7 @@ export class ProcessWorker {
   #events = []
   #waiters = new Set()
   #closed = false
+  #protocolError
 
   constructor({ script = new URL('./worker.mjs', import.meta.url), role, caseId, env = {} }) {
     if (!role || !caseId) throw new TypeError('role and caseId are required')
