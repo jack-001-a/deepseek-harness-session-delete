@@ -31,7 +31,7 @@ jobs:
         with:
           repository: deepseek-ai/deepseek-harness
           ref: 2e39e70496aa02986ca6a820c5d497e816b69d7e
-          path: deepseek-harness
+          path: ${{ runner.temp }}/deepseek-harness
           persist-credentials: false
 
       - name: Set up Node.js
@@ -46,7 +46,7 @@ jobs:
           package_json_file: deepseek-harness/package.json
 
       - name: Install the upstream workspace dependency graph
-        working-directory: deepseek-harness
+        working-directory: ${{ runner.temp }}/deepseek-harness
         run: pnpm install --frozen-lockfile
 
       - name: Build the upstream native system addon
@@ -64,5 +64,5 @@ jobs:
 
       - name: Run against real Cordis, AgentLoop testkit, and JSONL provider
         env:
-          DSH_HARNESS_ROOT: ${{ github.workspace }}/deepseek-harness
+          DSH_HARNESS_ROOT: ${{ runner.temp }}/deepseek-harness
         run: npm run test:integration:upstream
