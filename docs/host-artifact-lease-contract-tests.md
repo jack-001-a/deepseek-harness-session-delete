@@ -1,6 +1,6 @@
 # Host artifact lease contract test specification
 
-- Status: **acceptance specification only**; no Host integration test is implemented here.
+- Status: **acceptance specification only**; upstream provider-level two-process E2E tests exist, but this plugin's full Host/delete integration suite is not implemented here.
 - Depends on: PR #13 Host-native lease ADR and PR #14 provider compatibility matrix.
 - Target: a future provider-owned artifact lease / tombstone capability.
 - Required evidence: two or more independent, real DeepSeek Harness processes using the shipped persistence provider.
@@ -9,9 +9,9 @@
 
 This specification defines the evidence required before Session Delete may claim that delete, restore, purge, retention cleanup, or crash recovery are coordinated with native Harness writers.
 
-The test subject is the complete integration boundary: production Harness lifecycle, production JSONL persistence provider, provider-owned artifact lease/tombstone API, and the Session Delete transaction coordinator.
+The target test subject is the complete integration boundary: production Harness lifecycle, production JSONL persistence provider, a future provider-owned artifact lease/tombstone API, and the Session Delete transaction coordinator. Upstream already supplies a real JSONL two-process lease E2E and a reusable headless AgentLoop composition; see [Upstream Harness integration-fixture feasibility](./upstream-harness-fixture-feasibility.md). Reuse those building blocks rather than rebuilding process control from scratch.
 
-A passing test must demonstrate exclusion across independent OS processes. Separate provider objects in one process, mocked Cordis contexts, and plugin-only filesystem-lock tests are not Host integration evidence.
+A passing end-to-end test must demonstrate the plugin lifecycle exclusion across independent OS processes. The existing upstream JSONL E2E proves provider-level lease contention and crash release, but it does not exercise graceful close-drain races, Session Delete operations, or a full Host lifecycle. Separate provider objects in one process, mocked Cordis contexts, and plugin-only filesystem-lock tests are not end-to-end Host integration evidence.
 
 Until this suite exists and passes, the current guarantee remains limited to cooperating plugin instances. The cases below are acceptance criteria, not a report that the capability or tests already exist.
 
@@ -176,12 +176,12 @@ A timeout, mock-only run, inability to observe the real lease, or silently skipp
 | Item | Status |
 |---|---|
 | Plugin-only lock tests | Existing tests cover independent Node processes, symlink aliases, and stale-owner recovery. |
-| Real Harness process fixture | Not established by current plugin tests. |
-| Real JSONL provider lease contention tests | Not implemented here. |
-| Cross-process close-drain final-event test | Not implemented here. |
+| Upstream provider-level real two-process fixture | Exists: JSONL lease E2E runs a built-provider child against a parent process. |
+| Real JSONL provider lease contention | Covered upstream by `lease.two-process.e2e.ts`; not reimplemented in this plugin repo. |
+| Cross-process close-drain final-event test | Not covered by the inspected upstream E2E; generic live-write contract covers close/drain in one process only. |
 | Artifact lease for temporarily absent session | No public capability verified. |
-| Delete/restore/purge crash matrix with two Harness processes | Not implemented here. |
+| Delete/restore/purge crash matrix with two Host processes | Not implemented here; requires a Host composition fixture and public artifact lifecycle capability. |
 | POSIX and Windows provider contract matrix | Not implemented here. |
 | This document | Acceptance specification only. |
 
-The next implementation prerequisite is a supported Harness integration fixture plus the provider-owned artifact lease/tombstone API. Until both exist, do not add runtime lease integration or relax the operational warning in the compatibility matrix.
+The next test prerequisite is to adapt the upstream JSONL two-process launcher and headless AgentLoop composition into a deterministic, no-network Host worker that mounts this plugin. The next runtime prerequisite remains a provider-owned artifact lease/tombstone API. Until the runtime capability exists, do not add destructive lease integration or relax the operational warning in the compatibility matrix.
