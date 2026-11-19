@@ -342,3 +342,78 @@ Run reconciliation only after database open, schema/version validation, and reco
 Do not make startup reconciliation depend solely on the marker directory scan: it cannot discover a committed SQLite row whose marker was never published. Conversely, do not use the JSONL listing as authority for an identity already represented in SQLite lifecycle state.
 
 Tests must inject process termination at every publication boundary on POSIX and Windows, restart a fresh provider instance, and verify `open`, `stat`, `list`, `create`, and legacy migration behavior. Include concurrent startup reconciliation by two processes, database restore to a different configured path, stale temp files, corrupt marker JSON, and marker/database path mismatch.
+## SQLite schema v1 → lifecycle schema v2 migration protocol
+
+The reviewed upstream SQLite implementation currently declares `SCHEMA_VERSION = 1`, `APPLICATION_ID = 0x44535043`, and refuses any nonmatching non-empty database. Schema v1 has `segments`, `traces`, `frames`, and `segment_ancestors`; it protects frame and ancestor rows with unconditional no-delete triggers, while ancestry and frame-update immutability are separately enforced. The lifecycle proposal therefore requires an explicit, versioned migration; it must never initialize an empty replacement database over an existing incompatible file.
+
+### Migration invariants
+
+- Preserve every existing trace header byte-for-byte (or preserve its exact parsed semantic value if a future canonicalization is explicitly specified), every `inherited_count`, every Segment UUID and parent/range field, every frame payload/codec/range, every ancestor-index row, and every `.segments` routing marker.
+- Do not rewrite, re-compress, reframe, renumber, or re-parent existing Session history as part of this migration.
+- Keep `application_id` unchanged. Advance `user_version` from 1 to 2 only in the same SQLite transaction that installs the complete v2 schema and trigger set.
+- Keep the existing no-update/no-reparent and append-only frame-update guards. Relax only the two delete guards needed for provider-owned GC, and replace them with a private, transaction-scoped GC authorization check.
+- Never perform filesystem marker rewrites or JSONL imports as part of the SQLite DDL transaction. Those are separate resources and are reconciled after database migration using the routing-marker recovery protocol above.
+- Unsupported versions, foreign application IDs, malformed v1 layouts, failed preflight checks, and ambiguous databases remain untouched and fail closed.
+
+### Recommended v2 schema additions
+
+Use provider-private, `STRICT` tables with explicit constraints and indexes:
+
+- `session_lifecycle`: one row per Session identity; lifecycle state, revision/generation, current or former tail Segment reference, retained header, inherited count, opaque token digest, and timestamps used for audit (timestamps are not deduplication expiry). A retired row retains the Segment root until purge.
+- `session_lifecycle_operations`: unique `(session_id, operation_id)` mapping to the exact operation kind, terminal/intermediate outcome, generation, and retirement token reference/digest. This survives restore and later retirement generations; it is not replaced by a single `inspectById` row.
+- `session_lifecycle_tokens`: unique opaque token digest mapped to Session and generation, with constraints preventing token reuse across identities or generations.
+- `session_lifecycle_fences`: terminal purged-ID anti-resurrection identity. It must remain authoritative even after the Session's trace and Segment rows are reclaimed; it has no FK to a reclaimable Segment.
+- `gc_authorization`: a private, normally empty transaction-local-in-practice permit table used by delete triggers. It must be populated and cleared inside the same `BEGIN IMMEDIATE` transaction; a committed permit row is an integrity failure and blocks startup.
+
+Exact column layout and token encoding remain an implementation decision, but uniqueness, referential ownership, generation scoping, and durable anti-resurrection semantics are mandatory. Avoid a foreign key from a terminal purged-ID fence to `traces` or `segments`, because those rows are intentionally reclaimed.
+
+### Atomic v1 → v2 migration sequence
+
+1. Open the existing database without creating a replacement. Set `foreign_keys=ON`, `synchronous=FULL`, and WAL mode using the existing bounded busy/retry policy. Obtain the SQLite writer reservation with `BEGIN IMMEDIATE`; concurrent initializers must serialize here.
+2. Read `application_id` and `user_version` again inside the transaction. If `(application_id, user_version) == (expected, 2)`, validate v2 and return idempotently. If `(expected, 1)`, continue. If the database is empty `(0, 0)`, use the separate fresh-create path. Any other pair fails closed without modifying the file.
+3. Validate the exact expected v1 schema objects and required columns/indexes/triggers. Reject unknown tables/triggers or unexpected object definitions unless a documented forward-compatible allowlist explicitly permits them. Do not assume `user_version=1` proves the schema is intact.
+4. Run pre-migration checks inside the reserved transaction: `PRAGMA quick_check` (or `integrity_check` where startup budget permits), `PRAGMA foreign_key_check`, required-column/object checks, and application-level graph validation. Verify every trace tail exists, every parent chain is acyclic and range-valid, frame ranges are contiguous/valid under the existing format rules, and `segment_ancestors` matches the transitive parent/range closure. A failure aborts before DDL.
+5. Create lifecycle, operation, token, terminal-fence, and GC authorization tables and their indexes. Existing v1 rows are not copied or rewritten; live v1 traces are logically live by default and need no synthetic retirement history.
+6. Replace only `frames_no_delete` and `ancestors_no_delete` with guards that reject deletion unless the private GC authorization row exists. Keep `frames_no_update`, `segments_no_reparent`, `ancestors_no_update`, and `segments_index_ancestors` unchanged. Add explicit trigger/schema validation so ordinary append/write paths cannot enable GC.
+7. Validate the complete v2 object set, check that the GC authorization table is empty, re-run `foreign_key_check`, and verify the v1 trace/Segment/frame/ancestor counts and stable identity digests are unchanged.
+8. Set `PRAGMA user_version = 2` last, still inside the same transaction, then COMMIT. SQLite transactional DDL makes schema objects and version advancement atomic: a crash before commit rolls back all v2 changes; a crash after commit exposes the complete v2 schema. An ambiguous COMMIT result marks the provider outcome unknown and requires close/reopen plus version/schema inspection before any retry.
+9. After the DB transaction commits, run the independent marker reconciliation protocol. Do not import JSONL or delete/rewrite `.segments/*.json` as part of migration. A failure in marker reconciliation leaves v2 committed and records repair debt; it does not roll back the database migration.
+
+### Narrowly authorized Segment GC
+
+The v2 delete guards should not be dropped. Replace unconditional denial with a guard that checks a private authorization row scoped to the current SQLite transaction. A purge transaction inserts the permit, removes the relevant tombstone root and operation references according to retention rules, deletes only unreachable frame and ancestor-index rows, deletes now-unreferenced Segments from leaves toward the root, verifies no live trace/tombstone/child still references each candidate, then removes the permit before COMMIT. The permit must never be committed, and a trigger must reject a delete if the permit is absent.
+
+Keep `segments_no_reparent` and all ancestry update protections permanently. GC must explicitly remove `segment_ancestors` rows in both `segment_uuid` and `ancestor_uuid` roles before deleting a Segment; it must not rely on cascading behavior that v1 did not define. Foreign keys remain enabled on every connection. Any FK violation or unexpected remaining reference aborts the whole purge transaction.
+
+Because a normal SQL caller with write access to the private database could theoretically manufacture a permit, this is an internal integrity guard, not a security boundary against a hostile local process with database-file write access. The database is provider-private; do not expose the authorization table or arbitrary SQL surface through the public lifecycle capability.
+
+### Crash and rollback matrix
+
+| Failure point | Required durable result | Restart behavior |
+|---|---|---|
+| Before `BEGIN IMMEDIATE` | v1 unchanged | Retry migration |
+| After writer reservation, before DDL | v1 unchanged | SQLite rolls back abandoned transaction; retry |
+| During lifecycle-table/index creation | v1 unchanged after rollback | Detect v1 and retry; no partial v2 accepted |
+| After delete-trigger replacement, before version bump | v1 unchanged after rollback | Old triggers restored by transactional DDL; retry |
+| During pre-commit validation | v1 unchanged after rollback | Fail closed with diagnostic; repair/restore source DB |
+| During COMMIT with unknown client outcome | v1 or complete v2, never accepted partial schema | Close connection; reopen and inspect `(application_id,user_version)` plus full schema fingerprint before retry |
+| After v2 COMMIT, before marker reconciliation | complete v2 database; markers may be stale/missing | Run idempotent marker reconciliation; do not rerun v1 DDL or import over existing lifecycle state |
+| During GC after permit insert but before permit removal | no partial purge after rollback | Permit insert and all deletes roll back together |
+| Attempt GC delete without permit | statement aborts | Session data remains unchanged |
+| Process dies after purge COMMIT but before caller response | complete terminal outcome/fence persisted | Resolve by `(session_id, operation_id)`; never execute a second purge generation |
+
+### Required migration tests
+
+- Build representative v1 fixtures with empty DB, single trace, multiple independent traces, forked/shared ancestors, bounded-prefix forks, grandchild branches, empty and non-empty frames, and legacy JSONL identities alongside SQLite rows.
+- Snapshot all v1 logical data before migration and compare after migration: headers, inherited counts, trace tails, Segment UUID/parent/ranges, frame bytes/codecs/ranges, ancestry closure, marker bytes, and unrelated JSONL contents.
+- Inject process termination after each DDL/trigger/version boundary. Reopen with a fresh process and assert the database is either valid v1 or fully valid v2, never a mixed schema.
+- Run two independent processes attempting v1→v2 simultaneously; one performs the migration, the other observes and validates v2 without duplicate DDL or data changes.
+- Test unknown `application_id`, future `user_version`, malformed v1 schema, missing tables, extra unexpected triggers, corrupt graph, FK violations, and failed quick/integrity checks. Verify byte-for-byte database preservation where no transaction was committed.
+- Test migration with an external WAL reader and with a busy writer. It must wait/fail within the established timeout, never switch to DELETE journal mode, replace the database file, or unlink WAL/SHM files.
+- Verify ordinary append/update paths cannot delete frames or ancestry rows; authorized GC can delete only unreachable rows; missing permit, stale permit, wrong Session scope, and accidental permit leakage all abort.
+- Verify lifecycle tombstones preserve the exact original root through restore; purge of one branch preserves shared ancestors and siblings; purged-ID fences and operation mappings remain after graph reclamation.
+- Run all tests on Linux, macOS, and Windows, and test restart recovery rather than only catching exceptions in-process.
+
+### Rollout constraint
+
+Do not ship a lifecycle-capable consumer against schema v1. The v2 migration, lifecycle tables, routing reconciliation, guarded GC, and crash-injection suite must land and pass together in the provider implementation. Until then, the design remains proposal-only and the current SQLite provider must continue to refuse unsupported lifecycle operations.
