@@ -1336,9 +1336,12 @@ test('different trash mutations for one session are serialized', async () => {
   const h = harness()
   let release
   const firstGate = new Promise((resolve) => { release = resolve })
+  let restoreStarted
+  const restoreStartedGate = new Promise((resolve) => { restoreStarted = resolve })
   const events = []
   const first = h.service.runTrashOperation('restore', SESSION_ID, async () => {
     events.push('restore:start')
+    restoreStarted()
     await firstGate
     events.push('restore:end')
     return 'restored'
@@ -1347,8 +1350,7 @@ test('different trash mutations for one session are serialized', async () => {
     events.push('purge:start')
     return 'purged'
   })
-  await Promise.resolve()
-  await Promise.resolve()
+  await restoreStartedGate
   assert.deepEqual(events, ['restore:start'])
   release()
   assert.equal(await first, 'restored')
@@ -1360,15 +1362,18 @@ test('same trash mutation joins the in-flight operation', async () => {
   const h = harness()
   let release
   const gate = new Promise((resolve) => { release = resolve })
+  let started
+  const startedGate = new Promise((resolve) => { started = resolve })
   let runs = 0
   const run = () => h.service.runTrashOperation('restore', SESSION_ID, async () => {
     runs += 1
+    started()
     await gate
     return { restored: true }
   })
   const first = run()
   const second = run()
-  await Promise.resolve()
+  await startedGate
   assert.equal(runs, 1)
   release()
   assert.deepEqual(await first, { restored: true })
