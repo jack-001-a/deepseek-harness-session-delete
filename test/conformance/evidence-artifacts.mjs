@@ -74,7 +74,7 @@ export async function writeVerifiedManifest(path, manifest, requiredCaseIds, art
   await mkdir(dirname(path), { recursive: true })
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`
   try {
-    await writeFile(temporary, JSON.stringify(manifest, null, 2) + '\\n', { flag: 'wx', mode: 0o600 })
+    await writeFile(temporary, JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx', mode: 0o600 })
     await rename(temporary, path)
   } finally {
     await unlink(temporary).catch(() => {})
