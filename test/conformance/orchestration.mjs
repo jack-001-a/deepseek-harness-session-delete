@@ -53,6 +53,12 @@ export class FaultPlan {
     return fault
   }
 
+  /** Fail closed when a scheduled point was never reached by the harness. */
+  assertConsumed() {
+    const remaining = this.remaining
+    if (remaining.length) throw new Error(`unconsumed fault points: ${remaining.join(', ')}`)
+  }
+
   get remaining() {
     return [...this.#points.keys()]
   }
