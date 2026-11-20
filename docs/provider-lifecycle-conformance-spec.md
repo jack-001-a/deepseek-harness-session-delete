@@ -123,6 +123,18 @@ Each case is run against every built-in provider and on all three operating syst
 | S-039 | Mixed-version process | Keep v1 process alive while v2 lifecycle is enabled in test environment | Deployment gate rejects enablement; v2 must not claim cross-version safety |
 | S-040 | Cancellation boundaries | Cancel before intent, after intent, and after commit | Only proven pre-commit cancellation returns `cancelled_before_commit`; later ambiguity is recoverable |
 
+### 4.1 Operation-ledger retention and exact recovery
+
+The public capability contract includes an exact `inspectOperation(operationId)` query. `inspectById(id)` reports only the current lifecycle state for a public Session ID and MUST NOT be used as a substitute for recovering a particular committed operation after same-ID restore/re-retire cycles.
+
+Operation-ID deduplication records, or compact authoritative tombstones containing the request fingerprint and committed outcome, MUST outlive every possible caller retry. Compaction MUST NOT make an old operation ID appear unused. Reusing a retained operation ID with a different request fingerprint MUST continue to return `operation_id_conflict`.
+
+Add the following required scenario:
+
+| ID | Scenario | Controlled interleaving | Required result |
+|---|---|---|---|
+| S-041 | Operation ledger compaction and stale retry | Commit an operation, compact provider metadata, then retry its original operation ID; also retry after a later restore/re-retire of the same public ID | Original result or terminal outcome is recovered; conflicting reuse is rejected; no newer incarnation is affected |
+
 ## 5. JSONL-specific suite
 
 These tests verify the provider-owned filesystem protocol, not plugin trash behavior.
@@ -187,7 +199,7 @@ CI summary MUST report counts by provider, OS, runtime, and suite. A green aggre
 
 ## 8. Release gate checklist
 
-- [ ] Shared suite S-001 through S-040 passes for JSONL and SQLite on Linux, macOS, and Windows.
+- [ ] Shared suite S-001 through S-041 passes for JSONL and SQLite on Linux, macOS, and Windows.
 - [ ] JSONL suite J-001 through J-012 passes on all supported platforms.
 - [ ] SQLite suite Q-001 through Q-020 passes on all supported platforms.
 - [ ] No required case is skipped, flaky, mocked, or replaced by a unit-only approximation.
