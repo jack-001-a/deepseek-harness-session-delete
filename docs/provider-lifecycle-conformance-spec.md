@@ -207,7 +207,7 @@ CI summary MUST report counts by provider, OS, runtime, and suite. A green aggre
 
 ## 8. Release gate checklist
 
-- [ ] Shared suite S-001 through S-041 passes for JSONL and SQLite on Linux, macOS, and Windows.
+- [ ] Shared suite S-001 through S-045 passes for JSONL and SQLite on Linux, macOS, and Windows, including root-epoch gate shared/exclusive and process-death semantics (S-044/S-045).
 - [ ] JSONL suite J-001 through J-012 passes on all supported platforms.
 - [ ] SQLite suite Q-001 through Q-020 passes on all supported platforms.
 - [ ] No required case is skipped, flaky, mocked, or replaced by a unit-only approximation.
