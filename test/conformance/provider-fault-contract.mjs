@@ -9,6 +9,46 @@ export const PROVIDER_FAULT_PHASES = Object.freeze([
 ])
 const ACTIONS = new Set(['pause', 'error', 'kill'])
 
+const DURABILITY_PRIMITIVES = new Set([
+  'file-sync',
+  'directory-sync',
+  'sqlite-commit',
+  'atomic-rename',
+  'provider-journal-commit',
+])
+
+function requireText(value) {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+/**
+ * Compare provider-reported boundary metadata with a separately maintained
+ * provider-specific expectation. Adapter self-report alone is not attestation.
+ */
+export function assertBoundaryAttestation(hit, expected) {
+  const fields = [
+    'provider',
+    'providerVersion',
+    'point',
+    'phase',
+    'operation',
+    'durabilityPrimitive',
+    'sourceRef',
+    'reviewedAtCommit',
+  ]
+  if (!expected || fields.some((field) => !requireText(expected[field]))) {
+    throw new TypeError('trusted boundary expectation is incomplete')
+  }
+  if (!DURABILITY_PRIMITIVES.has(expected.durabilityPrimitive)) {
+    throw new TypeError('trusted boundary expectation has an unsupported durability primitive')
+  }
+  if (!hit?.boundary || fields.some((field) => hit.boundary[field] !== expected[field])) {
+    throw new Error('provider boundary attestation does not match the trusted provider boundary map')
+  }
+  return Object.freeze({ ...expected })
+}
+
+
 function nonEmpty(value) {
   return typeof value === 'string' && value.trim().length > 0
 }
