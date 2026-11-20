@@ -23,7 +23,7 @@ function runGitHubCli(args, label) {
   } catch (error) {
     const detail = String(error.stderr ?? error.message ?? '').trim().slice(0, 500)
     const unavailable = error.code === 'ENOENT' ||
-      /no attestations|not found|HTTP 404|authentication required|failed to connect|timeout|rate limit/i.test(detail)
+      /no attestations|not found|HTTP 401|HTTP 403|HTTP 404|unauthorized|forbidden|authentication required|failed to connect|timeout|rate limit/i.test(detail)
     fail(`${label}: ${detail || 'GitHub CLI request failed'}`, unavailable ? 'provenance_unavailable' : 'provenance_rejected')
   }
 }
