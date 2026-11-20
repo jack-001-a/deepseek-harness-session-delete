@@ -102,7 +102,8 @@ Before claiming CI provenance:
 - [ ] Verify the attestation in CI and independently inspect the recorded certificate/identity claims.
 - [x] Implement a fail-closed policy evaluator for repository/workflow/ref/event/commit/run identity and subject digest (synthetic policy tests only; real attestation still pending).
 - [ ] Independently verify that `main` has required branch protection/rulesets and that the attested commit entered through the approved review path.
-- [x] Add positive synthetic-policy and negative verification tests for wrong repository, immutable repository/owner identity, workflow, ref, event, commit, run invocation/attempt, issuer, and subject digest.
+- [x] Add positive synthetic-policy and negative verification tests for repository/owner URI and immutable IDs, SAN shape/value, signer/config URI and digest, runner environment, ref/event/commit, run invocation/ID/attempt, workflow path, and subject digest.
+- [x] Provide an online external-consumer verifier that obtains attestation and run metadata directly through the authenticated GitHub CLI.
 - [ ] Preserve a clear distinction between PR evidence and protected-branch evidence.
 - [ ] Update the evidence map only with actual attestation and verifier results.
 
