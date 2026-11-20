@@ -11,14 +11,6 @@ const OIDC_ISSUER = 'https://token.actions.githubusercontent.com'
 const REPOSITORY_ID = '1428060802'
 const OWNER_ID = '320086254'
 
-function first(object, names) {
-  for (const name of names) {
-    const value = object?.[name]
-    if (typeof value === 'string' && value.length > 0) return value
-  }
-  return undefined
-}
-
 function fail(message, status = 'provenance_rejected') {
   const error = new Error(`provenance policy rejected: ${message}`)
   error.status = status
@@ -69,22 +61,22 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
 
     // These certificate claims are populated from GitHub's OIDC token. Do not
     // fall back to statement.predicate for identity: that content is workflow-controlled.
-    const repositoryUri = first(certificate, ['sourceRepositoryURI', 'SourceRepositoryURI', 'sourceRepository', 'SourceRepository'])
-    const repositoryId = first(certificate, ['sourceRepositoryIdentifier'])
-    const ownerUri = first(certificate, ['sourceRepositoryOwnerURI'])
-    const ownerId = first(certificate, ['sourceRepositoryOwnerIdentifier', 'SourceRepositoryOwnerIdentifier'])
-    const sourceRef = first(certificate, ['sourceRepositoryRef', 'SourceRepositoryRef'])
-    const sourceDigest = first(certificate, ['sourceRepositoryDigest', 'SourceRepositoryDigest'])
+    const repositoryUri = certificate.sourceRepositoryURI
+    const repositoryId = certificate.sourceRepositoryIdentifier
+    const ownerUri = certificate.sourceRepositoryOwnerURI
+    const ownerId = certificate.sourceRepositoryOwnerIdentifier
+    const sourceRef = certificate.sourceRepositoryRef
+    const sourceDigest = certificate.sourceRepositoryDigest
     const san = certificate.subjectAlternativeName
     const sanValue = san?.type === 'URI' && typeof san.value === 'string' ? san.value : undefined
-    const issuer = first(certificate, ['issuer'])
-    const runnerEnvironment = first(certificate, ['runnerEnvironment'])
-    const workflowRef = first(certificate, ['buildSignerURI'])
-    const workflowDigest = first(certificate, ['buildConfigDigest'])
-    const signerDigest = first(certificate, ['buildSignerDigest'])
-    const buildConfigUri = first(certificate, ['buildConfigURI'])
-    const trigger = first(certificate, ['buildTrigger', 'BuildTrigger'])
-    const invocation = first(certificate, ['runInvocationURI', 'RunInvocationURI'])
+    const issuer = certificate.issuer
+    const runnerEnvironment = certificate.runnerEnvironment
+    const workflowRef = certificate.buildSignerURI
+    const workflowDigest = certificate.buildConfigDigest
+    const signerDigest = certificate.buildSignerDigest
+    const buildConfigUri = certificate.buildConfigURI
+    const trigger = certificate.buildTrigger
+    const invocation = certificate.runInvocationURI
 
     if (repositoryUri !== `https://github.com/${REPOSITORY}`) continue
     if (sourceRef !== REF) continue
