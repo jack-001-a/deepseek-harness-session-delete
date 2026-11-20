@@ -84,6 +84,8 @@ The runner additionally verifies the pinned JSONL provider's cross-process write
 
 The integration workflow uploads `provider-conformance.json` as a run artifact, including when the integration step fails. Schema version 2 records the pinned upstream commit, runtime environment, run start/finish timestamps, measured run duration, and individual case outcomes with evidence.
 
+Each completed stage is recorded as its own manifest case: capability discovery, plugin delete-to-trash, committed-delete startup recovery, restore, post-promotion interrupted-restore recovery, and purge. These plugin-level cases are intentionally named separately from the `JSONL-PROVIDER-*` lifecycle probes, which remain `SKIP` until the upstream provider exposes the required public mutation contract. The manifest writer uses a unique temporary file and removes it on both successful and failed writes before reporting the artifact path.
+
 The top-level status is deliberately conservative:
 
 - `PASS`: every recorded case passed.
