@@ -58,10 +58,12 @@ boundary ID. This record is only the adapter's assertion; it is not independent
 evidence that the external action occurred.
 
 The shared `withProviderFault` runner therefore requires a separate harness-owned
-`verifyHit` callback. It must return a structured evidence record (a bare boolean is
-rejected) with `verified: true`, non-empty `observer`, `effect`, and `artifactRef`
-fields, plus exact matching `faultId`, `operationId`, `point`, `phase`,
-`operation`, and `action` fields. The observer must inspect an effect outside the
+`verifyHit` callback. It must return a versioned structured evidence record with
+`schemaVersion: 1`, `verified: true`, a non-empty stable `evidenceId`, non-empty
+`observer`, `effect`, and `artifactRef` fields, plus exact matching `faultId`,
+`operationId`, `point`, `phase`, `operation`, and `action` fields. Unknown
+fields and unsupported schema versions are rejected so evidence consumers cannot
+silently interpret an unreviewed record shape. The observer must inspect an effect outside the
 Provider's self-reported hit payload, such as a parent-observed worker exit, an
 independently read durable recovery marker, or state observed after a fresh process
 restart. The artifact reference must identify retained test evidence (for example a
