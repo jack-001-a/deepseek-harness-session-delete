@@ -24,12 +24,13 @@ test('worker barrier is controlled by the parent process, not sleeps', async () 
 test('reused barrier names cannot match stale worker events', async () => {
   await withWorkers([{ role: 'writer', caseId: 'barrier-reuse' }], async ([worker]) => {
     worker.barrier('same-name')
-    await worker.waitFor((event) => event.type === 'barrier-reached' && event.barrier === 'same-name')
+    const firstReached = await worker.waitFor((event) => event.type === 'barrier-reached' && event.barrier === 'same-name')
     worker.release('same-name')
     await worker.waitFor((event) => event.type === 'barrier-released' && event.barrier === 'same-name')
 
     worker.barrier('same-name')
     const secondReached = await worker.waitFor((event) => event.type === 'barrier-reached' && event.barrier === 'same-name')
+    assert.notEqual(secondReached, firstReached, 'a reused barrier must produce a fresh event')
     assert.equal(secondReached.barrier, 'same-name')
     worker.release('same-name')
     await worker.waitFor((event) => event.type === 'barrier-released' && event.barrier === 'same-name')
