@@ -21,12 +21,12 @@ test('legacy storage provider is valid but explicitly lifecycle-unsupported', ()
 test('provider cannot claim lifecycle support without all lifecycle operations', () => {
   const adapter = storageAdapter()
   adapter.lifecycle = { supported: true, retire: async () => {} }
-  assert.throws(() => lifecycleCapability(adapter), /missing: restore, purge, inspect/)
+  assert.throws(() => lifecycleCapability(adapter), /missing: restore, purge, inspect, inspectById, inspectOperation/)
 })
 
 test('fully capable lifecycle adapter is accepted only with explicit capability declaration', () => {
   const adapter = storageAdapter()
   adapter.lifecycle = { supported: true }
-  for (const key of ['retire', 'restore', 'purge', 'inspect']) adapter.lifecycle[key] = async () => {}
+  for (const key of ['retire', 'restore', 'purge', 'inspect', 'inspectById', 'inspectOperation']) adapter.lifecycle[key] = async () => {}
   assert.equal(assertProviderAdapter(adapter).lifecycle, adapter.lifecycle)
 })
