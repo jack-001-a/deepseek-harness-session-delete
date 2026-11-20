@@ -46,3 +46,21 @@ export async function readVerifiedEvidenceArtifact(root, artifactRef, expectedSh
   if (digestOf(bytes) !== expectedSha256) throw new Error('evidence artifact digest mismatch')
   return JSON.parse(bytes.toString('utf8'))
 }
+
+
+/** Re-read every manifest artifact and bind its payload back to the recorded run identity. */
+export async function verifyManifestEvidence(manifest, root) {
+  if (!manifest || manifest.schemaVersion !== 1 || !Array.isArray(manifest.evidence)) {
+    throw new TypeError('versioned manifest evidence is required')
+  }
+  const verified = []
+  for (const record of manifest.evidence) {
+    if (record.sourceCommit !== manifest.sourceCommit) throw new Error('manifest evidence source commit mismatch')
+    const artifact = await readVerifiedEvidenceArtifact(root, record.artifactRef, record.artifactSha256)
+    for (const field of ['evidenceId', 'testRunId', 'sourceCommit', 'providerVersion', 'observer']) {
+      if (artifact?.[field] !== record[field]) throw new Error(`evidence artifact ${field} does not match the run manifest`)
+    }
+    verified.push(artifact)
+  }
+  return verified
+}
