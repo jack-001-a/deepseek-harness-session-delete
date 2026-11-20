@@ -128,7 +128,7 @@ export async function withProviderFault(adapter, request, expectedBoundary, run,
     throw new TypeError('provider fault scenario requires an independent hit verifier')
   }
   const evidenceContext = waitOptions.evidenceContext
-  if (!evidenceContext || !nonEmpty(evidenceContext.testRunId) ||
+  if (!evidenceContext || !nonEmpty(evidenceContext.caseId) || !nonEmpty(evidenceContext.testRunId) ||
       !/^[a-f0-9]{40}([a-f0-9]{24})?$/i.test(evidenceContext.sourceCommit || '') ||
       evidenceContext.providerVersion !== expectedBoundary.providerVersion ||
       !nonEmpty(evidenceContext.observerId)) {
@@ -153,6 +153,7 @@ export async function withProviderFault(adapter, request, expectedBoundary, run,
     const evidence = await verifyHit(hit, armed)
     const evidenceFields = [
       'evidenceId',
+      'caseId',
       'testRunId',
       'sourceCommit',
       'providerVersion',
@@ -174,6 +175,7 @@ export async function withProviderFault(adapter, request, expectedBoundary, run,
         evidence.faultId !== hit.faultId || evidence.operationId !== hit.operationId ||
         evidence.point !== hit.point || evidence.phase !== hit.phase ||
         evidence.operation !== hit.operation || evidence.action !== hit.action ||
+        evidence.caseId !== evidenceContext.caseId ||
         evidence.testRunId !== evidenceContext.testRunId ||
         evidence.sourceCommit !== evidenceContext.sourceCommit ||
         evidence.providerVersion !== evidenceContext.providerVersion ||
