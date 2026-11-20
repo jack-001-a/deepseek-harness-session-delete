@@ -285,8 +285,8 @@ async function interruptDeleteCopyInSeparateProcess(sessionRoot, sessionId) {
     const timeout = setTimeout(() => {
       worker.kill('SIGKILL')
       finish(new Error(
-        'Delete copy-stage worker timed out before the pre-promotion barrier.\\nstdout:\\n'
-          + stdout + '\\nstderr:\\n' + stderr,
+        'Delete copy-stage worker timed out before the pre-promotion barrier.\nstdout:\n'
+          + stdout + '\nstderr:\n' + stderr,
       ))
     }, 60_000)
 
@@ -294,7 +294,7 @@ async function interruptDeleteCopyInSeparateProcess(sessionRoot, sessionId) {
     worker.stderr.setEncoding('utf8')
     worker.stdout.on('data', chunk => {
       stdout += chunk
-      if (!killedAtStagingBarrier && stdout.includes('delete-copy-staged\\n')) {
+      if (!killedAtStagingBarrier && stdout.includes('delete-copy-staged\n')) {
         killedAtStagingBarrier = true
         worker.kill('SIGKILL')
       }
@@ -307,8 +307,8 @@ async function interruptDeleteCopyInSeparateProcess(sessionRoot, sessionId) {
       } else {
         finish(new Error(
           'Delete copy-stage worker did not die before promotion '
-            + '(exit ' + code + ', signal ' + signal + ').\\nstdout:\\n'
-            + stdout + '\\nstderr:\\n' + stderr,
+            + '(exit ' + code + ', signal ' + signal + ').\nstdout:\n'
+            + stdout + '\nstderr:\n' + stderr,
         ))
       }
     })
@@ -319,7 +319,7 @@ async function interruptDeleteCopyWorker(sessionRoot, sessionId) {
   const { ctx } = await createHostContext(sessionRoot)
   applySessionDelete(ctx, { trashRoot: trashRootFor(sessionRoot) })
   const service = ctx.get('sessionDelete')
-  // Reproduce the real EXDEV copy phase and stop after the private staging
+  // Model the EXDEV copy phase and stop after the private staging
   // copy is complete but before its atomic promotion to the visible artifact.
   // The durable .copying marker and original source are created by runDelete.
   service.moveArtifact = async (source, destination) => {
@@ -328,7 +328,7 @@ async function interruptDeleteCopyWorker(sessionRoot, sessionId) {
       force: false,
       errorOnExist: true,
     })
-    process.stdout.write('delete-copy-staged\\n')
+    process.stdout.write('delete-copy-staged\n')
     await new Promise(resolvePromise => setTimeout(resolvePromise, 60_000))
   }
   await service.delete(sessionId)
