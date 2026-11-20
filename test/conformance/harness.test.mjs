@@ -114,6 +114,11 @@ test('fault plan applies deterministic pause, error, and kill actions', async ()
   assert.throws(() => plan.take('after-commit'), /injected-io/)
   assert.deepEqual(plan.take('after-response'), { point: 'after-response', action: 'kill', signal: 'SIGKILL' })
   assert.equal(plan.take('after-response'), null)
+  assert.deepEqual(plan.remaining, [])
+  assert.doesNotThrow(() => plan.assertConsumed())
+
+  const incomplete = new FaultPlan([{ point: 'never-reached', action: 'pause' }])
+  assert.throws(() => incomplete.assertConsumed(), /never-reached/)
 })
 
 test('manifest rejects duplicate IDs and non-passing required cases', async () => {
@@ -123,6 +128,10 @@ test('manifest rejects duplicate IDs and non-passing required cases', async () =
   assert.doesNotThrow(() => assertReleaseGate(manifest, ['S-001']))
   recordCase(manifest, { id: 'S-002', status: 'SKIP' })
   assert.throws(() => assertReleaseGate(manifest, ['S-001', 'S-002']), /S-002:SKIP/)
+  assert.throws(() => assertReleaseGate(manifest, []), /non-empty/)
+  assert.throws(() => assertReleaseGate(manifest, ['S-001', 'S-001']), /unique/)
+  assert.throws(() => assertReleaseGate({ ...manifest, cases: [...manifest.cases, { ...manifest.cases[0] }] }, ['S-001']), /duplicate case id/)
+  assert.throws(() => assertReleaseGate({ ...manifest, provider: '' }, ['S-001']), /versioned manifest/)
   const directory = await mkdtemp(join(tmpdir(), 'dsh-conformance-'))
   try {
     const path = join(directory, 'manifest.json')
