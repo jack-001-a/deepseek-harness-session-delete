@@ -103,12 +103,13 @@ async function verifyCrossProcessWriterOwnership(ctx, persistence, sessionRoot) 
       if (error) rejectPromise(error)
       else resolvePromise()
     }
+    let timeoutError
     const timeout = setTimeout(() => {
-      worker.kill('SIGKILL')
-      finish(new Error(
+      timeoutError = new Error(
         'Writer owner process timed out before acquiring its lease.\nstdout:\n'
           + stdout + '\nstderr:\n' + stderr,
-      ))
+      )
+      worker.kill('SIGKILL')
     }, 60_000)
 
     worker.stdout.setEncoding('utf8')
@@ -120,6 +121,10 @@ async function verifyCrossProcessWriterOwnership(ctx, persistence, sessionRoot) 
     worker.stderr.on('data', chunk => { stderr += chunk })
     worker.once('error', error => finish(error))
     worker.once('close', (code, signal) => {
+      if (timeoutError) {
+        finish(timeoutError)
+        return
+      }
       finish(new Error(
         'Writer owner process exited before the lease barrier (exit '
           + code + ', signal ' + signal + ').\nstdout:\n'
@@ -210,12 +215,13 @@ async function interruptDeleteInSeparateProcess(sessionRoot, sessionId) {
       if (error) rejectPromise(error)
       else resolvePromise()
     }
+    let timeoutError
     const timeout = setTimeout(() => {
-      worker.kill('SIGKILL')
-      finish(new Error(
+      timeoutError = new Error(
         'Delete interruption worker timed out before the artifact-promotion barrier.\nstdout:\n'
           + stdout + '\nstderr:\n' + stderr,
-      ))
+      )
+      worker.kill('SIGKILL')
     }, 60_000)
 
     worker.stdout.setEncoding('utf8')
@@ -232,6 +238,10 @@ async function interruptDeleteInSeparateProcess(sessionRoot, sessionId) {
     worker.stderr.on('data', chunk => { stderr += chunk })
     worker.once('error', error => finish(error))
     worker.once('close', (code, signal) => {
+      if (timeoutError) {
+        finish(timeoutError)
+        return
+      }
       if (killedAtDeleteBarrier && signal === 'SIGKILL') {
         finish()
       } else {
@@ -282,12 +292,13 @@ async function interruptDeleteCopyInSeparateProcess(sessionRoot, sessionId) {
       if (error) rejectPromise(error)
       else resolvePromise()
     }
+    let timeoutError
     const timeout = setTimeout(() => {
-      worker.kill('SIGKILL')
-      finish(new Error(
+      timeoutError = new Error(
         'Delete copy-stage worker timed out before the pre-promotion barrier.\nstdout:\n'
           + stdout + '\nstderr:\n' + stderr,
-      ))
+      )
+      worker.kill('SIGKILL')
     }, 60_000)
 
     worker.stdout.setEncoding('utf8')
@@ -302,6 +313,10 @@ async function interruptDeleteCopyInSeparateProcess(sessionRoot, sessionId) {
     worker.stderr.on('data', chunk => { stderr += chunk })
     worker.once('error', error => finish(error))
     worker.once('close', (code, signal) => {
+      if (timeoutError) {
+        finish(timeoutError)
+        return
+      }
       if (killedAtStagingBarrier && signal === 'SIGKILL') {
         finish()
       } else {
@@ -357,12 +372,13 @@ async function interruptRestoreInSeparateProcess(sessionRoot) {
       if (error) rejectPromise(error)
       else resolvePromise()
     }
+    let timeoutError
     const timeout = setTimeout(() => {
-      worker.kill('SIGKILL')
-      finish(new Error(
+      timeoutError = new Error(
         'Restore interruption worker timed out before the promotion barrier.\nstdout:\n'
           + stdout + '\nstderr:\n' + stderr,
-      ))
+      )
+      worker.kill('SIGKILL')
     }, 60_000)
 
     worker.stdout.setEncoding('utf8')
@@ -378,6 +394,10 @@ async function interruptRestoreInSeparateProcess(sessionRoot) {
     worker.stderr.on('data', chunk => { stderr += chunk })
     worker.once('error', error => finish(error))
     worker.once('close', (code, signal) => {
+      if (timeoutError) {
+        finish(timeoutError)
+        return
+      }
       if (killedAtPromotionBarrier && signal === 'SIGKILL') {
         finish()
       } else {
