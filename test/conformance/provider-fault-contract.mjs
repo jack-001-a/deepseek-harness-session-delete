@@ -101,3 +101,48 @@ export async function disarmProviderFault(armed) {
   if (!armed?.hooks || !armed?.handle) throw new TypeError('armed provider fault is required')
   return armed.hooks.disarm(armed.handle)
 }
+
+
+/**
+ * Run one fault scenario with mandatory cleanup.
+ *
+ * Cleanup must return true. If both the scenario and cleanup fail, preserve
+ * both failures in an AggregateError instead of hiding the primary failure.
+ */
+export async function withProviderFault(adapter, request, expectedBoundary, run, waitOptions = {}) {
+  if (typeof run !== 'function') throw new TypeError('provider fault scenario requires a callback')
+  if (!expectedBoundary || typeof expectedBoundary !== 'object') {
+    throw new TypeError('provider fault scenario requires an independently maintained boundary expectation')
+  }
+
+  const armed = await armProviderFault(adapter, request)
+  let value
+  let scenarioError
+  try {
+    const hit = await waitForProviderFaultHit(armed, {
+      ...waitOptions,
+      expectedBoundary,
+    })
+    value = await run(hit, armed)
+  } catch (error) {
+    scenarioError = error
+  }
+
+  let cleanupError
+  try {
+    const disarmed = await disarmProviderFault(armed)
+    if (disarmed !== true) throw new Error('provider fault disarm did not confirm cleanup')
+  } catch (error) {
+    cleanupError = error
+  }
+
+  if (scenarioError && cleanupError) {
+    throw new AggregateError(
+      [scenarioError, cleanupError],
+      'provider fault scenario and mandatory cleanup both failed',
+    )
+  }
+  if (scenarioError) throw scenarioError
+  if (cleanupError) throw cleanupError
+  return value
+}
