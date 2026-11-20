@@ -86,7 +86,10 @@ fault point, that map records:
 
 The hit record must return the same fields. The harness validates the expected map
 before waiting for a hit, binds its point/phase/operation to the armed request, and
-compares the provider record against that independently maintained expectation. A
+compares the provider record against that independently maintained expectation. The
+runner additionally requires an independent verifier to confirm the external action;
+a provider-supplied `actionApplied` flag alone cannot establish that the requested
+process termination, interruption, or durable state transition actually occurred. A
 provider cannot make an arbitrary string pass by returning it as its own `boundaryId`.
 
 This comparison is still not a substitute for source review and provider-specific
