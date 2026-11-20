@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { cp, mkdir, mkdtemp, rename, rm, unlink, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
@@ -617,9 +617,17 @@ async function runIntegration() {
       (await copyRecoveryService.listTrash()).entries.some(entry => entry.sessionId === interruptedCopyId),
       false,
     )
+    const remainingCopyTrashEntries = await readdir(trashRootFor(copyRecoverySessionRoot), { withFileTypes: true })
+      .then(items => items.filter(item => item.isDirectory()).map(item => item.name))
+      .catch(error => error?.code === 'ENOENT' ? [] : Promise.reject(error))
+    assert.deepEqual(
+      remainingCopyTrashEntries,
+      [],
+      'startup recovery must remove the uncommitted trash entry and its .partial staging copy',
+    )
     record('JSONL-PLUGIN-DELETE-COPY-STAGING-RECOVERY-001', 'PASS', 'A real delete child was SIGKILLed after creating the private .partial staging copy but before atomic promotion; startup recovery discarded the uncommitted entry and preserved the original session.', {
       expected: 'The original session remains readable, no trash entry is exposed, and the unpromoted staging path is removed.',
-      observed: 'reconcileStartup() returned { deleted: 0, restored: 0, preserved: 0 }; stat() returned the original session and listTrash() omitted the interrupted entry.',
+      observed: 'reconcileStartup() returned { deleted: 0, restored: 0, preserved: 0 }; stat() returned the original session, listTrash() omitted the interrupted entry, and the isolated trash root contained no entry directories.',
     })
 
     process.stdout.write(
