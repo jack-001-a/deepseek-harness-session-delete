@@ -103,12 +103,12 @@ async function main() {
   ])
   const evidence = JSON.parse(artifactBytes.toString('utf8'))
   const result = evaluateAttestationPolicy({ verification, runMetadata, evidence, artifactBytes })
-  process.stdout.write(JSON.stringify(result, null, 2) + '\\n')
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n')
 }
 
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
   main().catch(error => {
-    process.stderr.write(`${error.message}\\n`)
+    process.stderr.write(`${error.message}\n`)
     process.exitCode = 1
   })
 }
