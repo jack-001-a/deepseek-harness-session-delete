@@ -48,12 +48,12 @@ The capability should expose only provider-owned lifecycle operations and observ
 ```ts
 export interface SessionLifecycleCapability {
   /**
-   * Opaque durable provider-root recovery identity for this capability.
+   * Opaque durable recovery epoch for this provider root.
    * Stable across ordinary process/service restarts; rotated by an approved
    * disaster-recovery rollback before lifecycle readiness is exposed.
-   * Distinct from SessionPersistence.identity, which is process-local.
+   * Distinct from providerRootId and SessionPersistence.identity (process-local).
    */
-  readonly rootIdentity: string
+  readonly recoveryEpoch: string
   retire(
     id: SessionId,
     options: {
@@ -217,7 +217,7 @@ The plugin owns trash UI, retention policy, and its own projection/accounting. T
 6. Reconcile provider state before publishing trash metadata as authoritative.
 7. Before restore/purge, verify the active persistence identity again and use the original opaque retirement token for the transition and all retries. A new operation ID is not required; if the provider supports optional IDs for these methods, persist and reuse that optional key.
 8. Keep the existing plugin-level cross-process lock for plugin metadata/accounting only. It is not a substitute for native provider admission fencing.
-9. Bind every outbox record to the provider's durable root identity/recovery epoch in addition to the process-local service `identity`. The process-local symbol detects service replacement; it MUST NOT be persisted or treated as a durable storage-root identity.
+9. Bind every outbox record to both `providerRootId` and the provider's durable `recoveryEpoch`, in addition to the process-local service `identity`. The process-local symbol detects service replacement; it MUST NOT be persisted or treated as a durable storage-root identity.
 10. Persist an outbox phase before each side effect: `prepared` means no provider call has been dispatched; `dispatch_started` means the call may have reached the provider; `provider_result_recorded` means the exact result/token is durably captured; `projection_applied` means plugin projection publication completed. The transition to `dispatch_started` must be durable before invoking the provider.
 11. If the active capability reports a different durable root recovery epoch, quarantine all old-epoch entries before dispatch or projection workers run. Never call `inspectOperation` or retry an old operation ID against the new epoch as if it were the same provider namespace.
 12. Resolve quarantined entries explicitly: a `prepared` entry can be shown for re-authorization only; `dispatch_started` without a recorded result remains outcome-unknown; recorded old-epoch results/tokens are historical evidence and cannot authorize current projection or provider mutation. Re-authorizing work requires a new user/operator intent and a new operation ID after checking current state.
