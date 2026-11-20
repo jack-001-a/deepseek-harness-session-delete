@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, lstat, link, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, lstat, link, unlink, writeFile, rename } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
-import { assertReleaseGate, writeManifest } from './manifest.mjs'
+import { randomUUID } from 'node:crypto'
+import { assertReleaseGate } from './manifest.mjs'
 
 const DIGEST = /^[a-f0-9]{64}$/
 
@@ -71,5 +72,12 @@ export async function verifyManifestEvidence(manifest, root) {
 export async function writeVerifiedManifest(path, manifest, requiredCaseIds, artifactRoot) {
   await verifyManifestEvidence(manifest, artifactRoot)
   assertReleaseGate(manifest, requiredCaseIds)
-  await writeManifest(path, manifest)
+  await mkdir(dirname(path), { recursive: true })
+  const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`
+  try {
+    await writeFile(temporary, JSON.stringify(manifest, null, 2) + '\\n', { flag: 'wx', mode: 0o600 })
+    await rename(temporary, path)
+  } finally {
+    await unlink(temporary).catch(() => {})
+  }
 }
