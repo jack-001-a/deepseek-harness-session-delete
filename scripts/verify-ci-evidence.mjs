@@ -116,7 +116,7 @@ async function main() {
 
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
   main().catch(error => {
-    process.stderr.write(`${error.message}\n`)
+    process.stderr.write(JSON.stringify({ status: error.status ?? 'provenance_rejected', reason: error.message }) + '\n')
     process.exitCode = 1
   })
 }
