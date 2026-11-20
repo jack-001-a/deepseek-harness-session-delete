@@ -210,6 +210,12 @@ The plugin owns trash UI, retention policy, and its own projection/accounting. T
 6. Reconcile provider state before publishing trash metadata as authoritative.
 7. Before restore/purge, verify the active persistence identity again and use the original opaque retirement token for the transition and all retries. A new operation ID is not required; if the provider supports optional IDs for these methods, persist and reuse that optional key.
 8. Keep the existing plugin-level cross-process lock for plugin metadata/accounting only. It is not a substitute for native provider admission fencing.
+9. Bind every outbox record to the provider's durable root identity/recovery epoch in addition to the process-local service `identity`. The process-local symbol detects service replacement; it MUST NOT be persisted or treated as a durable storage-root identity.
+10. Persist an outbox phase before each side effect: `prepared` means no provider call has been dispatched; `dispatch_started` means the call may have reached the provider; `provider_result_recorded` means the exact result/token is durably captured; `projection_applied` means plugin projection publication completed. The transition to `dispatch_started` must be durable before invoking the provider.
+11. If the active capability reports a different durable root recovery epoch, quarantine all old-epoch entries before dispatch or projection workers run. Never call `inspectOperation` or retry an old operation ID against the new epoch as if it were the same provider namespace.
+12. Resolve quarantined entries explicitly: a `prepared` entry can be shown for re-authorization only; `dispatch_started` without a recorded result remains outcome-unknown; recorded old-epoch results/tokens are historical evidence and cannot authorize current projection or provider mutation. Re-authorizing work requires a new user/operator intent and a new operation ID after checking current state.
+13. Preserve the original entry, old epoch, operation ID, request fingerprint, token/result digest if present, and reconciliation decision in an audit record. If the restore point cannot establish whether the old operation is represented, discarded, or must be re-authorized, keep recovery blocked rather than guessing.
+
 
 Provider state is authoritative for live/retired/purged. Plugin metadata is a replayable projection and must never independently authorize destructive storage mutation.
 
