@@ -17,7 +17,7 @@ The suite tests provider behavior through public persistence/lifecycle APIs and 
 
 ### 2.1 Process topology
 
-Each multi-process case starts two independently initialized Harness processes against the same provider root. A third controller process owns barriers, captures structured events, and may terminate either worker. Processes MUST NOT share in-memory locks, service instances, or mutable test state.
+Each multi-process case starts two independently initialized Harness worker processes against the same provider root. The harness parent process acts as the controller: it owns barriers, captures structured events, and may terminate either worker. The controller is not a third provider process and does not share worker memory. Processes MUST NOT share in-memory locks, service instances, or mutable test state.
 
 Every event record emitted by the harness contains:
 - case ID and monotonically increasing controller event number;
