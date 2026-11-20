@@ -76,6 +76,9 @@ export function recordEvidence(manifest, evidence) {
 
 /** Write atomically so interrupted runs never leave a partial JSON document. */
 export async function writeManifest(path, manifest) {
+  if (Array.isArray(manifest?.evidence) && manifest.evidence.length > 0) {
+    throw new Error('manifests with fault evidence must use writeVerifiedManifest')
+  }
   await mkdir(dirname(path), { recursive: true })
   const temporary = `${path}.tmp-${process.pid}`
   await writeFile(temporary, JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx', mode: 0o600 })
