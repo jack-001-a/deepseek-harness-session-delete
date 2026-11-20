@@ -62,6 +62,14 @@ test('rejects evidence that claims an unprotected ref', () => {
   assert.throws(() => evaluateAttestationPolicy(f), /provenance policy rejected/)
 })
 
+test('rejects non-canonical certificate field aliases', () => {
+  const f = fixture()
+  const certificate = f.verification[0].verificationResult.signature.certificate
+  delete certificate.sourceRepositoryURI
+  certificate.SourceRepositoryURI = `https://github.com/${repository}`
+  assert.throws(() => evaluateAttestationPolicy(f), /provenance policy rejected/)
+})
+
 test('accepts a verified certificate and exact subject bound to independent GitHub run metadata', () => {
   const result = evaluateAttestationPolicy(fixture())
   assert.equal(result.status, 'provenance_verified')
