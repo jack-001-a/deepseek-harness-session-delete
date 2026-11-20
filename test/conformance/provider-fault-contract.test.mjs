@@ -58,7 +58,8 @@ const validEvidence = {
   providerVersion: 'test-build-1',
   observer: 'parent-process-observer',
   effect: 'worker-exited-after-kill',
-  artifactRef: 'test-artifacts/fault-1/worker-exit.json',
+  artifactRef: 'a'.repeat(64),
+  artifactSha256: 'a'.repeat(64),
   faultId: 'fault-1',
   operationId: 'op-123',
   point: 'retire.commit',
@@ -238,7 +239,7 @@ test('provider fault verifier rejects boolean success instead of an evidence rec
 })
 
 test('provider fault evidence requires observer, effect, and artifact reference', async () => {
-  for (const field of ['observer', 'effect', 'artifactRef']) {
+  for (const field of ['observer', 'effect', 'artifactRef', 'artifactSha256']) {
     const { adapter } = fixture()
     await assert.rejects(
       withProviderFault(adapter, request, expectedBoundary, async () => {}, {
@@ -334,5 +335,21 @@ test('provider fault scenario rejects missing or invalid trusted provenance befo
       /trusted test-run/,
     )
     assert.deepEqual(calls, [])
+  }
+})
+
+test('provider fault evidence requires an opaque matching artifact digest', async () => {
+  for (const patch of [
+    { artifactRef: '../outside.json' },
+    { artifactSha256: 'b'.repeat(64) },
+  ]) {
+    const { adapter } = fixture()
+    await assert.rejects(
+      withProviderFault(adapter, request, expectedBoundary, async () => {}, {
+        evidenceContext,
+        verifyHit: async () => ({ ...validEvidence, ...patch }),
+      }),
+      /incomplete or mismatched evidence/,
+    )
   }
 })
