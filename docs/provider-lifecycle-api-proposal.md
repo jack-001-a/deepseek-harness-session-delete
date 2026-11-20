@@ -47,6 +47,13 @@ The capability should expose only provider-owned lifecycle operations and observ
 
 ```ts
 export interface SessionLifecycleCapability {
+  /**
+   * Opaque durable provider-root recovery identity for this capability.
+   * Stable across ordinary process/service restarts; rotated by an approved
+   * disaster-recovery rollback before lifecycle readiness is exposed.
+   * Distinct from SessionPersistence.identity, which is process-local.
+   */
+  readonly rootIdentity: string
   retire(
     id: SessionId,
     options: {
