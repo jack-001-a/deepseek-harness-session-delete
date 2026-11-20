@@ -119,7 +119,7 @@ A separate public `recover()` is not required in the minimal surface. Provider s
 
 `retire` requires a caller-generated `operationId`, unique within the provider-root namespace. The caller persists it before invoking `retire` and reuses the exact same value after timeout, process death, transport failure, or unknown response. Its provider deduplication record (or a compact, equally authoritative tombstone) must outlive every possible caller retry; silently expiring the key and later treating it as new is forbidden. `restore` and `purge` are keyed by the opaque retirement token and do not require a second operation ID: the token identifies the exact retired generation and makes retries idempotent. A provider may add optional operation IDs to those methods for audit/deduplication, but that is an additive extension, not a requirement of this minimal API. Any optional key must be durably bound to the token, operation kind, and request fingerprint. Storage compaction may discard bulky result payloads only if it preserves enough durable identity and outcome information to resolve retries and reject conflicting reuse.
 
-The provider stores an operation mapping durably with the lifecycle transition:
+For each operation that supplies an `operationId` (mandatory for `retire`, optional for `restore`/`purge` extensions), the provider stores a durable mapping with the lifecycle transition:
 
 1. Same operation ID + same operation kind + same canonical request fingerprint returns the original committed result.
 2. Same operation ID with a different kind, Session identity, token, or expected revision returns a typed operation-ID conflict and performs no mutation.
