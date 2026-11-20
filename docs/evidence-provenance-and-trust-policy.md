@@ -148,3 +148,6 @@ The online mode requires Node.js and an authenticated GitHub CLI (`gh auth statu
 - Sigstore Go certificate extension JSON schema and field names: https://pkg.go.dev/github.com/sigstore/sigstore-go/pkg/fulcio/certificate
 - Sigstore verification result example, including URI-shaped `subjectAlternativeName`: https://github.com/sigstore/sigstore-go/blob/main/docs/verification.md
 - GitHub offline-verification guidance for immutable repository identifiers: https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/verify-attestations-offline
+
+
+Online-mode input handling now validates the manifest's repository/ref/protected-ref claim, allowed event, full source and workflow SHAs, numeric run ID/attempt, and exact workflow ref before invoking either GitHub CLI command. Run ID and attempt are therefore constrained to decimal path segments before they are interpolated into the API route. Regression tests cover malformed coordinates, unapproved events, invalid workflow identity, missing certificate data, and mixed verified-attestation arrays. This is preflight hardening; it does not replace `gh attestation verify` or make manifest claims trusted.
