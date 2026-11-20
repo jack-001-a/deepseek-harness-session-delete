@@ -145,6 +145,26 @@ test('concurrent manifest writes use unique temporary files and leave a complete
   }
 })
 
+test('failed manifest replacement removes its temporary file and preserves the destination', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-manifest-write-failure-'))
+  const destination = join(directory, 'report.json')
+  try {
+    await (await import('node:fs/promises')).mkdir(destination)
+    const manifest = {
+      schemaVersion: 1,
+      sourceCommit: 'write-failure',
+      provider: 'manifest-writer-test',
+      cases: [],
+      evidence: [],
+    }
+    await assert.rejects(writeManifest(destination, manifest))
+    assert.deepEqual(await readdir(directory), ['report.json'])
+    assert.deepEqual(await readdir(destination), [])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('manifest rejects duplicate IDs and non-passing required cases', async () => {
   const manifest = createManifest({ sourceCommit: 'test-sha', provider: 'harness-smoke' })
   recordCase(manifest, { id: 'S-001', status: 'PASS', durationMs: 1 })
