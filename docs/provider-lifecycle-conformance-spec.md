@@ -207,7 +207,7 @@ CI summary MUST report counts by provider, OS, runtime, and suite. A green aggre
 
 ## 8. Release gate checklist
 
-- [ ] Shared suite S-001 through S-045 passes for JSONL and SQLite on Linux, macOS, and Windows, including root-epoch gate shared/exclusive and process-death semantics (S-044/S-045).
+- [ ] Shared suite S-001 through S-046 passes for JSONL and SQLite on Linux, macOS, and Windows, including root-epoch gate shared/exclusive and process-death semantics (S-044 through S-046).
 - [ ] JSONL suite J-001 through J-012 passes on all supported platforms.
 - [ ] SQLite suite Q-001 through Q-020 passes on all supported platforms.
 - [ ] No required case is skipped, flaky, mocked, or replaced by a unit-only approximation.
@@ -220,3 +220,4 @@ CI summary MUST report counts by provider, OS, runtime, and suite. A green aggre
 Until every item is checked with attached CI evidence, lifecycle capability MUST remain disabled for destructive plugin operations.
 
 | S-045 | Root epoch gate semantics and no-upgrade rule | Start two independent provider processes holding shared root-epoch leases; verify both remain active; request exclusive cutover and verify it waits; kill one shared holder and verify the other still blocks cutover; kill the final holder and verify cutover proceeds; while exclusive is held, verify new shared entrants block; kill the exclusive owner and verify a successor can acquire exclusive and classify the durable envelope; attempt shared-to-exclusive upgrade and lower-lock-to-root acquisition in a controlled harness | Shared holders coexist; exclusive waits for all holders; process death releases only the dead holder; exclusive excludes new readers; crash releases exclusive ownership; no in-place upgrade or lock-order inversion is permitted. Run independently on every supported OS; any missing platform result is SKIP and blocks that platform's lifecycle release gate |
+| S-046 | Windows byte-range lock bypass and ownership semantics | On Windows, acquire the candidate shared/exclusive lock with two independent processes; verify the reserved range is never read/written/mapped by the adapter; demonstrate separately that a memory-mapped view is not blocked by LockFileEx and therefore cannot be used as a gate; verify a shared holder cannot write the range through its own handle; test normal unlock, handle close, process termination, inherited/duplicated handles, and supported local/SMB filesystems | The adapter uses a coordination-only range and never treats the byte lock as protection against mapped I/O; ownership and crash-release behavior are evidenced for each supported filesystem; unsupported/ambiguous behavior blocks lifecycle capability. Do not infer fairness/starvation guarantees from blocking acquisition |
