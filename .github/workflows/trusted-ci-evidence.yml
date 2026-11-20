@@ -64,7 +64,19 @@ jobs:
         run: |
           gh attestation verify ci-evidence/ci-evidence.json \
             --repo "$GITHUB_REPOSITORY" \
-            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/trusted-ci-evidence.yml"
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/trusted-ci-evidence.yml" \
+            --source-ref "$GITHUB_REF" \
+            --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --deny-self-hosted-runners \
+            --format json > ci-evidence/attestation-verification.json
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \
+            > ci-evidence/github-run-metadata.json
+
+          node scripts/verify-ci-evidence.mjs \
+            ci-evidence/ci-evidence.json \
+            ci-evidence/attestation-verification.json \
+            ci-evidence/github-run-metadata.json
 
       - name: Upload attested evidence and logs
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
