@@ -4,6 +4,7 @@
 - Contract proposal: [Host-native Session lifecycle ADR](./host-native-write-lease-adr.md)
 - API proposal: [Provider lifecycle API proposal](./provider-lifecycle-api-proposal.md)
 - Acceptance criteria: [Provider lifecycle conformance specification](./provider-lifecycle-conformance-spec.md)
+- Provenance policy: [Evidence provenance and trust policy](./evidence-provenance-and-trust-policy.md)
 - Real integration prototype: [Session Delete PR #17](https://github.com/jack-001-a/deepseek-harness-session-delete/pull/17)
 - Reviewed upstream revision: `deepseek-ai/deepseek-harness@2e39e70496aa02986ca6a820c5d497e816b69d7e`
 
@@ -30,6 +31,10 @@ The integration manifest artifact was downloaded and inspected. Its ZIP SHA-256 
 ```
 
 Manifest schema version 2 reports 11 PASS and 4 SKIP, with top-level status `PARTIAL`. The four skips are explicit unsupported-contract outcomes, not passing tests.
+
+## Evidence provenance status
+
+The ZIP digest above and manifest-internal SHA-256 references provide content-integrity checks only. The current evidence has not been authenticated with a GitHub Artifact Attestation, and its producer/workflow identity has not been cryptographically verified. Do not label this run signed, attested, or provenance-verified. See the [provenance trust policy](./evidence-provenance-and-trust-policy.md) for the required workflow and independent verification gates.
 
 ## Evidence matrix
 
