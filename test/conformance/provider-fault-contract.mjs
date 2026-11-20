@@ -39,6 +39,9 @@ export function assertBoundaryAttestation(hit, expected) {
   if (!expected || fields.some((field) => !requireText(expected[field]))) {
     throw new TypeError('trusted boundary expectation is incomplete')
   }
+  if (!/^[a-f0-9]{40}([a-f0-9]{24})?$/i.test(expected.reviewedAtCommit)) {
+    throw new TypeError('trusted boundary expectation must pin a full source commit SHA')
+  }
   if (!DURABILITY_PRIMITIVES.has(expected.durabilityPrimitive)) {
     throw new TypeError('trusted boundary expectation has an unsupported durability primitive')
   }
