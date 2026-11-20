@@ -36,7 +36,7 @@ The upstream suite should be provider-neutral at the scenario layer, with provid
 - **Shared scenarios:** lifecycle state machine, typed outcomes, writer/create exclusion, stable ID, idempotency, revision conflict, process death, and recovery.
 - **JSONL fixture:** two independent Harness processes using the same configured JSONL root; observe lock identity only through provider-supported test hooks, not plugin code.
 - **SQLite fixture:** two independent Harness processes using the same SQLite root/database; seed unrelated Sessions and legacy JSONL imports to detect collateral effects and lock-order bugs.
-- **Fault injector:** deterministic barriers at provider transaction boundaries and durable phase boundaries. Avoid sleep-based race tests.
+- **Fault injector:** deterministic barriers at provider transaction boundaries and durable phase boundaries. The current `FaultPlan` is only a one-shot schedule descriptor; it does not inject faults into a Provider. A real provider adapter must connect each scheduled point to an approved provider test hook and prove the requested action occurred. Avoid sleep-based race tests.
 - **Assertions:** event history and metadata equality, normal list/read/open visibility, retirement token stability, no collateral Session changes, and recovery convergence.
 
 Each scenario must run on Linux, macOS, and Windows. Platform-specific lock assertions belong in provider tests; the shared suite asserts semantic outcomes only.
@@ -49,7 +49,7 @@ Each scenario must run on Linux, macOS, and Windows. Platform-specific lock asse
 | Writer drain | Flushes/closes handle | Retries retire | Retirement begins only after final batch is durable |
 | New writer race | Retire owns lifecycle fence | Calls `open(id, 'write')` | Writer is rejected or serialized after retirement |
 | Create race | Retire and create same ID start at barrier | Competing operation | Exactly one linearized outcome; no duplicate generation |
-| Lost retire response | Provider commits, caller is killed before response | Retries same operation ID / inspectById | Same provider token recovered |
+| Lost retire response | Provider commits, caller is killed before response | Retries the same operation ID / calls `inspectOperation(id, operationId)` | Same provider token recovered; `inspectById` is diagnostic current-state lookup only |
 | Absent restore | Session is retired; live artifact absent | Calls restore(token) | Original Session becomes live with exact history |
 | Restore writer race | Restore owns fence | Attempts create/write same ID | No competing live generation |
 | Lost restore response | Provider commits restore, caller killed before response | Retries / inspects token | State converges to live exactly once |
@@ -203,7 +203,7 @@ The proposed public capability signature is specified in the parent ADR's **Conc
 - **Retire idempotency:** `operationId` is caller-persisted before the provider call, scoped durably to the Session identity, and returns the same token after a lost response. Reusing it for another Session is a typed conflict. A retry of an already committed operation returns its committed result before evaluating the original expected revision again.
 - **Revision scope:** `expectedRevision` uses the existing opaque `SessionPersistenceRevision` and is valid only for the same active persistence instance and Session ID. It protects a stale in-process UI/action; it is not a cross-restart concurrency token.
 - **Terminal retries:** repeated restore and purge return their already-committed outcomes. Restore-after-purge and purge-after-restore are typed terminal conflicts, never implicit resurrection or destructive retries.
-- **Recovery lookup retention:** `inspectById` must retain enough outcome identity to recover a lost response until the plugin outbox can no longer legitimately reference that operation. Token/operation compaction needs an explicit retention rule.
+- **Recovery lookup retention:** `inspectOperation(id, operationId)` must retain enough exact outcome identity to recover a lost response until the plugin outbox can no longer legitimately reference that operation. `inspectById(id)` reports only current lifecycle state and cannot correlate historical outbox operations. Token/operation compaction needs an explicit retention rule.
 - **Startup readiness:** provider-owned incomplete-phase recovery completes before the provider exposes `ctx.sessionPersistence` as ready. Do not expose a plugin-callable generic `recover()` method whose invocation could race another process or bypass provider startup ordering.
 - **Cancellation:** every method documents whether abort is observed only before linearization or can interrupt an in-progress operation. After a commit may have happened, callers must resolve ambiguity through the same operation ID or token inspection, not by generating a new operation ID.
 - **Capability lifetime:** a capability obtained from a persistence instance cannot be used after that service is replaced. Consumers reacquire from the current instance; tests must replace the provider and prove no cached capability routes work to the old backend.
