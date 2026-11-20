@@ -107,3 +107,24 @@ Before claiming CI provenance:
 - [ ] Update the evidence map only with actual attestation and verifier results.
 
 This provenance work is independent of provider lifecycle conformance. A trusted attestation can prove where a test artifact came from; it cannot make a skipped Provider API case pass or establish lifecycle semantics that the Provider does not implement.
+
+
+## 8. Executable verifier implementation
+
+The repository now includes `scripts/verify-ci-evidence.mjs`, a fail-closed consumer for the JSON output of `gh attestation verify --format json`. It evaluates the verified certificate extensions (not the workflow-controlled provenance predicate) and compares the subject SHA-256 with the exact evidence subject bytes. It also fetches the specific GitHub Actions run attempt through the GitHub API and binds the evidence metadata to that independent run record.
+
+The policy pins both mutable names and immutable identities:
+
+- repository URI/name: `https://github.com/jack-001-a/deepseek-harness-session-delete`;
+- repository ID: `1428060802`;
+- owner ID: `320086254`;
+- source ref: `refs/heads/main`;
+- source commit: Fulcio `SourceRepositoryDigest`, cross-checked against the run attempt's `head_sha`;
+- workflow identity: Fulcio `BuildSignerURI`, plus the CLI's `--signer-workflow` and exact `--cert-identity` constraints;
+- event and run identity: Fulcio `BuildTrigger` and `RunInvocationURI`, cross-checked against the GitHub API run attempt and evidence metadata;
+- issuer: `https://token.actions.githubusercontent.com`;
+- subject: SHA-256 of the exact `ci-evidence.json` file.
+
+The verifier deliberately rejects absent certificate extensions and unsupported output shapes. Its positive policy tests use synthetic, normalized verifier output to exercise the decision logic; they are not real-signature tests and do not claim that a production attestation exists. Real cryptographic verification remains delegated to `gh attestation verify`, whose exit status must succeed before the policy evaluator is run.
+
+The workflow now requests JSON verification output, constrains source ref and source digest, requires the exact certificate identity and OIDC issuer, rejects self-hosted runners, fetches the exact run attempt from the GitHub API, and invokes the independent policy evaluator. These steps are configured but remain unexecuted on `main` while this PR is unmerged.
