@@ -1,0 +1,48 @@
+import { createHash } from 'node:crypto'
+import { mkdir, readFile, lstat, link, unlink, writeFile } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
+
+const DIGEST = /^[a-f0-9]{64}$/
+
+function digestOf(bytes) {
+  return createHash('sha256').update(bytes).digest('hex')
+}
+
+/** Store a JSON evidence artifact under its content digest; references are opaque IDs. */
+export async function writeEvidenceArtifact(root, artifact) {
+  if (!root || !artifact || typeof artifact !== 'object' || Array.isArray(artifact)) {
+    throw new TypeError('artifact root and JSON object are required')
+  }
+  const bytes = Buffer.from(JSON.stringify(artifact) + '\n')
+  const digest = digestOf(bytes)
+  const directory = resolve(root)
+  await mkdir(directory, { recursive: true, mode: 0o700 })
+  const target = join(directory, `${digest}.json`)
+  const temporary = join(directory, `.${digest}.${process.pid}.${Date.now()}.tmp`)
+  await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 })
+  try {
+    await link(temporary, target)
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error
+    const existing = await readFile(target)
+    if (digestOf(existing) !== digest) throw new Error('existing evidence artifact failed digest verification')
+  } finally {
+    await unlink(temporary).catch(() => {})
+  }
+  return Object.freeze({ artifactRef: digest, artifactSha256: digest })
+}
+
+/** Resolve only digest-shaped references and reject symlinks, missing, or altered files. */
+export async function readVerifiedEvidenceArtifact(root, artifactRef, expectedSha256 = artifactRef) {
+  if (!DIGEST.test(artifactRef || '') || expectedSha256 !== artifactRef) {
+    throw new TypeError('evidence artifact reference must be a matching SHA-256 digest')
+  }
+  const directory = resolve(root)
+  const target = resolve(directory, `${artifactRef}.json`)
+  if (dirname(target) !== directory) throw new Error('evidence artifact escaped its root')
+  const metadata = await lstat(target)
+  if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error('evidence artifact is not a regular file')
+  const bytes = await readFile(target)
+  if (digestOf(bytes) !== expectedSha256) throw new Error('evidence artifact digest mismatch')
+  return JSON.parse(bytes.toString('utf8'))
+}
