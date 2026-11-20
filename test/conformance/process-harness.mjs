@@ -12,7 +12,7 @@ export class ProcessWorker {
   #closed = false
   #protocolError
 
-  constructor({ script = new URL('./worker.mjs', import.meta.url), role, caseId, env = {} }) {
+  constructor({ script = new URL('../../scripts/conformance-worker.mjs', import.meta.url), role, caseId, env = {} }) {
     if (!role || !caseId) throw new TypeError('role and caseId are required')
     this.role = role
     this.caseId = caseId
