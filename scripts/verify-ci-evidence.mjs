@@ -21,7 +21,7 @@ function fail(message, status = 'provenance_rejected') {
 }
 
 export function assertMinimumGitHubCliVersion(versionOutput) {
-  const match = /^gh version (\\d+)\\.(\\d+)\\.(\\d+)(?:\\s|$)/m.exec(String(versionOutput ?? ''))
+  const match = /^gh version (\d+)\.(\d+)\.(\d+)(?:\s|$)/m.exec(String(versionOutput ?? ''))
   if (!match) fail('GitHub CLI version output is missing or unrecognized')
   const actual = match.slice(1).map(Number)
   const required = [2, 102, 0]
