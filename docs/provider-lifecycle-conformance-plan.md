@@ -711,3 +711,11 @@ Schema v2 is a forward-only lifecycle boundary once lifecycle metadata or destru
 - Verify maintenance barrier release happens only after v2 audit and marker reconciliation succeed; on every failure path the barrier remains held.
 
 Rollout invariant: no lifecycle consumer, guarded GC, or v2-only operation may be enabled until every process sharing the database is on the v2-compatible build, schema migration and integrity audit have completed, and marker reconciliation has succeeded.
+
+
+A manifest containing fault evidence must not be written through the generic
+`writeManifest` helper. That API fails closed when evidence is present. The
+`writeVerifiedManifest` entry point is the report path for evidence-bearing
+runs: it re-reads and verifies every artifact, checks the required-case release
+gate, and only then atomically writes the report. Callers must use this entry
+point for any report that includes provider fault evidence.
