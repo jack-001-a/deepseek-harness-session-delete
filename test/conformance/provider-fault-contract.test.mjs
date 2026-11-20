@@ -78,7 +78,7 @@ test('provider fault hit must prove the exact action at a correlated durable bou
 test('provider fault contract correlates arm, hit, and disarm', async () => {
   const { adapter, calls } = fixture()
   const armed = await armProviderFault(adapter, request)
-  const hit = await waitForProviderFaultHit(armed)
+  const hit = await waitForProviderFaultHit(armed, { expectedBoundary })
   assert.equal(hit.boundaryId, 'sqlite-transaction-commit')
   assert.equal(hit.boundary.durabilityPrimitive, 'sqlite-commit')
   assert.equal(hit.operationId, request.operationId)
