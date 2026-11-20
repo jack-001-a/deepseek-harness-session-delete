@@ -178,7 +178,7 @@ SQLite tests MUST preserve the shared database and shared Segment graph semantic
 | Q-016 | Unrelated Session preservation | Retire/restore/purge leaves unrelated traces and histories byte/logically unchanged |
 | Q-017 | WAL crash recovery | Kill around commit/checkpoint; database reopens with consistent lifecycle state |
 | Q-018 | Logical vs forensic purge | API/documentation never claims secure erasure from row deletion alone |
-| Q-019 | Writer lease + DB transaction order | No deadlock between DB Session lease, root creation guard, lifecycle gate, and migration ownership |
+| Q-019 | SQLite total lock order | Barrier-controlled processes prove lifecycle gate -> DB-scoped Session lease -> legacy-artifact/creation lease -> SQLite transaction; no reverse acquisition, leaked lease, or deadlock across create, write-open, legacy import, and retire |
 | Q-020 | Busy/unknown commit | Busy is retryable; ambiguous commit is inspected/recovered, never assumed rolled back |
 
 ## 7. Test result and evidence format
