@@ -5,6 +5,7 @@ import { buildAttestationVerifyArgs, evaluateAttestationPolicy, getOnlineVerific
 
 const repository = 'jack-001-a/deepseek-harness-session-delete'
 const workflow = `${repository}/.github/workflows/trusted-ci-evidence.yml`
+const signerWorkflow = `${repository}/.github/workflows/trusted-ci-evidence-reusable.yml`
 const commit = '0123456789abcdef0123456789abcdef01234567'
 const workflowSha = '89abcdef0123456789abcdef0123456789abcdef'
 const bytes = Buffer.from('{"schemaVersion":1,"status":"PASS"}\n')
@@ -36,11 +37,11 @@ function fixture() {
           sourceRepositoryOwnerIdentifier: '320086254',
           sourceRepositoryRef: 'refs/heads/main',
           sourceRepositoryDigest: commit,
-          subjectAlternativeName: { type: 'URI', value: `https://github.com/${workflow}@refs/heads/main` },
+          subjectAlternativeName: { type: 'URI', value: `https://github.com/${signerWorkflow}@refs/heads/main` },
           issuer: 'https://token.actions.githubusercontent.com',
           runnerEnvironment: 'github-hosted',
-          buildSignerURI: `https://github.com/${workflow}@refs/heads/main`,
-          buildSignerDigest: workflowSha,
+          buildSignerURI: `https://github.com/${signerWorkflow}@refs/heads/main`,
+          buildSignerDigest: commit,
           buildConfigURI: `https://github.com/${workflow}@refs/heads/main`,
           buildConfigDigest: workflowSha,
           buildTrigger: 'push',
@@ -59,15 +60,15 @@ function fixture() {
 }
 
 test('builds a pinned GitHub attestation verification command', () => {
-  const args = buildAttestationVerifyArgs('./ci-evidence.json', { runId: '123456789', attempt: '2', commit, workflowSha })
+  const args = buildAttestationVerifyArgs('./ci-evidence.json', { runId: '123456789', attempt: '2', commit, workflowSha, signerSha: commit })
   assert.deepEqual(args, [
     'attestation', 'verify', './ci-evidence.json',
     '--repo', repository,
-    '--signer-workflow', workflow,
-    '--signer-digest', workflowSha,
+    '--signer-workflow', signerWorkflow,
+    '--signer-digest', commit,
     '--source-ref', 'refs/heads/main',
     '--source-digest', commit,
-    '--cert-identity', `https://github.com/${workflow}@refs/heads/main`,
+    '--cert-identity', `https://github.com/${signerWorkflow}@refs/heads/main`,
     '--cert-oidc-issuer', 'https://token.actions.githubusercontent.com',
     '--predicate-type', 'https://slsa.dev/provenance/v1',
     '--deny-self-hosted-runners',
@@ -88,7 +89,7 @@ for (const [name, coordinates] of [
 
 test('validates online lookup coordinates before any GitHub CLI request', () => {
   const f = fixture()
-  assert.deepEqual(getOnlineVerificationCoordinates(f.evidence), { runId: '123456789', attempt: '1', commit, workflowSha })
+  assert.deepEqual(getOnlineVerificationCoordinates(f.evidence), { runId: '123456789', attempt: '1', commit, workflowSha, signerSha: commit })
 })
 
 for (const [name, mutate] of [
@@ -155,7 +156,7 @@ for (const [name, mutate] of [
   ['wrong certificate SAN', f => { f.verification[0].verificationResult.signature.certificate.subjectAlternativeName.value = 'https://github.com/attacker/other.yml@refs/heads/main' }],
   ['missing certificate SAN', f => { delete f.verification[0].verificationResult.signature.certificate.subjectAlternativeName }],
   ['wrong SAN type', f => { f.verification[0].verificationResult.signature.certificate.subjectAlternativeName.type = 'email' }],
-  ['wrong signer digest', f => { f.verification[0].verificationResult.signature.certificate.buildSignerDigest = commit }],
+  ['wrong signer digest', f => { f.verification[0].verificationResult.signature.certificate.buildSignerDigest = workflowSha }],
   ['wrong build config URI', f => { f.verification[0].verificationResult.signature.certificate.buildConfigURI = 'https://github.com/attacker/other.yml@refs/heads/main' }],
   ['wrong workflow revision', f => { f.verification[0].verificationResult.signature.certificate.buildConfigDigest = commit }],
   ['wrong ref', f => { f.verification[0].verificationResult.signature.certificate.sourceRepositoryRef = 'refs/heads/feature' }],
@@ -189,6 +190,16 @@ for (const [name, mutate] of [
   })
 }
 
+
+test('accepts certificates without deprecated GitHub-specific extensions when generic claims satisfy policy', () => {
+  const f = fixture()
+  const certificate = f.verification[0].verificationResult.signature.certificate
+  delete certificate.githubWorkflowRepository
+  delete certificate.githubWorkflowRef
+  delete certificate.githubWorkflowSHA
+  delete certificate.githubWorkflowTrigger
+  assert.equal(evaluateAttestationPolicy(f).status, 'provenance_verified')
+})
 
 test('does not trust workflow-controlled predicate metadata for certificate identity', () => {
   const f = fixture()
