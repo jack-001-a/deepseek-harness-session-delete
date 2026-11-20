@@ -253,3 +253,12 @@ A fake provider may validate test orchestration only. It cannot satisfy a real p
 - No promise of forensic erasure from ordinary logical purge.
 - No change to append-only Session event semantics or the existing SessionHandle API.
 - No claim that this proposal has been accepted or implemented by upstream.
+
+
+## Root epoch lease semantics
+
+The shared root-epoch lease is held for the lifetime of each serving provider process, from before recovery-envelope validation/capability readiness until all admission is stopped and all handles and operations have drained at shutdown. It is distinct from the per-Session admission gate used by ordinary operations. The root lease is outermost in the lock hierarchy; per-Session gates, writer leases, and provider transactions are acquired beneath it. The root lease is not reacquired per operation.
+
+A serving process MUST NOT upgrade its shared lease to exclusive or acquire the exclusive gate while holding any lower-ranked lock. Disaster recovery is an offline coordinator workflow: prevent new old-build starts, stop and drain all old-epoch provider processes, then acquire the exclusive form of the same cross-process gate and publish the atomic recovery envelope. A recovery process crash releases kernel ownership; the next coordinator validates the durable envelope and resumes by transition ID. No PID/expiry lease or process-local mutex is equivalent.
+
+Each supported OS must prove concurrent shared holders, exclusive-wait behavior, exclusion of new shared entrants during cutover, independent process-death release, and exclusive-owner crash release. A Windows exclusive-only semaphore/mutex does not satisfy this API contract. If a platform cannot demonstrate the required semantics, the provider must not expose lifecycle capability or claim online recovery support there.
