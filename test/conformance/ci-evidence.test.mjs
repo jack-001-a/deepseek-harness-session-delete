@@ -24,6 +24,7 @@ async function fixture(t) {
     GITHUB_WORKFLOW_SHA: '89abcdef0123456789abcdef0123456789abcdef',
     GITHUB_RUN_ID: '123456789',
     GITHUB_RUN_ATTEMPT: '1',
+    GITHUB_REF_PROTECTED: 'true',
   }
   return { cwd, env }
 }
@@ -60,6 +61,7 @@ for (const [name, override] of [
   ['non-main ref', { GITHUB_REF: 'refs/heads/feature/untrusted' }],
   ['different repository', { GITHUB_REPOSITORY: 'attacker/fork' }],
   ['abbreviated source commit', { GITHUB_SHA: 'deadbeef' }],
+  ['unprotected main ref', { GITHUB_REF_PROTECTED: 'false' }],
 ]) {
   test(`CI evidence rejects ${name}`, async (t) => {
     const { cwd, env } = await fixture(t)
