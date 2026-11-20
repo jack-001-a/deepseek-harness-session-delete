@@ -715,7 +715,13 @@ Rollout invariant: no lifecycle consumer, guarded GC, or v2-only operation may b
 
 A manifest containing fault evidence must not be written through the generic
 `writeManifest` helper. That API fails closed when evidence is present. The
-`writeVerifiedManifest` entry point is the report path for evidence-bearing
-runs: it re-reads and verifies every artifact, checks the required-case release
-gate, and only then atomically writes the report. Callers must use this entry
-point for any report that includes provider fault evidence.
+`writeVerifiedManifest` helper re-reads and verifies every artifact, checks the
+required-case release gate, and only then atomically writes the report.
+
+This is currently a tested helper contract, not a completed Provider lifecycle
+runner integration. The `test:conformance` command exercises the helper through
+unit/smoke tests, but it does not yet run the Provider lifecycle matrix or route
+a production conformance report-generation path through this API. Those tests
+therefore do not establish that an actual Provider run has published a verified
+report. Any future runner that emits fault evidence MUST use
+`writeVerifiedManifest` rather than `writeManifest`.
