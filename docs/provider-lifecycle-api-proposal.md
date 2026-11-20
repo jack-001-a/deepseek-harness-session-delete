@@ -1,0 +1,234 @@
+# Proposed upstream API: provider-owned Session lifecycle capability
+
+- Status: proposal for upstream contract review; not an implementation claim
+- Parent: [Host-native Session lifecycle ADR](./host-native-write-lease-adr.md)
+- Companion: [Provider lifecycle conformance specification](./provider-lifecycle-conformance-spec.md)
+- Reviewed upstream baseline: `deepseek-ai/deepseek-harness` master at `2e39e70496aa02986ca6a820c5d497e816b69d7e`
+
+## 1. Current seam and compatibility constraint
+
+The reviewed `SessionPersistence` service exposes `create`, `open`, `flush`, `stat`, and `list`. It also exposes a process-local `identity: symbol`, stable through Context proxies and distinct after service replacement. It does not expose provider-owned retirement, restoration, or purge.
+
+The lifecycle API must be additive:
+
+- Existing third-party subclasses remain valid without implementing lifecycle methods.
+- Existing `SessionHandle` and append-only event semantics remain unchanged.
+- No lifecycle behavior is inferred from package version, `snapshot.location`, filesystem layout, SQLite schema, or the presence/absence of an artifact.
+- A provider that does not advertise the capability remains fully usable for ordinary persistence, but destructive lifecycle actions are unavailable.
+
+The existing snapshot `location` is observational metadata for diagnostics/export. It is not a mutation capability, a stable identity, or authorization to manipulate provider storage.
+
+## 2. Recommended capability-discovery shape
+
+Prefer one optional capability on the active service instance over package-version checks or a global provider registry:
+
+```ts
+export abstract class SessionPersistence extends Service {
+  readonly identity: symbol = Symbol('sessionPersistence')
+
+  /** Absent unless this active provider implements the complete lifecycle contract. */
+  get lifecycle(): SessionLifecycleCapability | undefined {
+    return undefined
+  }
+
+  // Existing methods remain unchanged.
+}
+```
+
+A provider overrides the getter only after its durable lifecycle state has been opened and recovery has reached a safe, ready state. If recovery fails or detects ambiguous/corrupt state, the provider must fail closed and must not advertise a usable capability.
+
+Consumers capture both the active service reference and its `identity` before beginning a workflow. Before a later phase or retry, they verify that the currently resolved service still has the same identity. A replaced service invalidates the old capability reference; the consumer must rediscover capability and reconcile by operation ID rather than continuing through a stale provider object.
+
+This shape is a recommendation for review, not a claim about an accepted upstream signature. An equivalent typed optional capability is acceptable if it preserves the same instance-binding and compatibility properties.
+
+## 3. Minimal semantic surface
+
+The capability should expose only provider-owned lifecycle operations and observations. It must not expose storage paths, lock objects, database handles, Segment IDs, or provider-private journal records.
+
+```ts
+export interface SessionLifecycleCapability {
+  retire(
+    id: SessionId,
+    options: {
+      operationId: string
+      expectedRevision?: SessionPersistenceRevision
+      signal?: AbortSignal
+    },
+  ): Promise<SessionRetirement>
+
+  restore(
+    token: SessionRetirementToken,
+    options: {
+      operationId: string
+      signal?: AbortSignal
+    },
+  ): Promise<SessionRetirement>
+
+  purge(
+    token: SessionRetirementToken,
+    options: {
+      operationId: string
+      signal?: AbortSignal
+    },
+  ): Promise<SessionRetirement>
+
+  inspect(
+    token: SessionRetirementToken,
+    options?: { signal?: AbortSignal },
+  ): Promise<SessionRetirement | undefined>
+
+  inspectById(
+    id: SessionId,
+    options?: { signal?: AbortSignal },
+  ): Promise<SessionRetirement | undefined>
+}
+
+export type SessionRetirementToken = string & {
+  readonly __sessionRetirementToken: unique symbol
+}
+
+export type SessionRetirementState =
+  | 'retired'
+  | 'restored'
+  | 'purged'
+
+export interface SessionRetirement {
+  readonly id: SessionId
+  readonly token: SessionRetirementToken
+  readonly state: SessionRetirementState
+  /** Opaque provider revision for this lifecycle record. */
+  readonly revision: string
+}
+```
+
+The exact branding and exported type names are open to upstream review. The semantic requirements below are normative for any accepted shape.
+
+### Why each operation exists
+
+- `retire` establishes the provider-owned fence and returns the opaque restore/purge token.
+- `restore` makes the retired generation live again without requiring a live artifact to exist first.
+- `purge` permanently removes the retired logical generation according to the provider's documented retention and erasure guarantees.
+- `inspect` resolves a lost response when the caller retained the token.
+- `inspectById` recovers a provider commit when the caller crashed after provider commit but before persisting the returned token.
+
+A separate public `recover()` is not required in the minimal surface. Provider startup must complete or safely refuse its own durable recovery before exposing the capability. Consumers must not be asked to implement provider recovery.
+
+## 4. Idempotency and lost-response contract
+
+Every mutating operation accepts a caller-generated `operationId`. The caller persists it before invoking the provider and reuses the exact same value after timeout, process death, transport failure, or unknown response.
+
+The provider stores an operation mapping durably with the lifecycle transition:
+
+1. Same operation ID + same operation kind + same canonical request fingerprint returns the original committed result.
+2. Same operation ID with a different kind, Session identity, token, or expected revision returns a typed operation-ID conflict and performs no mutation.
+3. A committed operation whose response was lost is discoverable by retrying the same operation ID or inspecting the resulting lifecycle record.
+4. A timeout or cancellation after the commit boundary is not evidence of rollback. The result is recoverable or explicitly `outcome_unknown`.
+5. Reusing a retirement token cannot restore or purge a different Session incarnation.
+
+The fingerprint is provider-defined but must bind at least the operation kind and target identity. It must not include transient values such as an AbortSignal or wall-clock timestamp.
+
+Tokens are opaque bearer capabilities. They must be unguessable, scoped to one provider root and one Session incarnation, and protected at rest according to the provider's threat model. They must never contain a path or expose lock/database internals.
+
+## 5. Linearization and admission rules
+
+The API is unsafe unless all of the following are defined and tested:
+
+### 5.1 Create and write admission
+
+- `create(id)` and `open(id, 'write')` participate in the same provider-owned admission protocol as `retire`.
+- A pending create is fenced even before its artifact is materialized.
+- Once retirement linearizes, no new writer or creator may publish the retired incarnation.
+- An already admitted writer either drains and closes before retirement commits, or retirement returns a documented typed busy/cancelled result. It must never delete while an admitted writer can still commit.
+
+### 5.2 Read admission
+
+- A read admitted before the retirement fence may finish under a provider-defined pinned-read rule.
+- Every later read admission, including a later chunk requested through an already-open lazy read handle, observes the retired state and is rejected with a typed state result.
+- Retirement must not silently switch an existing handle to a different incarnation.
+- The provider must state whether the fence waits for in-flight read calls or for longer-lived read pins. The choice must be identical in externally observable behavior across providers.
+
+### 5.3 Restore and purge
+
+- Restore reserves the same logical Session ID for the retired incarnation before publishing it live.
+- Restore cannot overwrite an unrelated destination or adopt a colliding incarnation.
+- Purge fences all new admissions before reclaiming data.
+- After purge linearizes, old handles, callbacks, tokens, and delayed cleanup work cannot affect a later recreation with the same public Session ID.
+- A new Session created with the same public ID receives a distinct incarnation; old-generation work must fail closed.
+
+### 5.4 Revision checks
+
+`expectedRevision` is compared by the provider at the same atomic boundary that admits retirement. A mismatch returns a typed revision conflict and performs no mutation. The provider must not treat the existing snapshot revision as a cross-provider or cross-instance globally ordered sequence; it is currently documented as opaque and service-instance-scoped.
+
+## 6. Typed outcomes
+
+The provider must preserve distinctions between at least:
+
+- unsupported capability (capability absent; no destructive fallback);
+- not found;
+- writer contention / busy;
+- cancellation proven to occur before commit;
+- revision conflict;
+- operation-ID conflict;
+- already retired, restored, or purged;
+- storage I/O failure before commit;
+- corruption or provider-root identity mismatch;
+- outcome unknown after an ambiguous commit boundary.
+
+A generic rejected Promise is insufficient where it prevents the caller from deciding whether to retry, inspect, or stop. In particular, an ambiguous commit must never be translated to not-found, success, or a generic retry-safe error.
+
+## 7. Provider-specific invariants
+
+### JSONL
+
+- The cross-process coordination object must remain stable while the lifecycle transition runs. The lifecycle operation must not move, unlink, replace, or copy the lock identity.
+- Quarantine and restore operate on provider-owned generations while preserving the stable coordination namespace.
+- Directory-entry durability, no-replace promotion, symlink/path substitution defenses, and interrupted journal recovery are provider responsibilities.
+- A missing live artifact is not proof of retirement.
+
+### SQLite
+
+- Lifecycle transitions use transactions over provider-owned metadata; they never move, truncate, or delete the shared database to remove one Session.
+- Retirement records preserve the logical root needed for restore.
+- Purge uses reachability-aware Segment garbage collection. Shared ancestors remain while referenced by any live or restorable retired Session.
+- Routing markers, legacy JSONL import/fallback, and tombstones participate in one identity protocol so retired IDs cannot reappear.
+- Schema migration is explicit, versioned, data-preserving, and recoverable after ambiguous commit.
+- Logical row reclamation is not forensic erasure. WAL files, pages, snapshots, and backups may retain old bytes; user-facing claims must state this limitation.
+
+## 8. Plugin integration protocol
+
+The plugin owns trash UI, retention policy, and its own projection/accounting. The provider owns the lifecycle truth.
+
+1. Resolve the active `ctx.sessionPersistence` instance and capture its `identity`.
+2. Require `persistence.lifecycle`; if absent, disable destructive actions and do not fall back to filesystem or SQL operations.
+3. Persist a unique `operationId` in plugin-owned durable state before calling `retire`.
+4. Call provider `retire` and persist the returned opaque token through an idempotent outbox/projection.
+5. If the process dies between provider commit and plugin projection, rediscover the active capability and recover using the same operation ID or `inspectById(id)`.
+6. Reconcile provider state before publishing trash metadata as authoritative.
+7. Before restore/purge, verify the active persistence identity again and use a new persisted operation ID for that transition.
+8. Keep the existing plugin-level cross-process lock for plugin metadata/accounting only. It is not a substitute for native provider admission fencing.
+
+Provider state is authoritative for live/retired/purged. Plugin metadata is a replayable projection and must never independently authorize destructive storage mutation.
+
+## 9. Upstream acceptance gates
+
+Do not enable a built-in provider until:
+
+- the optional capability shape and compatibility story are accepted;
+- operation-ID, token, revision, and typed-outcome semantics are specified;
+- create, write, pending-create, and lazy-read admission are covered by deterministic multi-process tests;
+- lost responses are recovered at every durable boundary;
+- same-ID recreation and stale-generation callbacks are tested;
+- JSONL stable lock identity and filesystem durability tests pass;
+- SQLite shared-Segment reachability, migration, legacy import, and unrelated-Session preservation tests pass;
+- Linux, macOS, and Windows suites pass against each real built-in provider;
+- plugin outbox recovery is tested across a process crash.
+
+A fake provider may validate test orchestration only. It cannot satisfy a real provider gate.
+
+## 10. Explicit non-goals
+
+- No plugin-side raw filesystem or SQLite fallback.
+- No package-version-based capability inference.
+- No promise of forensic erasure from ordinary logical purge.
+- No change to append-only Session event semantics or the existing SessionHandle API.
+- No claim that this proposal has been accepted or implemented by upstream.
