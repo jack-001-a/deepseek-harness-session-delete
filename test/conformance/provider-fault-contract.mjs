@@ -135,6 +135,7 @@ export async function withProviderFault(adapter, request, expectedBoundary, run,
 
   const armed = await armProviderFault(adapter, request)
   let value
+  let verifiedEvidence
   let scenarioError
   try {
     const { verifyHit, ...hitWaitOptions } = waitOptions
@@ -142,10 +143,27 @@ export async function withProviderFault(adapter, request, expectedBoundary, run,
       ...hitWaitOptions,
       expectedBoundary,
     })
-    if (await verifyHit(hit, armed) !== true) {
-      throw new Error('independent provider fault verifier did not confirm the external action')
+    const evidence = await verifyHit(hit, armed)
+    const evidenceFields = [
+      'observer',
+      'effect',
+      'artifactRef',
+      'faultId',
+      'operationId',
+      'point',
+      'phase',
+      'operation',
+      'action',
+    ]
+    if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence) ||
+        evidence.verified !== true || evidenceFields.some((field) => !nonEmpty(evidence[field])) ||
+        evidence.faultId !== hit.faultId || evidence.operationId !== hit.operationId ||
+        evidence.point !== hit.point || evidence.phase !== hit.phase ||
+        evidence.operation !== hit.operation || evidence.action !== hit.action) {
+      throw new Error('independent provider fault verifier returned incomplete or mismatched evidence')
     }
-    value = await run(hit, armed)
+    verifiedEvidence = Object.freeze({ ...evidence })
+    value = await run(hit, armed, verifiedEvidence)
   } catch (error) {
     scenarioError = error
   }
@@ -166,5 +184,5 @@ export async function withProviderFault(adapter, request, expectedBoundary, run,
   }
   if (scenarioError) throw scenarioError
   if (cleanupError) throw cleanupError
-  return value
+  return Object.freeze({ value, evidence: verifiedEvidence })
 }
