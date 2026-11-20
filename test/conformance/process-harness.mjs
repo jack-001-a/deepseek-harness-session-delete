@@ -86,10 +86,10 @@ export class ProcessWorker {
     this.send({ type: 'release', barrier })
   }
 
-  async waitFor(predicate, { timeoutMs = 10_000 } = {}) {
+  async waitFor(predicate, { timeoutMs = 10_000, ignoreProtocolError = false } = {}) {
     const deadline = Date.now() + timeoutMs
     while (true) {
-      if (this.#protocolError) throw this.#protocolError
+      if (this.#protocolError && !ignoreProtocolError) throw this.#protocolError
       const found = this.#events.find(predicate)
       if (found) return found
       if (this.#closed) throw new Error(`worker exited before expected event; stderr: ${this.stderr}`)
@@ -106,7 +106,7 @@ export class ProcessWorker {
   async shutdown({ timeoutMs = 3_000 } = {}) {
     if (this.#closed) return this.exit
     this.send({ type: 'shutdown' })
-    await this.waitFor((item) => item.type === 'shutdown-ack', { timeoutMs })
+    await this.waitFor((item) => item.type === 'shutdown-ack', { timeoutMs, ignoreProtocolError: true })
     let timer
     try {
       return await Promise.race([
