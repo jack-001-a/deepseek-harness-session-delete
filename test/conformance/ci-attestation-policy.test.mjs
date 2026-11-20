@@ -29,6 +29,7 @@ function fixture() {
         certificate: {
           sourceRepositoryURI: `https://github.com/${repository}`,
           sourceRepositoryIdentifier: '1428060802',
+          sourceRepositoryOwnerURI: 'https://github.com/jack-001-a',
           sourceRepositoryOwnerIdentifier: '320086254',
           sourceRepositoryRef: 'refs/heads/main',
           sourceRepositoryDigest: commit,
@@ -71,6 +72,7 @@ for (const [name, mutate] of [
   ['wrong repository', f => { f.verification[0].verificationResult.signature.certificate.sourceRepositoryURI = 'https://github.com/attacker/repo' }],
   ['wrong immutable repository identity', f => { f.verification[0].verificationResult.signature.certificate.sourceRepositoryIdentifier = '999' }],
   ['wrong owner identity', f => { f.verification[0].verificationResult.signature.certificate.sourceRepositoryOwnerIdentifier = '999' }],
+  ['wrong owner URI', f => { f.verification[0].verificationResult.signature.certificate.sourceRepositoryOwnerURI = 'https://github.com/attacker' }],
   ['wrong run invocation', f => { f.verification[0].verificationResult.signature.certificate.runInvocationURI = 'https://github.com/attacker/repo/actions/runs/1/attempts/1' }],
   ['wrong workflow identity', f => { f.verification[0].verificationResult.signature.certificate.buildSignerURI = 'https://github.com/attacker/other.yml@refs/heads/main' }],
   ['wrong certificate SAN', f => { f.verification[0].verificationResult.signature.certificate.subjectAlternativeName.value = 'https://github.com/attacker/other.yml@refs/heads/main' }],
