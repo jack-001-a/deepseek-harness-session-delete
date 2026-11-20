@@ -29,6 +29,7 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
   const expectedAttempt = String(runMetadata?.run_attempt ?? '')
 
   if (!/^[a-f0-9]{40}$/.test(expectedCommit ?? '')) fail('evidence source commit is not a full SHA')
+  if (evidence?.source?.refProtected !== true) fail('evidence does not record a protected ref')
   if (!/^\d+$/.test(expectedRunId) || !/^\d+$/.test(expectedAttempt)) fail('GitHub run metadata is incomplete')
   if (runMetadata?.repository?.full_name !== REPOSITORY) fail('run repository mismatch')
   if (String(runMetadata?.repository?.id ?? '') !== REPOSITORY_ID) fail('run repository immutable ID mismatch')
