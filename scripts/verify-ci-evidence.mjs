@@ -136,6 +136,7 @@ async function main() {
     const commonArgs = [
       '--repo', REPOSITORY,
       '--signer-workflow', WORKFLOW,
+      '--signer-digest', evidence.source.workflowSha,
       '--source-ref', REF,
       '--source-digest', commit,
       '--cert-identity', `https://github.com/${WORKFLOW}@${REF}`,
