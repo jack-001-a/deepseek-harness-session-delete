@@ -17,7 +17,7 @@ export function lifecycleCapability(adapter) {
     return Object.freeze({ supported: false, reason: capability?.reason || 'provider-lifecycle-unsupported' })
   }
   if (capability.supported !== true) throw new TypeError('lifecycle capability must explicitly declare supported=true or supported=false')
-  const required = ['retire', 'restore', 'purge', 'inspect']
+  const required = ['retire', 'restore', 'purge', 'inspect', 'inspectById', 'inspectOperation']
   const missing = required.filter((key) => typeof capability[key] !== 'function')
   if (missing.length) throw new TypeError(`lifecycle capability missing: ${missing.join(', ')}`)
   return Object.freeze({ supported: true, api: capability })
