@@ -45,6 +45,7 @@ export function recordEvidence(manifest, evidence) {
       evidence.artifactSha256 !== evidence.artifactRef ||
       !['effect', 'faultId', 'operationId', 'point', 'phase', 'operation', 'action'].every((field) => typeof evidence[field] === 'string' && evidence[field]) ||
       evidence.sourceCommit !== manifest.sourceCommit ||
+      typeof evidence.caseId !== 'string' || !manifest.cases.some((item) => item.id === evidence.caseId) ||
       typeof evidence.testRunId !== 'string' || !evidence.testRunId ||
       typeof evidence.providerVersion !== 'string' || !evidence.providerVersion ||
       typeof evidence.observer !== 'string' || !evidence.observer) {
@@ -56,6 +57,7 @@ export function recordEvidence(manifest, evidence) {
   manifest.evidence.push({
     schemaVersion: evidence.schemaVersion,
     evidenceId: evidence.evidenceId,
+    caseId: evidence.caseId,
     testRunId: evidence.testRunId,
     sourceCommit: evidence.sourceCommit,
     providerVersion: evidence.providerVersion,
@@ -105,6 +107,7 @@ export function assertReleaseGate(manifest, requiredIds) {
   for (const evidence of manifest.evidence) {
     if (!evidence || evidence.schemaVersion !== 1 ||
         typeof evidence.evidenceId !== 'string' || !evidence.evidenceId ||
+        !byId.has(evidence.caseId) ||
         !/^[a-f0-9]{64}$/.test(evidence.artifactRef || '') ||
         evidence.artifactSha256 !== evidence.artifactRef ||
         evidence.sourceCommit !== manifest.sourceCommit ||
