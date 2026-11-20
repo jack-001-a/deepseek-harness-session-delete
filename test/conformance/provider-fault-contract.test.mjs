@@ -50,7 +50,9 @@ const expectedBoundary = {
 }
 
 const validEvidence = {
+  schemaVersion: 1,
   verified: true,
+  evidenceId: 'evidence-001',
   observer: 'parent-process-observer',
   effect: 'worker-exited-after-kill',
   artifactRef: 'test-artifacts/fault-1/worker-exit.json',
@@ -257,4 +259,25 @@ test('provider fault verifier exceptions still disarm the hook', async () => {
     /observer unavailable/,
   )
   assert.deepEqual(calls.map(([kind]) => kind), ['arm', 'hit', 'disarm'])
+})
+
+
+test('provider fault evidence requires a supported schema version and stable evidence ID', async () => {
+  for (const patch of [{ schemaVersion: 2 }, { evidenceId: '' }, { unrecognized: 'extra' }]) {
+    const { adapter } = fixture()
+    await assert.rejects(
+      withProviderFault(adapter, request, expectedBoundary, async () => {}, {
+        verifyHit: async () => ({ ...validEvidence, ...patch }),
+      }),
+      /incomplete or mismatched evidence/,
+    )
+  }
+})
+
+test('provider fault evidence is returned as a frozen versioned record', async () => {
+  const { adapter } = fixture()
+  const result = await withProviderFault(adapter, request, expectedBoundary, async () => 'ok', verified)
+  assert.equal(result.evidence.schemaVersion, 1)
+  assert.equal(result.evidence.evidenceId, 'evidence-001')
+  assert.equal(Object.isFrozen(result.evidence), true)
 })
