@@ -83,6 +83,7 @@ export interface SessionLifecycleCapability {
   ): Promise<SessionRetirement | undefined>
 
   inspectOperation(
+    id: SessionId,
     operationId: string,
     options?: { signal?: AbortSignal },
   ): Promise<SessionRetirement | undefined>
@@ -128,7 +129,7 @@ The provider stores an operation mapping durably with the lifecycle transition:
 
 1. Same operation ID + same operation kind + same canonical request fingerprint returns the original committed result.
 2. Same operation ID with a different kind, Session identity, token, or expected revision returns a typed operation-ID conflict and performs no mutation.
-3. A committed operation whose response was lost is recoverable by retrying the same operation ID or calling `inspectOperation(operationId)`. `inspectById(id)` may report the current state, but MUST NOT be used to reconstruct the exact result of a historical operation.
+3. A committed operation whose response was lost is recoverable by retrying the same operation ID or calling `inspectOperation(id, operationId)`. `inspectById(id)` may report the current state, but MUST NOT be used to reconstruct the exact result of a historical operation.
 4. A timeout or cancellation after the commit boundary is not evidence of rollback. The result is recoverable or explicitly `outcome_unknown`.
 5. Reusing a retirement token cannot restore or purge a different Session incarnation.
 
