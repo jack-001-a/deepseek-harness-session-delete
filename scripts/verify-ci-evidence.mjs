@@ -16,12 +16,14 @@ function first(object, names) {
   return undefined
 }
 
-function fail(message) {
-  throw new Error(`provenance policy rejected: ${message}`)
+function fail(message, status = 'provenance_rejected') {
+  const error = new Error(`provenance policy rejected: ${message}`)
+  error.status = status
+  throw error
 }
 
 export function evaluateAttestationPolicy({ verification, runMetadata, evidence, artifactBytes }) {
-  if (!Array.isArray(verification) || verification.length === 0) fail('no verified attestations returned')
+  if (!Array.isArray(verification) || verification.length === 0) fail('no verified attestations returned', 'provenance_unavailable')
 
   const artifactDigest = createHash('sha256').update(artifactBytes).digest('hex')
   const expectedCommit = evidence?.source?.commit
