@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, symlink, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readVerifiedEvidenceArtifact, writeEvidenceArtifact } from './evidence-artifacts.mjs'
@@ -129,5 +129,40 @@ test('verified report writer rejects a failed required case without creating or 
     assert.equal(await readFile(report, 'utf8'), originalReport)
   } finally {
     await rm(root, { recursive: true, force: true })
+  }
+})
+
+
+test('evidence artifact reader and deduplicating writer reject symlink substitution', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-evidence-symlink-'))
+  const outside = join(root, '..', `dsh-evidence-outside-${process.pid}-${Date.now()}.json`)
+  try {
+    const payload = { evidenceId: 'symlink-1', state: 'original' }
+    const bytes = JSON.stringify(payload) + '\\n'
+    await writeFile(outside, bytes)
+    const reference = await writeEvidenceArtifact(root, payload)
+    const target = join(root, `${reference.artifactRef}.json`)
+    await unlink(target)
+    try {
+      await symlink(outside, target)
+    } catch (error) {
+      if (['EPERM', 'EACCES', 'ENOSYS'].includes(error.code)) {
+        t.skip(`symlink creation unavailable: ${error.code}`)
+        return
+      }
+      throw error
+    }
+
+    await assert.rejects(
+      readVerifiedEvidenceArtifact(root, reference.artifactRef),
+      /not a regular file/,
+    )
+    await assert.rejects(
+      writeEvidenceArtifact(root, payload),
+      /not a regular file/,
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+    await unlink(outside).catch(() => {})
   }
 })
