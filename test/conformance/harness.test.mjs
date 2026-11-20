@@ -7,7 +7,8 @@ import { pathToFileURL } from 'node:url'
 import { ProcessWorker, withWorkers } from './process-harness.mjs'
 import { assertProviderAdapter } from './fixture-contract.mjs'
 import { BarrierController, FaultPlan } from './orchestration.mjs'
-import { assertReleaseGate, createManifest, recordCase, writeManifest } from './manifest.mjs'
+import { assertReleaseGate, createManifest, recordCase, recordEvidence, writeManifest } from './manifest.mjs'
+import { readVerifiedEvidenceArtifact, verifyManifestEvidence, writeEvidenceArtifact } from './evidence-artifacts.mjs'
 
 test('worker barrier is controlled by the parent process, not sleeps', async () => {
   await withWorkers([{ role: 'writer', caseId: 'harness-smoke' }], async ([worker]) => {
@@ -151,4 +152,57 @@ test('provider adapter contract rejects incomplete adapters', () => {
   adapter.lifecycle = { supported: true }
   for (const key of ['retire', 'restore', 'purge', 'inspect', 'inspectById', 'inspectOperation']) adapter.lifecycle[key] = async () => {}
   assert.equal(assertProviderAdapter(adapter).lifecycle, adapter.lifecycle)
+})
+
+
+test('verified provider evidence is persisted, digest-checked, and registered in the run manifest', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-evidence-report-'))
+  try {
+    const sourceCommit = 'abcdef0123456789abcdef0123456789abcdef01'
+    const manifest = createManifest({ sourceCommit, provider: 'sqlite-fixture' })
+    recordCase(manifest, { id: 'P-FAULT-001', status: 'PASS' })
+    const observation = {
+      evidenceId: 'evidence-report-001',
+      testRunId: 'run-report-001',
+      sourceCommit,
+      providerVersion: 'sqlite-test-build',
+      observer: 'parent-process-observer',
+      observedEffect: 'child-process-exit-confirmed',
+      exitCode: null,
+      signal: 'SIGKILL',
+    }
+    const artifact = await writeEvidenceArtifact(join(directory, 'artifacts'), observation)
+    const evidence = {
+      schemaVersion: 1, verified: true, ...observation,
+      effect: observation.observedEffect,
+      artifactRef: artifact.artifactRef, artifactSha256: artifact.artifactSha256,
+      faultId: 'fault-001', operationId: 'operation-001', point: 'retire.commit',
+      phase: 'after-commit-before-response', operation: 'retire', action: 'kill',
+    }
+    recordEvidence(manifest, evidence)
+    assert.doesNotThrow(() => assertReleaseGate(manifest, ['P-FAULT-001']))
+    const verifiedArtifacts = await verifyManifestEvidence(manifest, join(directory, 'artifacts'))
+    assert.equal(verifiedArtifacts.length, 1)
+    assert.equal(verifiedArtifacts[0].evidenceId, observation.evidenceId)
+    const reportPath = join(directory, 'report.json')
+    await writeManifest(reportPath, manifest)
+    const report = JSON.parse(await readFile(reportPath, 'utf8'))
+    assert.equal(report.evidence[0].artifactSha256, artifact.artifactSha256)
+    assert.deepEqual(await readVerifiedEvidenceArtifact(join(directory, 'artifacts'), artifact.artifactRef), observation)
+    assert.throws(() => recordEvidence(manifest, evidence), /duplicate evidence ID/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('run manifest rejects evidence from another source revision', () => {
+  const manifest = createManifest({ sourceCommit: 'abcdef0123456789abcdef0123456789abcdef01', provider: 'sqlite-fixture' })
+  assert.throws(() => recordEvidence(manifest, {
+    schemaVersion: 1, verified: true, evidenceId: 'wrong-revision',
+    testRunId: 'run-1', sourceCommit: '1111111111111111111111111111111111111111',
+    providerVersion: 'v1', observer: 'parent', effect: 'worker-exit',
+    artifactRef: 'a'.repeat(64), artifactSha256: 'a'.repeat(64),
+    faultId: 'f1', operationId: 'o1', point: 'p', phase: 'before-commit',
+    operation: 'retire', action: 'kill',
+  }), /not bound to this run manifest/)
 })
