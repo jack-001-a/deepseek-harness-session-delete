@@ -128,3 +128,16 @@ Audited the exact upstream source revision `deepseek-ai/deepseek-harness@2e39e70
 Do not extend the downstream plugin by manipulating provider paths or by trying to reuse the JSONL lock implementation. The safe downstream work is limited to Host-level archive behavior, activity coordination, diagnostics, and capability-gated UI. The next implementation milestone must be an additive upstream Provider API and matching JSONL/SQLite implementations; only after that API exists can the integration prototype replace its explicit Provider lifecycle skips with real conformance tests.
 
 This audit confirms the existing `PARTIAL` integration classification. It does not promote the 11 plugin/storage PASS cases into Provider lifecycle conformance and does not claim an upstream implementation exists.
+
+
+## Live upstream baseline revalidation (2026-11-20)
+
+The upstream `master` ref was re-read through the GitHub repository API on 2026-11-20 and resolved to the same commit as the pinned audit baseline:
+
+`deepseek-ai/deepseek-harness@2e39e70496aa02986ca6a820c5d497e816b69d7e`
+
+Therefore the API-surface findings above are not merely a comparison against an obsolete historical pin: at this revalidation point, the current upstream default branch had not advanced beyond that exact source revision.
+
+The current upstream persistence package reference independently states that the seam has no deletion or retention API and that pruning is out-of-band backend maintenance. See the upstream [Session Persistence package reference](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/session/session-persistence/README.md), especially its "Known Limitations and Deferred Work" section.
+
+This revalidation does not imply that no unpublished work exists, nor does it authorize downstream manipulation of provider storage. Re-run the same branch-resolution and public-interface audit before any future implementation decision, because the default branch may advance after this date.
