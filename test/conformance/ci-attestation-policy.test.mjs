@@ -46,7 +46,7 @@ function fixture() {
           buildTrigger: 'push',
           githubWorkflowRepository: repository,
           githubWorkflowRef: 'refs/heads/main',
-          githubWorkflowSHA: workflowSha,
+          githubWorkflowSHA: commit,
           githubWorkflowTrigger: 'push',
           runInvocationURI: `https://github.com/${repository}/actions/runs/123456789/attempts/1`,
         },
@@ -178,7 +178,7 @@ for (const [name, mutate] of [
   ['missing certificate issuer', f => { delete f.verification[0].verificationResult.signature.certificate.issuer }],
   ['wrong GitHub workflow repository claim', f => { f.verification[0].verificationResult.signature.certificate.githubWorkflowRepository = 'attacker/repo' }],
   ['wrong GitHub workflow ref claim', f => { f.verification[0].verificationResult.signature.certificate.githubWorkflowRef = 'refs/heads/attacker' }],
-  ['wrong GitHub workflow SHA claim', f => { f.verification[0].verificationResult.signature.certificate.githubWorkflowSHA = commit }],
+  ['wrong GitHub workflow SHA claim', f => { f.verification[0].verificationResult.signature.certificate.githubWorkflowSHA = workflowSha }],
   ['wrong GitHub workflow trigger claim', f => { f.verification[0].verificationResult.signature.certificate.githubWorkflowTrigger = 'pull_request' }],
   ['self-hosted runner', f => { f.verification[0].verificationResult.signature.certificate.runnerEnvironment = 'self-hosted' }],
 ]) {
