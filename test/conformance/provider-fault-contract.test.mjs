@@ -6,9 +6,10 @@ import {
   disarmProviderFault,
   waitForProviderFaultHit,
   assertBoundaryAttestation,
+  withProviderFault,
 } from './provider-fault-contract.mjs'
 
-function fixture(hitOverride = {}) {
+function fixture(hitOverride = {}, disarmResult = true) {
   const calls = []
   const adapter = {
     name: 'contract-fixture',
@@ -30,7 +31,7 @@ function fixture(hitOverride = {}) {
           ...hitOverride,
         }
       },
-      async disarm(handle) { calls.push(['disarm', handle]); return true },
+      async disarm(handle) { calls.push(['disarm', handle]); return disarmResult },
     },
   }
   return { adapter, calls }
@@ -96,4 +97,54 @@ test('provider boundary map must pin an immutable source revision', () => {
     { boundary: { ...expectedBoundary, reviewedAtCommit: 'main' } },
     { ...expectedBoundary, reviewedAtCommit: 'main' },
   ), /full source commit SHA/)
+})
+
+
+test('provider fault scenario always disarms after a successful callback', async () => {
+  const { adapter, calls } = fixture()
+  const value = await withProviderFault(adapter, request, expectedBoundary, async (hit) => {
+    assert.equal(hit.actionApplied, true)
+    return 'scenario-result'
+  })
+  assert.equal(value, 'scenario-result')
+  assert.deepEqual(calls.map(([kind]) => kind), ['arm', 'hit', 'disarm'])
+})
+
+test('provider fault scenario disarms when hit verification fails', async () => {
+  const { adapter, calls } = fixture({ actionApplied: false })
+  await assert.rejects(
+    withProviderFault(adapter, request, expectedBoundary, async () => assert.fail('callback must not run')),
+    /not proven/,
+  )
+  assert.deepEqual(calls.map(([kind]) => kind), ['arm', 'hit', 'disarm'])
+})
+
+test('provider fault cleanup failure fails an otherwise successful scenario', async () => {
+  const { adapter } = fixture({}, false)
+  await assert.rejects(
+    withProviderFault(adapter, request, expectedBoundary, async () => 'ignored'),
+    /disarm did not confirm cleanup/,
+  )
+})
+
+test('provider fault scenario preserves both scenario and cleanup failures', async () => {
+  const { adapter } = fixture({}, false)
+  await assert.rejects(
+    withProviderFault(adapter, request, expectedBoundary, async () => {
+      throw new Error('scenario exploded')
+    }),
+    (error) => {
+      assert.ok(error instanceof AggregateError)
+      assert.equal(error.errors.length, 2)
+      assert.match(error.errors[0].message, /scenario exploded/)
+      assert.match(error.errors[1].message, /disarm did not confirm cleanup/)
+      return true
+    },
+  )
+})
+
+test('provider fault scenario requires an explicit callback and trusted boundary map', async () => {
+  const { adapter } = fixture()
+  await assert.rejects(withProviderFault(adapter, request, null, async () => {}), /independently maintained/)
+  await assert.rejects(withProviderFault(adapter, request, expectedBoundary, null), /requires a callback/)
 })
