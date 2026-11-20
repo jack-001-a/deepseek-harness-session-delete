@@ -137,7 +137,7 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
     if (trigger !== runMetadata.event) continue
     if (githubWorkflowRepository !== REPOSITORY) continue
     if (githubWorkflowRef !== REF) continue
-    if (githubWorkflowSHA !== evidence.source.workflowSha) continue
+    if (githubWorkflowSHA !== expectedCommit) continue
     if (githubWorkflowTrigger !== runMetadata.event) continue
     if (invocation !== `https://github.com/${REPOSITORY}/actions/runs/${expectedRunId}/attempts/${expectedAttempt}`) continue
 
