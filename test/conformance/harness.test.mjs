@@ -31,7 +31,7 @@ test('already-started workers are reaped if a later worker cannot be constructed
     "const input = createInterface({ input: process.stdin, crlfDelay: Infinity })",
     "console.log(JSON.stringify({ type: 'ready', role: process.env.CONFORMANCE_ROLE, caseId: process.env.CONFORMANCE_CASE_ID }))",
     "input.on('line', async (line) => { if (JSON.parse(line).type === 'shutdown') { await writeFile(process.env.SHUTDOWN_MARKER, 'closed'); console.log(JSON.stringify({ type: 'shutdown-ack' })); input.close() } })",
-  ].join('\\n'))
+  ].join('\n'))
   try {
     await assert.rejects(withWorkers([
       { role: 'first', caseId: 'partial-construction', script: pathToFileURL(script), env: { SHUTDOWN_MARKER: markerPath } },
