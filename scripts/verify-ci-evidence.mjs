@@ -65,16 +65,16 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
     const workflowDigest = first(certificate, ['buildConfigDigest', 'BuildConfigDigest'])
     const invocation = first(certificate, ['runInvocationURI', 'RunInvocationURI'])
 
-    if (repositoryUri !== `https://github.com/${REPOSITORY}` && repositoryUri !== REPOSITORY) continue
+    if (repositoryUri !== `https://github.com/${REPOSITORY}`) continue
     if (sourceRef !== REF) continue
     if (repositoryId !== REPOSITORY_ID || ownerId !== OWNER_ID) continue
     if (sourceDigest !== expectedCommit) continue
     if (issuer !== OIDC_ISSUER) continue
     if (workflowRef !== `https://github.com/${WORKFLOW}@${REF}`) continue
+    if (san !== `https://github.com/${WORKFLOW}@${REF}`) continue
     if (workflowDigest !== evidence.source.workflowSha) continue
     if (trigger !== runMetadata.event) continue
     if (invocation !== `https://github.com/${REPOSITORY}/actions/runs/${expectedRunId}/attempts/${expectedAttempt}`) continue
-    if (san && !san.includes(WORKFLOW)) continue
 
     const subjectMatches = (statement.subject ?? []).some(subject =>
       subject?.digest?.sha256 === artifactDigest
