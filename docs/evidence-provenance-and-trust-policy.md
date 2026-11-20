@@ -4,6 +4,8 @@
 - Parent: [Host-native Session lifecycle ADR](./host-native-write-lease-adr.md)
 - Evidence ledger: [Provider lifecycle evidence map](./provider-lifecycle-evidence-map.md)
 - Executable evidence integrity helpers: `test/conformance/evidence-artifacts.mjs`
+- Protected-branch evidence workflow: `.github/workflows/trusted-ci-evidence.yml`
+- Evidence subject builder: `scripts/create-ci-evidence.mjs`
 
 ## 1. Problem statement
 
@@ -35,6 +37,8 @@ A verifier MUST check all of the following against an explicit policy:
 A valid attestation from an unapproved workflow, fork, repository, ref, event, or commit is not accepted. A valid signature alone is not sufficient; identity claims must satisfy the policy.
 
 ## 3. Workflow production requirements
+
+The repository now contains an initial protected-branch workflow implementation at `.github/workflows/trusted-ci-evidence.yml`. It runs only for the canonical repository on `refs/heads/main`, performs syntax/unit/conformance smoke checks, creates a source/run-bound JSON subject with test-log digests, requests a GitHub Artifact Attestation, verifies it with `gh attestation verify`, and uploads the subject plus logs. The job alone receives `id-token: write` and `attestations: write`; the ordinary PR CI remains read-only. This workflow has not yet been executed on protected `main`, so no attestation is currently claimed. Its behavior is not considered proven until a successful protected-main run and independent verification are recorded.
 
 The evidence-producing workflow SHOULD:
 
@@ -80,9 +84,9 @@ For release-grade evidence, prefer a workflow triggered after the reviewed commi
 
 At the time this contract was written:
 
-- the regular CI workflow grants only `contents: read`;
+- the regular CI workflow grants only `contents: read`; the new trusted evidence workflow grants OIDC and attestation permissions only to its single protected-main job;
 - it runs syntax, unit, conformance smoke, package-manifest, and tarball checks across Linux, macOS, and Windows with Node 22, 24, and 26;
-- that workflow does not upload a conformance evidence bundle or create a GitHub Artifact Attestation;
+- the regular PR/cross-platform workflow does not upload evidence or create an attestation; the new protected-main workflow is configured to create and verify a CI validation subject, but has not yet run successfully on protected `main`;
 - the evidence artifact helper validates content digests and local file identity, but it does not authenticate the producer;
 - the real Harness integration evidence documented in the evidence map is a separate Linux run and is not a nine-platform provider lifecycle conformance result.
 
@@ -92,10 +96,10 @@ Consequently, current artifacts may be described as **locally integrity-checked*
 
 Before claiming CI provenance:
 
-- [ ] Define the exact evidence bundle subject and deterministic packaging procedure.
-- [ ] Add a least-privilege evidence-producing job with OIDC and attestation permissions.
-- [ ] Produce an Artifact Attestation for the final bundle digest.
-- [ ] Verify the attestation in CI or a documented independent reviewer workflow.
+- [x] Define an exact JSON evidence subject containing source/run metadata and SHA-256 digests of unit/conformance logs.
+- [x] Add a least-privilege protected-main evidence job with OIDC and attestation permissions; ordinary PR CI remains read-only.
+- [ ] Execute the workflow on protected `main` and produce an Artifact Attestation for the evidence subject.
+- [ ] Verify the attestation in CI and independently inspect the recorded certificate/identity claims.
 - [ ] Enforce repository/workflow/ref/event/commit/run identity policy.
 - [ ] Add positive and negative verification tests, including wrong repository, workflow, ref, event, commit, and subject digest.
 - [ ] Preserve a clear distinction between PR evidence and protected-branch evidence.
