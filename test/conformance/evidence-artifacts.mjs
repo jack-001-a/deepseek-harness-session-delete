@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, lstat, link, unlink, writeFile, rename } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
-import { randomUUID } from 'node:crypto'
 import { assertReleaseGate } from './manifest.mjs'
 
 const DIGEST = /^[a-f0-9]{64}$/
