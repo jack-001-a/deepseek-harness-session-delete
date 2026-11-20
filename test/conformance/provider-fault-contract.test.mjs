@@ -49,6 +49,8 @@ const expectedBoundary = {
   reviewedAtCommit: '0123456789abcdef0123456789abcdef01234567',
 }
 
+const verified = { verifyHit: async () => true }
+
 const request = {
   point: 'retire.commit',
   phase: 'after-commit-before-response',
@@ -107,7 +109,7 @@ test('provider fault scenario always disarms after a successful callback', async
   const value = await withProviderFault(adapter, request, expectedBoundary, async (hit) => {
     assert.equal(hit.actionApplied, true)
     return 'scenario-result'
-  })
+  }, verified)
   assert.equal(value, 'scenario-result')
   assert.deepEqual(calls.map(([kind]) => kind), ['arm', 'hit', 'disarm'])
 })
@@ -115,7 +117,7 @@ test('provider fault scenario always disarms after a successful callback', async
 test('provider fault scenario disarms when hit verification fails', async () => {
   const { adapter, calls } = fixture({ actionApplied: false })
   await assert.rejects(
-    withProviderFault(adapter, request, expectedBoundary, async () => assert.fail('callback must not run')),
+    withProviderFault(adapter, request, expectedBoundary, async () => assert.fail('callback must not run'), verified),
     /not proven/,
   )
   assert.deepEqual(calls.map(([kind]) => kind), ['arm', 'hit', 'disarm'])
@@ -124,7 +126,7 @@ test('provider fault scenario disarms when hit verification fails', async () => 
 test('provider fault cleanup failure fails an otherwise successful scenario', async () => {
   const { adapter } = fixture({}, false)
   await assert.rejects(
-    withProviderFault(adapter, request, expectedBoundary, async () => 'ignored'),
+    withProviderFault(adapter, request, expectedBoundary, async () => 'ignored', verified),
     /disarm did not confirm cleanup/,
   )
 })
@@ -134,7 +136,7 @@ test('provider fault scenario preserves both scenario and cleanup failures', asy
   await assert.rejects(
     withProviderFault(adapter, request, expectedBoundary, async () => {
       throw new Error('scenario exploded')
-    }),
+    }, verified),
     (error) => {
       assert.ok(error instanceof AggregateError)
       assert.equal(error.errors.length, 2)
@@ -156,7 +158,7 @@ test('provider fault rejects a trusted map for a different requested operation',
   const { adapter, calls } = fixture()
   const wrongOperation = { ...expectedBoundary, operation: 'purge' }
   await assert.rejects(
-    withProviderFault(adapter, request, wrongOperation, async () => {}),
+    withProviderFault(adapter, request, wrongOperation, async () => {}, verified),
     /does not match the armed fault request/,
   )
   assert.deepEqual(calls, [])
@@ -165,8 +167,29 @@ test('provider fault rejects a trusted map for a different requested operation',
 test('provider fault hit must echo the requested lifecycle operation', async () => {
   const { adapter, calls } = fixture({ operation: 'purge' })
   await assert.rejects(
-    withProviderFault(adapter, request, expectedBoundary, async () => {}),
+    withProviderFault(adapter, request, expectedBoundary, async () => {}, verified),
     /not proven/,
+  )
+  assert.deepEqual(calls.map(([kind]) => kind), ['arm', 'hit', 'disarm'])
+})
+
+
+test('provider fault scenario requires independent external-action verification', async () => {
+  const { adapter, calls } = fixture()
+  await assert.rejects(
+    withProviderFault(adapter, request, expectedBoundary, async () => 'must-not-run'),
+    /independent hit verifier/,
+  )
+  assert.deepEqual(calls, [])
+})
+
+test('provider fault scenario rejects an unverified external action and still cleans up', async () => {
+  const { adapter, calls } = fixture()
+  await assert.rejects(
+    withProviderFault(adapter, request, expectedBoundary, async () => 'must-not-run', {
+      verifyHit: async () => false,
+    }),
+    /did not confirm the external action/,
   )
   assert.deepEqual(calls.map(([kind]) => kind), ['arm', 'hit', 'disarm'])
 })
