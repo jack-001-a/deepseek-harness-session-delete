@@ -104,7 +104,7 @@ export async function waitForProviderFaultHit(armed, options) {
   return Object.freeze({ ...hit })
 }
 
-/** Always disarm in a finally block in the caller, including failed assertions. */
+/** Disarm an armed hook; withProviderFault is preferred for guaranteed cleanup. */
 export async function disarmProviderFault(armed) {
   if (!armed?.hooks || !armed?.handle) throw new TypeError('armed provider fault is required')
   return armed.hooks.disarm(armed.handle)
@@ -114,11 +114,16 @@ export async function disarmProviderFault(armed) {
 /**
  * Run one fault scenario with mandatory cleanup.
  *
- * Cleanup must return true. If both the scenario and cleanup fail, preserve
- * both failures in an AggregateError instead of hiding the primary failure.
+ * Cleanup must return true. The independent verifier must establish the externally
+ * observable action (for example, worker exit or persisted recovery evidence); the
+ * adapter's actionApplied flag is not sufficient on its own. If both verification /
+ * scenario and cleanup fail, preserve both failures in an AggregateError.
  */
 export async function withProviderFault(adapter, request, expectedBoundary, run, waitOptions = {}) {
   if (typeof run !== 'function') throw new TypeError('provider fault scenario requires a callback')
+  if (typeof waitOptions?.verifyHit !== 'function') {
+    throw new TypeError('provider fault scenario requires an independent hit verifier')
+  }
   if (!expectedBoundary || typeof expectedBoundary !== 'object') {
     throw new TypeError('provider fault scenario requires an independently maintained boundary expectation')
   }
@@ -132,10 +137,14 @@ export async function withProviderFault(adapter, request, expectedBoundary, run,
   let value
   let scenarioError
   try {
+    const { verifyHit, ...hitWaitOptions } = waitOptions
     const hit = await waitForProviderFaultHit(armed, {
-      ...waitOptions,
+      ...hitWaitOptions,
       expectedBoundary,
     })
+    if (await verifyHit(hit, armed) !== true) {
+      throw new Error('independent provider fault verifier did not confirm the external action')
+    }
     value = await run(hit, armed)
   } catch (error) {
     scenarioError = error
