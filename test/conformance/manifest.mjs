@@ -59,6 +59,13 @@ export function recordEvidence(manifest, evidence) {
     sourceCommit: evidence.sourceCommit,
     providerVersion: evidence.providerVersion,
     observer: evidence.observer,
+    effect: evidence.effect,
+    faultId: evidence.faultId,
+    operationId: evidence.operationId,
+    point: evidence.point,
+    phase: evidence.phase,
+    operation: evidence.operation,
+    action: evidence.action,
     artifactRef: evidence.artifactRef,
     artifactSha256: evidence.artifactSha256,
     faultId: evidence.faultId,
@@ -105,7 +112,8 @@ export function assertReleaseGate(manifest, requiredIds) {
         typeof evidence.evidenceId !== 'string' || !evidence.evidenceId ||
         !/^[a-f0-9]{64}$/.test(evidence.artifactRef || '') ||
         evidence.artifactSha256 !== evidence.artifactRef ||
-        evidence.sourceCommit !== manifest.sourceCommit) {
+        evidence.sourceCommit !== manifest.sourceCommit ||
+      !['effect', 'faultId', 'operationId', 'point', 'phase', 'operation', 'action'].every((field) => typeof evidence[field] === 'string' && evidence[field])) {
       throw new TypeError('manifest contains invalid or unbound fault evidence')
     }
     if (evidenceIds.has(evidence.evidenceId)) throw new Error(`manifest contains duplicate evidence ID: ${evidence.evidenceId}`)
