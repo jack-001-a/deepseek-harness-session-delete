@@ -35,7 +35,7 @@ export abstract class SessionPersistence extends Service {
 }
 ```
 
-A provider overrides the getter only after its durable lifecycle state has been opened and recovery has reached a safe, ready state. If recovery fails or detects ambiguous/corrupt state, the provider must fail closed and must not advertise a usable capability.
+A provider overrides the getter only after its durable lifecycle state has been opened and recovery has reached a safe, ready state. Before the service has completed startup, the getter returns `undefined`; after startup, its result is stable for that service instance. If recovery fails or detects ambiguous/corrupt state, lifecycle remains unavailable (ordinary non-destructive persistence may remain usable only if the provider can prove it is safe). A replacement service has a new `identity` and a newly discovered capability.
 
 Consumers capture both the active service reference and its `identity` before beginning a workflow. Before a later phase or retry, they verify that the currently resolved service still has the same identity. A replaced service invalidates the old capability reference; the consumer must rediscover capability and reconcile by operation ID rather than continuing through a stale provider object.
 
@@ -122,7 +122,7 @@ A separate public `recover()` is not required in the minimal surface. Provider s
 
 ## 4. Idempotency and lost-response contract
 
-Every mutating operation accepts a caller-generated `operationId`, unique within the provider-root namespace for the lifetime of its durable operation ledger. The caller persists it before invoking the provider and reuses the exact same value after timeout, process death, transport failure, or unknown response.
+Every mutating operation accepts a caller-generated `operationId`, unique within the provider-root namespace. The caller persists it before invoking the provider and reuses the exact same value after timeout, process death, transport failure, or unknown response. The provider's deduplication record (or a compact, equally authoritative tombstone for it) must outlive every possible caller retry; silently expiring an operation ID and later treating it as new is forbidden. Storage compaction may discard bulky result payloads only if it preserves enough durable fingerprint and outcome information to reject conflicting reuse and resolve the original operation.
 
 The provider stores an operation mapping durably with the lifecycle transition:
 
@@ -209,7 +209,7 @@ The plugin owns trash UI, retention policy, and its own projection/accounting. T
 2. Require `persistence.lifecycle`; if absent, disable destructive actions and do not fall back to filesystem or SQL operations.
 3. Persist a unique `operationId` in plugin-owned durable state before calling `retire`.
 4. Call provider `retire` and persist the returned opaque token through an idempotent outbox/projection.
-5. If the process dies between provider commit and plugin projection, rediscover the active capability and recover using the same operation ID or `inspectById(id)`.
+5. If the process dies between provider commit and plugin projection, rediscover the active capability and recover using `inspectOperation(operationId)`. `inspectById(id)` is only a current-state query; it is not a substitute for exact operation recovery when the public Session ID may have been restored and retired again.
 6. Reconcile provider state before publishing trash metadata as authoritative.
 7. Before restore/purge, verify the active persistence identity again and use a new persisted operation ID for that transition.
 8. Keep the existing plugin-level cross-process lock for plugin metadata/accounting only. It is not a substitute for native provider admission fencing.
