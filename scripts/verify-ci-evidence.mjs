@@ -7,7 +7,9 @@ import { resolve } from 'node:path'
 const REPOSITORY = 'jack-001-a/deepseek-harness-session-delete'
 const REF = 'refs/heads/main'
 const WORKFLOW_PATH = '.github/workflows/trusted-ci-evidence.yml'
-const WORKFLOW = `${REPOSITORY}/.github/workflows/trusted-ci-evidence.yml`
+const WORKFLOW = `${REPOSITORY}/${WORKFLOW_PATH}`
+const SIGNER_WORKFLOW_PATH = '.github/workflows/trusted-ci-evidence-reusable.yml'
+const SIGNER_WORKFLOW = `${REPOSITORY}/${SIGNER_WORKFLOW_PATH}`
 const OIDC_ISSUER = 'https://token.actions.githubusercontent.com'
 const REPOSITORY_ID = '1428060802'
 const OWNER_ID = '320086254'
@@ -39,7 +41,7 @@ export function getOnlineVerificationCoordinates(evidence) {
   if (!/^\d+$/.test(String(source.runId ?? ''))) fail('evidence run ID is invalid')
   if (!/^\d+$/.test(String(source.runAttempt ?? ''))) fail('evidence run attempt is invalid')
   if (source.workflowRef !== WORKFLOW + '@' + REF) fail('evidence workflow ref mismatch')
-  return { runId: String(source.runId), attempt: String(source.runAttempt), commit: source.commit, workflowSha: source.workflowSha }
+  return { runId: String(source.runId), attempt: String(source.runAttempt), commit: source.commit, workflowSha: source.workflowSha, signerSha: source.commit }
 }
 export function buildAttestationVerifyArgs(artifactPath, coordinates) {
   if (typeof artifactPath !== 'string' || artifactPath.length === 0) fail('artifact path is required')
@@ -52,11 +54,11 @@ export function buildAttestationVerifyArgs(artifactPath, coordinates) {
   return [
     'attestation', 'verify', artifactPath,
     '--repo', REPOSITORY,
-    '--signer-workflow', WORKFLOW,
-    '--signer-digest', coordinates.workflowSha,
+    '--signer-workflow', SIGNER_WORKFLOW,
+    '--signer-digest', coordinates.signerSha,
     '--source-ref', REF,
     '--source-digest', coordinates.commit,
-    '--cert-identity', `https://github.com/${WORKFLOW}@${REF}`,
+    '--cert-identity', `https://github.com/${SIGNER_WORKFLOW}@${REF}`,
     '--cert-oidc-issuer', OIDC_ISSUER,
     '--predicate-type', 'https://slsa.dev/provenance/v1',
     '--deny-self-hosted-runners',
@@ -129,16 +131,21 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
     if (sourceDigest !== expectedCommit) continue
     if (issuer !== OIDC_ISSUER) continue
     if (runnerEnvironment !== 'github-hosted') continue
-    if (workflowRef !== `https://github.com/${WORKFLOW}@${REF}`) continue
-    if (sanValue !== `https://github.com/${WORKFLOW}@${REF}`) continue
+    if (workflowRef !== `https://github.com/${SIGNER_WORKFLOW}@${REF}`) continue
+    if (sanValue !== `https://github.com/${SIGNER_WORKFLOW}@${REF}`) continue
     if (buildConfigUri !== `https://github.com/${WORKFLOW}@${REF}`) continue
-    if (signerDigest !== evidence.source.workflowSha) continue
+    // job_workflow_sha identifies the called reusable workflow; this repository-local
+    // reusable workflow is resolved from the same protected main commit as the source.
+    if (signerDigest !== expectedCommit) continue
+    // workflow_sha identifies the top-level caller workflow.
     if (workflowDigest !== evidence.source.workflowSha) continue
     if (trigger !== runMetadata.event) continue
-    if (githubWorkflowRepository !== REPOSITORY) continue
-    if (githubWorkflowRef !== REF) continue
-    if (githubWorkflowSHA !== expectedCommit) continue
-    if (githubWorkflowTrigger !== runMetadata.event) continue
+    // GitHub-specific Fulcio extensions are deprecated. Validate them when present,
+    // but rely on the provider-generic extensions above for the required policy.
+    if (githubWorkflowRepository !== undefined && githubWorkflowRepository !== REPOSITORY) continue
+    if (githubWorkflowRef !== undefined && githubWorkflowRef !== REF) continue
+    if (githubWorkflowSHA !== undefined && githubWorkflowSHA !== expectedCommit) continue
+    if (githubWorkflowTrigger !== undefined && githubWorkflowTrigger !== runMetadata.event) continue
     if (invocation !== `https://github.com/${REPOSITORY}/actions/runs/${expectedRunId}/attempts/${expectedAttempt}`) continue
 
     const subjectMatches = (statement.subject ?? []).some(subject =>
