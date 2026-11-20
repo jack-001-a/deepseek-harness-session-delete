@@ -111,7 +111,7 @@ This provenance work is independent of provider lifecycle conformance. A trusted
 
 ## 8. Executable verifier implementation
 
-The repository now includes `scripts/verify-ci-evidence.mjs`, a fail-closed consumer for the JSON output of `gh attestation verify --format json`. It evaluates the verified certificate extensions (not the workflow-controlled provenance predicate) and compares the subject SHA-256 with the exact evidence subject bytes. It also fetches the specific GitHub Actions run attempt through the GitHub API and binds the evidence metadata to that independent run record.
+The repository now includes `scripts/verify-ci-evidence.mjs`, a fail-closed consumer for the JSON output of `gh attestation verify --format json`. Run it in online mode with only the downloaded `ci-evidence.json` path; it invokes the GitHub CLI to verify the attestation and independently fetches the exact GitHub Actions run attempt. A three-argument offline mode remains available for a pre-captured verifier JSON and run-metadata JSON. Both modes recompute the subject SHA-256 from the exact file bytes and evaluate the same policy.
 
 The workflow additionally requires GitHub's `github.ref_protected` signal to be true before it can build or attest evidence. The builder independently requires `GITHUB_REF_PROTECTED=true`; this prevents a main-branch name alone from being treated as proof of protection. The policy pins both mutable names and immutable identities:
 
@@ -125,6 +125,17 @@ The workflow additionally requires GitHub's `github.ref_protected` signal to be 
 - issuer: `https://token.actions.githubusercontent.com`;
 - subject: SHA-256 of the exact `ci-evidence.json` file.
 
-The verifier deliberately rejects absent certificate extensions and unsupported output shapes. Policy mismatches produce a machine-readable `provenance_rejected` result; an empty verified-attestation set is classified as `provenance_unavailable`. A non-zero exit from `gh attestation verify` remains a hard workflow failure before the policy evaluator runs. Positive policy tests use synthetic, normalized verifier output to exercise decision logic; they are not real-signature tests and do not claim that a production attestation exists. Real cryptographic verification remains delegated to `gh attestation verify`, whose exit status must succeed before the policy evaluator is run.
+The verifier follows the actual Sigstore `sigstore-go` JSON certificate schema: `subjectAlternativeName` is an object with `type: URI` and a `value`, not a plain string. It requires exact URI SAN, source repository and owner URIs, immutable repository/owner IDs, source ref/digest, build signer/config URIs and digests, trigger, run invocation, OIDC issuer, and `runnerEnvironment: github-hosted`. It deliberately rejects absent certificate extensions and unsupported output shapes. Policy mismatches produce a machine-readable `provenance_rejected` result; an empty verified-attestation set is classified as `provenance_unavailable`. A non-zero exit from `gh attestation verify` remains a hard workflow failure before the policy evaluator runs. Positive policy tests use synthetic, normalized verifier output to exercise decision logic; they are not real-signature tests and do not claim that a production attestation exists. Real cryptographic verification remains delegated to `gh attestation verify`, whose exit status must succeed before the policy evaluator is run.
 
-The workflow now requests JSON verification output, constrains source ref and source digest, requires the exact certificate identity and OIDC issuer, rejects self-hosted runners, fetches the exact run attempt from the GitHub API, and invokes the independent policy evaluator. These steps are configured but remain unexecuted on `main` while this PR is unmerged.
+The workflow now requests JSON verification output, constrains source ref and source digest, requires the exact certificate identity and OIDC issuer, rejects self-hosted runners, fetches the exact run attempt from the GitHub API, and invokes the independent policy evaluator. External consumers can use the same policy with `node scripts/verify-ci-evidence.mjs path/to/ci-evidence.json`; the command requires an authenticated GitHub CLI session and does not trust manifest metadata without matching it against the signed certificate and independently fetched run record. These steps are configured but remain unexecuted on `main` while this PR is unmerged.
+
+
+### 9. External consumer quick start
+
+After downloading the evidence artifact from the intended workflow run, extract the exact `ci-evidence.json` subject and run:
+
+```sh
+node scripts/verify-ci-evidence.mjs ./ci-evidence.json
+```
+
+The online mode requires Node.js and an authenticated GitHub CLI (`gh auth status`). It obtains the attestation through GitHub's API-backed `gh attestation verify` flow and retrieves the manifest-indicated run attempt from the canonical repository. The manifest's run ID and attempt are used only as lookup coordinates; acceptance still requires exact agreement among the signed Fulcio certificate, downloaded subject digest, manifest, and independently returned GitHub run metadata. A missing attestation or unavailable GitHub verification service is reported as `provenance_unavailable`; signature or identity-policy failures are reported as `provenance_rejected`.
