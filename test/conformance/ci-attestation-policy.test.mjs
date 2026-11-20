@@ -11,7 +11,7 @@ const digest = createHash('sha256').update(bytes).digest('hex')
 
 function fixture() {
   const evidence = {
-    source: { repository, ref: 'refs/heads/main', commit, runId: '123456789', runAttempt: '1' },
+    source: { repository, ref: 'refs/heads/main', refProtected: true, commit, runId: '123456789', runAttempt: '1' },
   }
   const runMetadata = {
     id: 123456789,
