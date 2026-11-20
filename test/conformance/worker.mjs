@@ -5,7 +5,7 @@ const pending = new Map()
 const active = new Set()
 
 function send(message) {
-  process.stdout.write(`${JSON.stringify(message)}\n`)
+  process.stdout.write(`${JSON.stringify(message)}\\n`)
 }
 
 send({ type: 'ready', role: process.env.CONFORMANCE_ROLE, caseId: process.env.CONFORMANCE_CASE_ID, pid: process.pid })
@@ -55,6 +55,10 @@ input.on('line', (line) => {
   if (message.type === 'shutdown') {
     send({ type: 'shutdown-ack' })
     input.close()
+    // Closing readline alone leaves the underlying stdin pipe open. The parent
+    // waits for the child to exit after the acknowledgement, so release the
+    // pipe explicitly to let the process terminate gracefully.
+    process.stdin.destroy()
     process.exitCode = 0
   }
 })
