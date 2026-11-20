@@ -28,6 +28,18 @@ function runGitHubCli(args, label) {
   }
 }
 
+export function getOnlineVerificationCoordinates(evidence) {
+  const source = evidence?.source
+  if (source?.repository !== REPOSITORY || source?.ref !== REF) fail('evidence repository/ref mismatch')
+  if (source?.refProtected !== true) fail('evidence does not record a protected ref')
+  if (source.event !== 'push' && source.event !== 'workflow_dispatch') fail('evidence event is not allowed')
+  if (!/^[a-f0-9]{40}$/.test(source.commit ?? '')) fail('evidence source commit is not a full SHA')
+  if (!/^[a-f0-9]{40}$/.test(source.workflowSha ?? '')) fail('evidence workflow SHA is not a full SHA')
+  if (!/^\d+$/.test(String(source.runId ?? ''))) fail('evidence run ID is invalid')
+  if (!/^\d+$/.test(String(source.runAttempt ?? ''))) fail('evidence run attempt is invalid')
+  if (source.workflowRef !== WORKFLOW + '@' + REF) fail('evidence workflow ref mismatch')
+  return { runId: String(source.runId), attempt: String(source.runAttempt), commit: source.commit, workflowSha: source.workflowSha }
+}
 export function evaluateAttestationPolicy({ verification, runMetadata, evidence, artifactBytes }) {
   if (!Array.isArray(verification) || verification.length === 0) fail('no verified attestations returned', 'provenance_unavailable')
 
@@ -128,16 +140,11 @@ async function main() {
   let runMetadata
 
   if (args.length === 1) {
-    const runId = String(evidence?.source?.runId ?? '')
-    const attempt = String(evidence?.source?.runAttempt ?? '')
-    const commit = String(evidence?.source?.commit ?? '')
-    if (!/^\d+$/.test(runId) || !/^\d+$/.test(attempt) || !/^[a-f0-9]{40}$/.test(commit)) {
-      fail('evidence cannot safely identify a GitHub run attempt')
-    }
+    const { runId, attempt, commit, workflowSha } = getOnlineVerificationCoordinates(evidence)
     const commonArgs = [
       '--repo', REPOSITORY,
       '--signer-workflow', WORKFLOW,
-      '--signer-digest', evidence.source.workflowSha,
+      '--signer-digest', workflowSha,
       '--source-ref', REF,
       '--source-digest', commit,
       '--cert-identity', `https://github.com/${WORKFLOW}@${REF}`,
