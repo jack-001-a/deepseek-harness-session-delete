@@ -208,7 +208,7 @@ The plugin owns trash UI, retention policy, and its own projection/accounting. T
 4. Call provider `retire` and persist the returned opaque token through an idempotent outbox/projection.
 5. If the process dies between provider commit and plugin projection, rediscover the active capability and recover using `inspectOperation(id, operationId)`. `inspectById(id)` is only a current-state query; it is not a substitute for exact operation recovery when the public Session ID may have been restored and retired again.
 6. Reconcile provider state before publishing trash metadata as authoritative.
-7. Before restore/purge, verify the active persistence identity again and use a new persisted operation ID for that transition.
+7. Before restore/purge, verify the active persistence identity again and use the original opaque retirement token for the transition and all retries. A new operation ID is not required; if the provider supports optional IDs for these methods, persist and reuse that optional key.
 8. Keep the existing plugin-level cross-process lock for plugin metadata/accounting only. It is not a substitute for native provider admission fencing.
 
 Provider state is authoritative for live/retired/purged. Plugin metadata is a replayable projection and must never independently authorize destructive storage mutation.
