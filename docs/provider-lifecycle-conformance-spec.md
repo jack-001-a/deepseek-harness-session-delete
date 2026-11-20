@@ -86,7 +86,7 @@ Each case is run against every built-in provider and on all three operating syst
 | S-002 | Legacy subclass compatibility | Instantiate provider subclass without override | Source-compatible; capability is undefined |
 | S-003 | Active writer drain | A holds write handle and queues events; B requests retire | B waits or returns typed `busy`; no acknowledged event lost |
 | S-004 | Writer admission race | B owns lifecycle gate; A requests write-open | A cannot cross the fence; after retire commit, write-open is rejected |
-| S-005 | Append vs close | A queues append while close begins | Either append is included before close completes or rejected; never commits after successful close |
+| S-005 | Append / routed event vs close | A queues append or a delayed `session/event` callback arrives at each close boundary, including after the final empty-buffer observation but before close completion | Atomically seal admission before the final drain decision; every accepted operation is drained, every later operation is rejected, and no accepted event is stranded or commits after successful close |
 | S-006 | Flush vs close | Pause after durable flush before close response; kill A | Retry/inspect returns the original durable outcome; no duplicate append |
 | S-007 | Double close | Invoke close concurrently twice | Both calls converge on one close outcome; lease released exactly once |
 | S-008 | Delayed callback | Schedule callback, complete close, then release callback | Callback cannot append or reopen by Session ID |
