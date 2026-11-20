@@ -45,17 +45,22 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
 
     // These certificate claims are populated from GitHub's OIDC token. Do not
     // fall back to statement.predicate for identity: that content is workflow-controlled.
-    const repository = first(certificate, ['sourceRepository', 'SourceRepository'])
+    const repositoryUri = first(certificate, ['sourceRepositoryURI', 'SourceRepositoryURI', 'sourceRepository', 'SourceRepository'])
     const sourceRef = first(certificate, ['sourceRepositoryRef', 'SourceRepositoryRef'])
     const sourceDigest = first(certificate, ['sourceRepositoryDigest', 'SourceRepositoryDigest'])
     const san = first(certificate, ['subjectAlternativeName', 'SubjectAlternativeName', 'san', 'SAN'])
     const issuer = first(certificate, ['issuer', 'oidcIssuer', 'Issuer'])
-    const workflowRef = first(certificate, ['workflowRef', 'buildSignerURI', 'BuildSignerURI'])
+    const workflowRef = first(certificate, ['buildSignerURI', 'BuildSignerURI', 'workflowRef'])
+    const trigger = first(certificate, ['buildTrigger', 'BuildTrigger'])
+    const invocation = first(certificate, ['runInvocationURI', 'RunInvocationURI'])
 
-    if (repository !== REPOSITORY || sourceRef !== REF) continue
+    if (repositoryUri !== `https://github.com/${REPOSITORY}` && repositoryUri !== REPOSITORY) continue
+    if (sourceRef !== REF) continue
     if (sourceDigest !== expectedCommit) continue
     if (issuer !== OIDC_ISSUER) continue
-    if (workflowRef && !workflowRef.includes(WORKFLOW)) continue
+    if (workflowRef !== `https://github.com/${WORKFLOW}@${REF}`) continue
+    if (trigger !== runMetadata.event) continue
+    if (invocation !== `https://github.com/${REPOSITORY}/actions/runs/${expectedRunId}/attempts/${expectedAttempt}`) continue
     if (san && !san.includes(WORKFLOW)) continue
 
     const subjectMatches = (statement.subject ?? []).some(subject =>
