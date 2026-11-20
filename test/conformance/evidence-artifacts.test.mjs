@@ -30,3 +30,27 @@ test('evidence artifact reader fails closed on missing, malformed, and modified 
     await rm(root, { recursive: true, force: true })
   }
 })
+
+
+test('manifest artifact verification rejects a payload bound to a different run', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-evidence-binding-'))
+  try {
+    const payload = {
+      evidenceId: 'e-1', testRunId: 'run-1', sourceCommit: 'a'.repeat(40),
+      providerVersion: 'v1', observer: 'parent',
+    }
+    const reference = await writeEvidenceArtifact(root, payload)
+    const { verifyManifestEvidence } = await import('./evidence-artifacts.mjs')
+    const manifest = {
+      schemaVersion: 1, sourceCommit: 'b'.repeat(40),
+      evidence: [{
+        evidenceId: 'e-1', testRunId: 'run-1', sourceCommit: 'b'.repeat(40),
+        providerVersion: 'v1', observer: 'parent',
+        artifactRef: reference.artifactRef, artifactSha256: reference.artifactSha256,
+      }],
+    }
+    await assert.rejects(verifyManifestEvidence(manifest, root), /source commit mismatch/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
