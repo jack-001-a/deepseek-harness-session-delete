@@ -120,7 +120,7 @@ The workflow additionally requires GitHub's `github.ref_protected` signal to be 
 - owner ID: `320086254`;
 - source ref: `refs/heads/main`;
 - source commit: Fulcio `SourceRepositoryDigest`, cross-checked against the run attempt's `head_sha`;
-- workflow identity: Fulcio `BuildSignerURI`, plus the CLI's `--signer-workflow` and exact `--cert-identity` constraints;
+- workflow identity and revision: Fulcio `BuildSignerURI` plus `BuildConfigDigest`, checked against the exact workflow path/ref and `GITHUB_WORKFLOW_SHA`; the CLI additionally enforces `--signer-workflow` and exact `--cert-identity` constraints;
 - event and run identity: Fulcio `BuildTrigger` and `RunInvocationURI`, cross-checked against the GitHub API run attempt and evidence metadata;
 - issuer: `https://token.actions.githubusercontent.com`;
 - subject: SHA-256 of the exact `ci-evidence.json` file.
