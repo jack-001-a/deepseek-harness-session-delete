@@ -6,12 +6,13 @@ import { evaluateAttestationPolicy } from '../../scripts/verify-ci-evidence.mjs'
 const repository = 'jack-001-a/deepseek-harness-session-delete'
 const workflow = `${repository}/.github/workflows/trusted-ci-evidence.yml`
 const commit = '0123456789abcdef0123456789abcdef01234567'
+const workflowSha = '89abcdef0123456789abcdef0123456789abcdef'
 const bytes = Buffer.from('{"schemaVersion":1,"status":"PASS"}\n')
 const digest = createHash('sha256').update(bytes).digest('hex')
 
 function fixture() {
   const evidence = {
-    source: { repository, ref: 'refs/heads/main', refProtected: true, event: 'push', workflowRef: `${workflow}@refs/heads/main`, commit, runId: '123456789', runAttempt: '1' },
+    source: { repository, ref: 'refs/heads/main', refProtected: true, event: 'push', workflowRef: `${workflow}@refs/heads/main`, workflowSha, commit, runId: '123456789', runAttempt: '1' },
   }
   const runMetadata = {
     id: 123456789,
@@ -34,6 +35,7 @@ function fixture() {
           subjectAlternativeName: `https://github.com/${workflow}@refs/heads/main`,
           Issuer: 'https://token.actions.githubusercontent.com',
           BuildSignerURI: `https://github.com/${workflow}@refs/heads/main`,
+          BuildConfigDigest: workflowSha,
           BuildTrigger: 'push',
           RunInvocationURI: `https://github.com/${repository}/actions/runs/123456789/attempts/1`,
         },
@@ -57,6 +59,7 @@ for (const [name, mutate] of [
   ['wrong owner identity', f => { f.verification[0].verificationResult.signature.certificate.SourceRepositoryOwnerIdentifier = '999' }],
   ['wrong run invocation', f => { f.verification[0].verificationResult.signature.certificate.RunInvocationURI = 'https://github.com/attacker/repo/actions/runs/1/attempts/1' }],
   ['wrong workflow identity', f => { f.verification[0].verificationResult.signature.certificate.BuildSignerURI = 'https://github.com/attacker/other.yml@refs/heads/main' }],
+  ['wrong workflow revision', f => { f.verification[0].verificationResult.signature.certificate.BuildConfigDigest = commit }],
   ['wrong ref', f => { f.verification[0].verificationResult.signature.certificate.SourceRepositoryRef = 'refs/heads/feature' }],
   ['wrong event', f => { f.runMetadata.event = 'pull_request' }],
   ['wrong source commit', f => { f.runMetadata.head_sha = 'fedcba9876543210fedcba9876543210fedcba98' }],
