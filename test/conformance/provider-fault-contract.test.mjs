@@ -24,6 +24,7 @@ function fixture(hitOverride = {}, disarmResult = true) {
           faultId: handle.id,
           point: 'retire.commit',
           phase: 'after-commit-before-response',
+          operation: 'retire',
           action: 'kill',
           operationId: 'op-123',
           boundaryId: 'sqlite-transaction-commit',
@@ -51,6 +52,7 @@ const expectedBoundary = {
 const request = {
   point: 'retire.commit',
   phase: 'after-commit-before-response',
+  operation: 'retire',
   action: 'kill',
   operationId: 'op-123',
 }
@@ -147,4 +149,24 @@ test('provider fault scenario requires an explicit callback and trusted boundary
   const { adapter } = fixture()
   await assert.rejects(withProviderFault(adapter, request, null, async () => {}), /independently maintained/)
   await assert.rejects(withProviderFault(adapter, request, expectedBoundary, null), /requires a callback/)
+})
+
+
+test('provider fault rejects a trusted map for a different requested operation', async () => {
+  const { adapter, calls } = fixture()
+  const wrongOperation = { ...expectedBoundary, operation: 'purge' }
+  await assert.rejects(
+    withProviderFault(adapter, request, wrongOperation, async () => {}),
+    /does not match the armed fault request/,
+  )
+  assert.deepEqual(calls, [])
+})
+
+test('provider fault hit must echo the requested lifecycle operation', async () => {
+  const { adapter, calls } = fixture({ operation: 'purge' })
+  await assert.rejects(
+    withProviderFault(adapter, request, expectedBoundary, async () => {}),
+    /not proven/,
+  )
+  assert.deepEqual(calls.map(([kind]) => kind), ['arm', 'hit', 'disarm'])
 })
