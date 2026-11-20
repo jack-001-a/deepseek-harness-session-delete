@@ -52,6 +52,8 @@ interface SessionLifecycle {
 }
 ```
 
+The sketch above is intentionally non-final. The concrete additive capability shape, operation-ID rules, read-admission semantics, and compatibility contract are refined in the [upstream API proposal](./provider-lifecycle-api-proposal.md). That proposal recommends an optional capability on the active `SessionPersistence` instance, defaulting to absent for existing providers; it treats startup recovery as provider-owned initialization rather than requiring consumers to call a provider-specific recovery method. The existing snapshot `location`, where a backend supplies it, remains observational metadata only and never grants storage mutation authority.
+
 The exact surface may instead use an explicit transaction object with prepare/commit/abort. The non-negotiable semantics are:
 
 1. **Stable identity:** coordination is keyed by stable `SessionId`, not by current file existence or pathname.
