@@ -974,9 +974,10 @@ For SQLite, the read admission point must include the transaction/snapshot that 
 
 - The stable gate coordinates lifecycle admission with create/open/read selection; the existing DB-scoped per-Session writer lease continues to serialize write handles unless and until the provider replaces it with a proven equivalent.
 - A write handle obtains the gate, validates the live incarnation/generation and pending-create state, acquires the DB-scoped writer lease, then releases the gate while retaining the lease through close.
+- **The complete SQLite writer/import lock order is:** provider-root lifecycle/admission gate; DB-scoped per-Session lease under the database's `.session-locks` namespace; legacy-artifact lease or root creation/artifact guard; then the SQLite transaction (`BEGIN IMMEDIATE` where required). The current provider acquires its DB-scoped lease before its legacy-artifact/creation lease and releases them in reverse order. The lifecycle gate must be acquired before either lease. No path may acquire the DB-scoped lease while holding the artifact/creation lease, or acquire the lifecycle gate while holding either lower-ranked lease.
 - Read admission establishes a SQLite snapshot containing lifecycle state, trace identity, and frame selection. All bytes for one logical read must come from that snapshot; do not check lifecycle in one transaction and fetch frames in another unrelated snapshot.
-- Retire obtains the gate before waiting for the writer lease, then performs tombstone/trace state changes in the same SQLite transaction boundary specified by the schema protocol. It never moves the shared DB or relies on filesystem markers as the authoritative state.
-- Legacy JSONL import/fallback must acquire the same gate and follow one documented lock order. An import that began before retirement cannot publish a trace after the retirement fence; a post-fence open cannot fall through to legacy files.
+- Retire obtains the gate before waiting for the DB-scoped writer lease, then follows the same lease order (including the artifact/creation guard needed to fence legacy import/fallback) before its SQLite transaction. It never moves the shared DB or relies on filesystem markers as the authoritative state.
+- Legacy JSONL import/fallback must acquire the same gate and follow this exact order. An import that began before retirement cannot publish a trace after the retirement fence; a post-fence open cannot fall through to legacy files.
 
 ### Cross-provider conformance and race tests
 
