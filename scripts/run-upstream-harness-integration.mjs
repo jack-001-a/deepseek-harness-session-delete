@@ -519,7 +519,8 @@ async function runIntegration() {
 
     process.stdout.write(
       'PASS: real Cordis + AgentLoop testkit + JSONL provider; cross-process seed/close and writer exclusion/release; ready-hook delete/restore recovery; post-commit delete SIGKILL recovery; purge\n',
-    )  } catch (error) {
+    )
+  } catch (error) {
     runStatus = 'FAIL'
     record('JSONL-INTEGRATION-RUN', 'FAIL', String(error?.stack || error).slice(0, 1800))
     throw error
