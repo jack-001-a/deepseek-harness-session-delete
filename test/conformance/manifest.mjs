@@ -13,6 +13,7 @@ export function createManifest({ sourceCommit, provider, os = process.platform, 
     environment: { os, runtime, architecture },
     startedAt: new Date().toISOString(),
     cases: [],
+    evidence: [],
   }
 }
 
@@ -32,6 +33,43 @@ export function recordCase(manifest, result) {
   })
 }
 
+/** Register only verified, content-addressed fault evidence in the run report. */
+export function recordEvidence(manifest, evidence) {
+  if (!manifest || manifest.schemaVersion !== 1 || !Array.isArray(manifest.evidence)) {
+    throw new TypeError('evidence requires a versioned run manifest')
+  }
+  const digest = /^[a-f0-9]{64}$/
+  if (!evidence || evidence.schemaVersion !== 1 || evidence.verified !== true ||
+      typeof evidence.evidenceId !== 'string' || !evidence.evidenceId ||
+      typeof evidence.artifactRef !== 'string' || !digest.test(evidence.artifactRef) ||
+      evidence.artifactSha256 !== evidence.artifactRef ||
+      evidence.sourceCommit !== manifest.sourceCommit ||
+      typeof evidence.testRunId !== 'string' || !evidence.testRunId ||
+      typeof evidence.providerVersion !== 'string' || !evidence.providerVersion ||
+      typeof evidence.observer !== 'string' || !evidence.observer) {
+    throw new TypeError('fault evidence is incomplete or not bound to this run manifest')
+  }
+  if (manifest.evidence.some((item) => item.evidenceId === evidence.evidenceId)) {
+    throw new Error(`duplicate evidence ID: ${evidence.evidenceId}`)
+  }
+  manifest.evidence.push({
+    schemaVersion: evidence.schemaVersion,
+    evidenceId: evidence.evidenceId,
+    testRunId: evidence.testRunId,
+    sourceCommit: evidence.sourceCommit,
+    providerVersion: evidence.providerVersion,
+    observer: evidence.observer,
+    artifactRef: evidence.artifactRef,
+    artifactSha256: evidence.artifactSha256,
+    faultId: evidence.faultId,
+    operationId: evidence.operationId,
+    point: evidence.point,
+    phase: evidence.phase,
+    operation: evidence.operation,
+    action: evidence.action,
+  })
+}
+
 /** Write atomically so interrupted runs never leave a partial JSON document. */
 export async function writeManifest(path, manifest) {
   await mkdir(dirname(path), { recursive: true })
@@ -43,7 +81,7 @@ export async function writeManifest(path, manifest) {
 /** Required release cases cannot be hidden by skips or flaky outcomes. */
 export function assertReleaseGate(manifest, requiredIds) {
   if (!manifest || manifest.schemaVersion !== 1 || typeof manifest.sourceCommit !== 'string' || !manifest.sourceCommit ||
-      typeof manifest.provider !== 'string' || !manifest.provider || !Array.isArray(manifest.cases)) {
+      typeof manifest.provider !== 'string' || !manifest.provider || !Array.isArray(manifest.cases) || !Array.isArray(manifest.evidence)) {
     throw new TypeError('release gate requires a versioned manifest with sourceCommit, provider, and cases')
   }
   if (!Array.isArray(requiredIds) || requiredIds.length === 0 ||
@@ -59,6 +97,19 @@ export function assertReleaseGate(manifest, requiredIds) {
     }
     if (byId.has(item.id)) throw new Error(`manifest contains duplicate case id: ${item.id}`)
     byId.set(item.id, item)
+  }
+
+  const evidenceIds = new Set()
+  for (const evidence of manifest.evidence) {
+    if (!evidence || evidence.schemaVersion !== 1 ||
+        typeof evidence.evidenceId !== 'string' || !evidence.evidenceId ||
+        !/^[a-f0-9]{64}$/.test(evidence.artifactRef || '') ||
+        evidence.artifactSha256 !== evidence.artifactRef ||
+        evidence.sourceCommit !== manifest.sourceCommit) {
+      throw new TypeError('manifest contains invalid or unbound fault evidence')
+    }
+    if (evidenceIds.has(evidence.evidenceId)) throw new Error(`manifest contains duplicate evidence ID: ${evidence.evidenceId}`)
+    evidenceIds.add(evidence.evidenceId)
   }
 
   const failures = requiredIds.flatMap((id) => {
