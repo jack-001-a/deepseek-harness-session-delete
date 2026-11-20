@@ -127,6 +127,13 @@ export async function withProviderFault(adapter, request, expectedBoundary, run,
   if (typeof waitOptions?.verifyHit !== 'function') {
     throw new TypeError('provider fault scenario requires an independent hit verifier')
   }
+  const evidenceContext = waitOptions.evidenceContext
+  if (!evidenceContext || !nonEmpty(evidenceContext.testRunId) ||
+      !/^[a-f0-9]{40}([a-f0-9]{24})?$/i.test(evidenceContext.sourceCommit || '') ||
+      evidenceContext.providerVersion !== expectedBoundary.providerVersion ||
+      !nonEmpty(evidenceContext.observerId)) {
+    throw new TypeError('provider fault scenario requires trusted test-run, source-commit, provider-version, and observer context')
+  }
   assertBoundaryAttestation({ boundary: expectedBoundary }, expectedBoundary)
   if (expectedBoundary.point !== request?.point || expectedBoundary.phase !== request?.phase ||
       expectedBoundary.operation !== request?.operation) {
@@ -146,6 +153,9 @@ export async function withProviderFault(adapter, request, expectedBoundary, run,
     const evidence = await verifyHit(hit, armed)
     const evidenceFields = [
       'evidenceId',
+      'testRunId',
+      'sourceCommit',
+      'providerVersion',
       'observer',
       'effect',
       'artifactRef',
@@ -162,7 +172,11 @@ export async function withProviderFault(adapter, request, expectedBoundary, run,
         evidenceFields.some((field) => !nonEmpty(evidence[field])) ||
         evidence.faultId !== hit.faultId || evidence.operationId !== hit.operationId ||
         evidence.point !== hit.point || evidence.phase !== hit.phase ||
-        evidence.operation !== hit.operation || evidence.action !== hit.action) {
+        evidence.operation !== hit.operation || evidence.action !== hit.action ||
+        evidence.testRunId !== evidenceContext.testRunId ||
+        evidence.sourceCommit !== evidenceContext.sourceCommit ||
+        evidence.providerVersion !== evidenceContext.providerVersion ||
+        evidence.observer !== evidenceContext.observerId) {
       throw new Error('independent provider fault verifier returned incomplete or mismatched evidence')
     }
     verifiedEvidence = Object.freeze({ ...evidence })
