@@ -65,7 +65,7 @@ for (const [name, mutate] of [
   ['wrong source commit', f => { f.runMetadata.head_sha = 'fedcba9876543210fedcba9876543210fedcba98' }],
   ['wrong subject digest', f => { f.verification[0].verificationResult.statement.subject[0].digest.sha256 = '0'.repeat(64) }],
   ['wrong run attempt', f => { f.runMetadata.run_attempt = 2 }],
-  ['missing certificate issuer', f => { delete f.verification[0].verificationResult.signature.certificate.Issuer }],
+  ['missing certificate issuer', f => { delete f.verification[0].verificationResult.signature.certificate.issuer }],
 ]) {
   test(`rejects ${name}`, () => {
     const f = fixture()
