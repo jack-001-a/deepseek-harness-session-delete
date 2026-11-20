@@ -5,7 +5,7 @@ const pending = new Map()
 const active = new Set()
 
 function send(message) {
-  process.stdout.write(\`\${JSON.stringify(message)}\n\`)
+  process.stdout.write(JSON.stringify(message) + '\n')
 }
 
 send({ type: 'ready', role: process.env.CONFORMANCE_ROLE, caseId: process.env.CONFORMANCE_CASE_ID, pid: process.pid })
