@@ -31,7 +31,7 @@
   "scripts": {
     "check": "node --check index.js && node --check client.js",
     "test": "node --test",
-    "test:conformance": "node --test test/conformance/fixture-contract.test.mjs test/conformance/harness.test.mjs test/conformance/provider-fault-contract.test.mjs test/conformance/evidence-artifacts.test.mjs"
+    "test:conformance": "node --test test/conformance/fixture-contract.test.mjs test/conformance/harness.test.mjs test/conformance/provider-fault-contract.test.mjs test/conformance/evidence-artifacts.test.mjs test/conformance/ci-evidence.test.mjs"
   },
   "exports": {
     ".": "./index.js",
