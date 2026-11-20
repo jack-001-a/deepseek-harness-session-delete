@@ -167,14 +167,19 @@ test('verified provider evidence is persisted, digest-checked, and registered in
       sourceCommit,
       providerVersion: 'sqlite-test-build',
       observer: 'parent-process-observer',
-      observedEffect: 'child-process-exit-confirmed',
+      effect: 'child-process-exit-confirmed',
+      faultId: 'fault-001',
+      operationId: 'operation-001',
+      point: 'retire.commit',
+      phase: 'after-commit-before-response',
+      operation: 'retire',
+      action: 'kill',
       exitCode: null,
       signal: 'SIGKILL',
     }
     const artifact = await writeEvidenceArtifact(join(directory, 'artifacts'), observation)
     const evidence = {
       schemaVersion: 1, verified: true, ...observation,
-      effect: observation.observedEffect,
       artifactRef: artifact.artifactRef, artifactSha256: artifact.artifactSha256,
       faultId: 'fault-001', operationId: 'operation-001', point: 'retire.commit',
       phase: 'after-commit-before-response', operation: 'retire', action: 'kill',
