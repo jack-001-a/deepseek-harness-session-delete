@@ -19,7 +19,7 @@ export async function writeEvidenceArtifact(root, artifact) {
   const directory = resolve(root)
   await mkdir(directory, { recursive: true, mode: 0o700 })
   const target = join(directory, `${digest}.json`)
-  const temporary = join(directory, `.${digest}.${process.pid}.${Date.now()}.tmp`)
+  const temporary = join(directory, `.${digest}.${process.pid}.${randomUUID()}.tmp`)
   await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 })
   try {
     await link(temporary, target)
@@ -48,7 +48,6 @@ export async function readVerifiedEvidenceArtifact(root, artifactRef, expectedSh
   return JSON.parse(bytes.toString('utf8'))
 }
 
-
 /** Re-read every manifest artifact and bind its payload back to the recorded run identity. */
 export async function verifyManifestEvidence(manifest, root) {
   if (!manifest || manifest.schemaVersion !== 1 || !Array.isArray(manifest.evidence)) {
@@ -66,8 +65,7 @@ export async function verifyManifestEvidence(manifest, root) {
   return verified
 }
 
-
-/** The sole report-writing path: verify artifacts and the release gate before any report is written. */
+/** Verify artifacts and the release gate before atomically writing an evidence-bearing report. */
 export async function writeVerifiedManifest(path, manifest, requiredCaseIds, artifactRoot) {
   await verifyManifestEvidence(manifest, artifactRoot)
   assertReleaseGate(manifest, requiredCaseIds)
