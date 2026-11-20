@@ -139,3 +139,11 @@ node scripts/verify-ci-evidence.mjs ./ci-evidence.json
 ```
 
 The online mode requires Node.js and an authenticated GitHub CLI (`gh auth status`). It obtains the attestation through GitHub's API-backed `gh attestation verify` flow and retrieves the manifest-indicated run attempt from the canonical repository. The manifest's run ID and attempt are used only as lookup coordinates; acceptance still requires exact agreement among the signed Fulcio certificate, downloaded subject digest, manifest, and independently returned GitHub run metadata. A missing attestation or unavailable GitHub verification service is reported as `provenance_unavailable`; signature or identity-policy failures are reported as `provenance_rejected`.
+
+
+## 10. Upstream format references
+
+- GitHub CLI `gh attestation verify` output contract and identity flags: https://cli.github.com/manual/gh_attestation_verify
+- Sigstore Go certificate extension JSON schema and field names: https://pkg.go.dev/github.com/sigstore/sigstore-go/pkg/fulcio/certificate
+- Sigstore verification result example, including URI-shaped `subjectAlternativeName`: https://github.com/sigstore/sigstore-go/blob/main/docs/verification.md
+- GitHub offline-verification guidance for immutable repository identifiers: https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/verify-attestations-offline
