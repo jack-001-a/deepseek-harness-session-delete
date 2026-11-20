@@ -41,6 +41,29 @@ The upstream suite should be provider-neutral at the scenario layer, with provid
 
 Each scenario must run on Linux, macOS, and Windows. Platform-specific lock assertions belong in provider tests; the shared suite asserts semantic outcomes only.
 
+
+### Provider fault-hook adapter contract
+
+The harness fault schedule is not itself a Provider fault injector. An adapter that
+claims fault-injection support must expose an explicit `faultInjection` object with
+`supported: true` and the asynchronous `arm`, `waitForHit`, and `disarm` methods.
+The contract request identifies a named point, one of the phases
+`before-commit`, `after-commit-before-response`, or `outcome-unknown`, an action,
+and the stable operation ID.
+
+A scheduled point counts as exercised only when `waitForHit` returns a correlated
+record containing the provider-issued fault ID, exact point/phase/action/operation ID,
+`hit: true`, `actionApplied: true`, and a non-empty provider boundary ID. Missing
+hooks, timeouts, mismatched records, or an action that was not applied are failures;
+they must never be converted to a skipped PASS. Callers must disarm in a `finally`
+path.
+
+This is an adapter protocol contract, not proof that the hook is placed at a real
+filesystem sync or SQLite commit instruction. Each Provider must separately document
+and test the mapping from its named boundary to the actual durable operation, including
+the pre-commit, committed-response-loss, and outcome-unknown semantics. The fixture
+tests for this contract do not count as Provider lifecycle conformance evidence.
+
 ## Required scenario matrix
 
 | Scenario | Process A | Process B | Required result |
