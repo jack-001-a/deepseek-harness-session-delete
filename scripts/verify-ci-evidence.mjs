@@ -23,6 +23,17 @@ function fail(message, status = 'provenance_rejected') {
   throw error
 }
 
+function runGitHubCli(args, label) {
+  try {
+    return execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
+  } catch (error) {
+    const detail = String(error.stderr ?? error.message ?? '').trim().slice(0, 500)
+    const unavailable = error.code === 'ENOENT' ||
+      /no attestations|not found|HTTP 404|authentication required|failed to connect|timeout|rate limit/i.test(detail)
+    fail(`${label}: ${detail || 'GitHub CLI request failed'}`, unavailable ? 'provenance_unavailable' : 'provenance_rejected')
+  }
+}
+
 export function evaluateAttestationPolicy({ verification, runMetadata, evidence, artifactBytes }) {
   if (!Array.isArray(verification) || verification.length === 0) fail('no verified attestations returned', 'provenance_unavailable')
 
@@ -137,12 +148,12 @@ async function main() {
       '--cert-oidc-issuer', OIDC_ISSUER,
       '--deny-self-hosted-runners',
     ]
-    verification = JSON.parse(execFileSync('gh', [
+    verification = JSON.parse(runGitHubCli([
       'attestation', 'verify', artifactPath, ...commonArgs, '--format', 'json',
-    ], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }))
-    runMetadata = JSON.parse(execFileSync('gh', [
+    ], 'GitHub attestation verification failed'))
+    runMetadata = JSON.parse(runGitHubCli([
       'api', `repos/${REPOSITORY}/actions/runs/${runId}/attempts/${attempt}`,
-    ], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 }))
+    ], 'GitHub workflow-run metadata lookup failed'))
   } else {
     const [, verificationPath, runMetadataPath] = args
     ;[verification, runMetadata] = await Promise.all([
