@@ -26,6 +26,7 @@ function fixture() {
     path: '.github/workflows/trusted-ci-evidence.yml@refs/heads/main',
   }
   const verification = [{
+    attestation: { bundle: { mediaType: 'application/vnd.dev.sigstore.bundle+json;version=0.3' } },
     verificationResult: {
       signature: {
         certificate: {
@@ -43,10 +44,15 @@ function fixture() {
           buildConfigURI: `https://github.com/${workflow}@refs/heads/main`,
           buildConfigDigest: workflowSha,
           buildTrigger: 'push',
+          githubWorkflowRepository: repository,
+          githubWorkflowRef: 'refs/heads/main',
+          githubWorkflowSHA: workflowSha,
+          githubWorkflowTrigger: 'push',
           runInvocationURI: `https://github.com/${repository}/actions/runs/123456789/attempts/1`,
         },
       },
       statement: { predicateType: 'https://slsa.dev/provenance/v1', subject: [{ name: 'ci-evidence.json', digest: { sha256: digest } }] },
+      verifiedTimestamps: [{ type: 'Tlog', uri: 'https://rekor.example.invalid', timestamp: '2026-11-20T00:00:00Z' }],
     },
   }]
   return { evidence, runMetadata, verification, artifactBytes: bytes }
@@ -170,6 +176,10 @@ for (const [name, mutate] of [
   ['wrong predicate type', f => { f.verification[0].verificationResult.statement.predicateType = 'https://example.invalid/predicate' }],
   ['wrong run attempt', f => { f.runMetadata.run_attempt = 2 }],
   ['missing certificate issuer', f => { delete f.verification[0].verificationResult.signature.certificate.issuer }],
+  ['wrong GitHub workflow repository claim', f => { f.verification[0].verificationResult.signature.certificate.githubWorkflowRepository = 'attacker/repo' }],
+  ['wrong GitHub workflow ref claim', f => { f.verification[0].verificationResult.signature.certificate.githubWorkflowRef = 'refs/heads/attacker' }],
+  ['wrong GitHub workflow SHA claim', f => { f.verification[0].verificationResult.signature.certificate.githubWorkflowSHA = commit }],
+  ['wrong GitHub workflow trigger claim', f => { f.verification[0].verificationResult.signature.certificate.githubWorkflowTrigger = 'pull_request' }],
   ['self-hosted runner', f => { f.verification[0].verificationResult.signature.certificate.runnerEnvironment = 'self-hosted' }],
 ]) {
   test(`rejects ${name}`, () => {
@@ -178,3 +188,15 @@ for (const [name, mutate] of [
     assert.throws(() => evaluateAttestationPolicy(f), /provenance policy rejected/)
   })
 }
+
+
+test('does not trust workflow-controlled predicate metadata for certificate identity', () => {
+  const f = fixture()
+  f.verification[0].verificationResult.statement.predicate = {
+    buildDefinition: {
+      buildType: 'https://attacker.invalid/workflow',
+      externalParameters: { workflow: { ref: 'refs/heads/attacker', repository: 'attacker/repo' } },
+    },
+  }
+  assert.equal(evaluateAttestationPolicy(f).status, 'provenance_verified')
+})
