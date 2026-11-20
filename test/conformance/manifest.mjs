@@ -42,7 +42,25 @@ export async function writeManifest(path, manifest) {
 
 /** Required release cases cannot be hidden by skips or flaky outcomes. */
 export function assertReleaseGate(manifest, requiredIds) {
-  const byId = new Map(manifest.cases.map((item) => [item.id, item]))
+  if (!manifest || manifest.schemaVersion !== 1 || typeof manifest.sourceCommit !== 'string' || !manifest.sourceCommit ||
+      typeof manifest.provider !== 'string' || !manifest.provider || !Array.isArray(manifest.cases)) {
+    throw new TypeError('release gate requires a versioned manifest with sourceCommit, provider, and cases')
+  }
+  if (!Array.isArray(requiredIds) || requiredIds.length === 0 ||
+      requiredIds.some((id) => typeof id !== 'string' || !id) ||
+      new Set(requiredIds).size !== requiredIds.length) {
+    throw new TypeError('release gate requires a non-empty list of unique case IDs')
+  }
+
+  const byId = new Map()
+  for (const item of manifest.cases) {
+    if (!item || typeof item.id !== 'string' || !item.id || !STATUSES.has(item.status)) {
+      throw new TypeError('manifest contains an invalid case result')
+    }
+    if (byId.has(item.id)) throw new Error(`manifest contains duplicate case id: ${item.id}`)
+    byId.set(item.id, item)
+  }
+
   const failures = requiredIds.flatMap((id) => {
     const item = byId.get(id)
     return !item ? [`${id}:missing`] : item.status !== 'PASS' ? [`${id}:${item.status}`] : []
