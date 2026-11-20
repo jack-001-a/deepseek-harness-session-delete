@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, lstat, link, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
+import { assertReleaseGate, writeManifest } from './manifest.mjs'
 
 const DIGEST = /^[a-f0-9]{64}$/
 
@@ -63,4 +64,12 @@ export async function verifyManifestEvidence(manifest, root) {
     verified.push(artifact)
   }
   return verified
+}
+
+
+/** The sole report-writing path: verify artifacts and the release gate before any report is written. */
+export async function writeVerifiedManifest(path, manifest, requiredCaseIds, artifactRoot) {
+  await verifyManifestEvidence(manifest, artifactRoot)
+  assertReleaseGate(manifest, requiredCaseIds)
+  await writeManifest(path, manifest)
 }
