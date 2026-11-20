@@ -6,7 +6,7 @@ import { evaluateAttestationPolicy } from '../../scripts/verify-ci-evidence.mjs'
 const repository = 'jack-001-a/deepseek-harness-session-delete'
 const workflow = `${repository}/.github/workflows/trusted-ci-evidence.yml`
 const commit = '0123456789abcdef0123456789abcdef01234567'
-const bytes = Buffer.from('{"schemaVersion":1,"status":"PASS"}\\n')
+const bytes = Buffer.from('{"schemaVersion":1,"status":"PASS"}\n')
 const digest = createHash('sha256').update(bytes).digest('hex')
 
 function fixture() {
@@ -54,6 +54,8 @@ test('accepts a verified certificate and exact subject bound to independent GitH
 for (const [name, mutate] of [
   ['wrong repository', f => { f.verification[0].verificationResult.signature.certificate.SourceRepositoryURI = 'https://github.com/attacker/repo' }],
   ['wrong immutable repository identity', f => { f.verification[0].verificationResult.signature.certificate.SourceRepositoryIdentifier = '999' }],
+  ['wrong owner identity', f => { f.verification[0].verificationResult.signature.certificate.SourceRepositoryOwnerIdentifier = '999' }],
+  ['wrong run invocation', f => { f.verification[0].verificationResult.signature.certificate.RunInvocationURI = 'https://github.com/attacker/repo/actions/runs/1/attempts/1' }],
   ['wrong workflow identity', f => { f.verification[0].verificationResult.signature.certificate.BuildSignerURI = 'https://github.com/attacker/other.yml@refs/heads/main' }],
   ['wrong ref', f => { f.verification[0].verificationResult.signature.certificate.SourceRepositoryRef = 'refs/heads/feature' }],
   ['wrong event', f => { f.runMetadata.event = 'pull_request' }],
