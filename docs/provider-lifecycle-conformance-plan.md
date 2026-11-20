@@ -51,16 +51,32 @@ The contract request identifies a named point, one of the phases
 `before-commit`, `after-commit-before-response`, or `outcome-unknown`, an action,
 and the stable operation ID.
 
-A scheduled point counts as exercised only when `waitForHit` returns a correlated
+A scheduled point first requires `waitForHit` to return a correlated adapter
 record containing the provider-issued fault ID, exact point/phase/lifecycle operation/
-action/operation ID, `hit: true`, `actionApplied: true`, and a non-empty provider boundary ID. Missing
-hooks, timeouts, mismatched records, or an action that was not applied are failures;
-they must never be converted to a skipped PASS. Prefer the shared `withProviderFault`
-runner, which performs disarm after both hit-verification and scenario failures. A
-successful `disarm()` must explicitly return `true`; `false`, `undefined`, or a thrown
-error is a cleanup failure and fails the scenario. If both the scenario and cleanup
-fail, both causes must remain observable (for example via `AggregateError`) rather
-than allowing cleanup to hide the original failure.
+action/operation ID, `hit: true`, `actionApplied: true`, and a non-empty provider
+boundary ID. This record is only the adapter's assertion; it is not independent
+evidence that the external action occurred.
+
+The shared `withProviderFault` runner therefore requires a separate harness-owned
+`verifyHit` callback. It must return a structured evidence record (a bare boolean is
+rejected) with `verified: true`, non-empty `observer`, `effect`, and `artifactRef`
+fields, plus exact matching `faultId`, `operationId`, `point`, `phase`,
+`operation`, and `action` fields. The observer must inspect an effect outside the
+Provider's self-reported hit payload, such as a parent-observed worker exit, an
+independently read durable recovery marker, or state observed after a fresh process
+restart. The artifact reference must identify retained test evidence (for example a
+process-exit record or recovery-state snapshot); it is an audit locator, not a
+cryptographic proof. The runner passes the frozen evidence record to the scenario
+callback and returns it alongside the scenario result so callers can persist it in
+their conformance report. A verifier exception, malformed record, or correlation
+mismatch fails the scenario and still triggers mandatory disarm.
+
+Missing hooks, timeouts, mismatched records, or an action that was not applied are
+failures; they must never be converted to a skipped PASS. A successful `disarm()`
+must explicitly return `true`; `false`, `undefined`, or a thrown error is a cleanup
+failure and fails the scenario. If both the scenario and cleanup fail, both causes
+must remain observable (for example via `AggregateError`) rather than allowing
+cleanup to hide the original failure.
 
 This is an adapter protocol contract, not proof that the hook is placed at a real
 filesystem sync or SQLite commit instruction. Each Provider must separately document
