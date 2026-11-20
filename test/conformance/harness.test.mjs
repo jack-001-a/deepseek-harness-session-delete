@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -120,6 +120,29 @@ test('fault plan applies deterministic pause, error, and kill actions', async ()
 
   const incomplete = new FaultPlan([{ point: 'never-reached', action: 'pause' }])
   assert.throws(() => incomplete.assertConsumed(), /never-reached/)
+})
+
+
+test('concurrent manifest writes use unique temporary files and leave a complete report', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-manifest-concurrent-'))
+  try {
+    const path = join(directory, 'manifest.json')
+    const manifests = Array.from({ length: 24 }, (_, index) => ({
+      schemaVersion: 1,
+      sourceCommit: 'concurrent-test',
+      provider: 'manifest-writer-test',
+      cases: [{ id: `case-${index}`, status: 'PASS' }],
+      evidence: [],
+    }))
+    await Promise.all(manifests.map((manifest) => writeManifest(path, manifest)))
+    const report = JSON.parse(await readFile(path, 'utf8'))
+    assert.equal(report.schemaVersion, 1)
+    assert.equal(report.provider, 'manifest-writer-test')
+    assert.match(report.cases[0].id, /^case-(?:[0-9]|1[0-9]|2[0-3])$/)
+    assert.deepEqual((await readdir(directory)).sort(), ['manifest.json'])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 test('manifest rejects duplicate IDs and non-passing required cases', async () => {
