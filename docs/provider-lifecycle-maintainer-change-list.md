@@ -59,7 +59,7 @@ interface SessionLifecycleCapability {
 }
 ```
 
-The capability is optional and instance-bound. Existing third-party providers must remain valid without implementing it. A provider exposes it only after startup recovery and admission-gate initialization have completed. Consumers must re-resolve the active persistence instance and verify its instance identity before each lifecycle phase.
+The capability is optional and instance-bound. Existing third-party providers must remain valid without implementing it. A provider exposes it only after startup recovery and admission-gate initialization have completed. Before exposing the capability, each provider process must acquire the shared cross-process root-epoch lease, validate the atomic recovery metadata envelope, and hold the lease until shutdown drains all handles and operations. Disaster-recovery cutover requires the exclusive form of that gate and cannot overlap a live old-epoch process. Consumers must re-resolve the active persistence instance and verify its instance identity before each lifecycle phase.
 
 The capability must also expose opaque durable `providerRootId` and `recoveryEpoch` values (or equivalent typed metadata). These are distinct from the process-local `SessionPersistence.identity`: never persist a process-local symbol as a storage identity.
 
@@ -71,7 +71,7 @@ The capability must also expose opaque durable `providerRootId` and `recoveryEpo
 | Lost response | A caller can recover a committed retirement with the same operation ID or `inspectOperation`; timeout after the commit boundary is outcome-unknown, never assumed rolled back. |
 | Restore / purge retry | The opaque, unguessable token identifies one exact Session incarnation; repeated calls are idempotent. |
 | Write fence | `create` and `open(id, 'write')` share the provider's admission gate. Retirement cannot commit while an admitted writer can still publish data. |
-| Read semantics | Define pinned/in-flight read behavior. A later lazy read through an existing handle must not silently switch to another incarnation. |
+| Read semantics | A read admitted before retirement may finish under a defined pinned-read rule. Every later read admission—including a later chunk through an already-open lazy handle—must observe retirement and be rejected; it must never switch to another incarnation. |
 | Same-ID recreation | A recreated public Session ID receives a new incarnation. Old handles, tokens, callbacks, and cleanup work cannot affect it. |
 | Purge | Purge is recoverable and idempotent. Logical purge must not be described as forensic erasure when WAL/pages/backups may retain bytes. |
 | Errors | Distinguish unsupported, not-found, busy, revision conflict, operation-ID conflict, pre-commit cancellation, corruption/root mismatch, and outcome-unknown. |
