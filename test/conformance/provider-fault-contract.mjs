@@ -42,6 +42,9 @@ export function assertBoundaryAttestation(hit, expected) {
   if (!/^[a-f0-9]{40}([a-f0-9]{24})?$/i.test(expected.reviewedAtCommit)) {
     throw new TypeError('trusted boundary expectation must pin a full source commit SHA')
   }
+  if (!PROVIDER_FAULT_PHASES.includes(expected.phase)) {
+    throw new TypeError('trusted boundary expectation has an unsupported phase')
+  }
   if (!DURABILITY_PRIMITIVES.has(expected.durabilityPrimitive)) {
     throw new TypeError('trusted boundary expectation has an unsupported durability primitive')
   }
@@ -71,9 +74,9 @@ export function assertProviderFaultInjector(adapter) {
 /** Arm one named fault and require a provider-issued handle for later correlation. */
 export async function armProviderFault(adapter, request) {
   const hooks = assertProviderFaultInjector(adapter)
-  if (!request || !nonEmpty(request.point) || !PROVIDER_FAULT_PHASES.includes(request.phase) ||
+  if (!request || !nonEmpty(request.point) || !PROVIDER_FAULT_PHASES.includes(request.phase) || !nonEmpty(request.operation) ||
       !ACTIONS.has(request.action) || !nonEmpty(request.operationId)) {
-    throw new TypeError('fault request requires point, supported phase/action, and operationId')
+    throw new TypeError('fault request requires point, operation, supported phase/action, and operationId')
   }
   const handle = await hooks.arm(Object.freeze({ ...request }))
   if (!handle || !nonEmpty(handle.id)) throw new Error('provider fault arm did not return a fault handle')
@@ -84,11 +87,16 @@ export async function armProviderFault(adapter, request) {
 export async function waitForProviderFaultHit(armed, options) {
   if (!armed?.hooks || !armed?.handle || !armed?.request) throw new TypeError('armed provider fault is required')
   const { expectedBoundary, ...waitOptions } = options || {}
-  const hit = await armed.hooks.waitForHit(armed.handle, waitOptions)
   const expected = armed.request
+  assertBoundaryAttestation({ boundary: expectedBoundary }, expectedBoundary)
+  if (expectedBoundary.point !== expected.point || expectedBoundary.phase !== expected.phase ||
+      expectedBoundary.operation !== expected.operation) {
+    throw new Error('trusted provider boundary map does not match the armed fault request')
+  }
+  const hit = await armed.hooks.waitForHit(armed.handle, waitOptions)
   if (!hit || hit.hit !== true || hit.actionApplied !== true ||
       hit.faultId !== armed.handle.id || hit.point !== expected.point ||
-      hit.phase !== expected.phase || hit.action !== expected.action ||
+      hit.phase !== expected.phase || hit.operation !== expected.operation || hit.action !== expected.action ||
       hit.operationId !== expected.operationId || !nonEmpty(hit.boundaryId)) {
     throw new Error('provider fault hit was not proven at the requested durability boundary')
   }
@@ -113,6 +121,11 @@ export async function withProviderFault(adapter, request, expectedBoundary, run,
   if (typeof run !== 'function') throw new TypeError('provider fault scenario requires a callback')
   if (!expectedBoundary || typeof expectedBoundary !== 'object') {
     throw new TypeError('provider fault scenario requires an independently maintained boundary expectation')
+  }
+  assertBoundaryAttestation({ boundary: expectedBoundary }, expectedBoundary)
+  if (expectedBoundary.point !== request?.point || expectedBoundary.phase !== request?.phase ||
+      expectedBoundary.operation !== request?.operation) {
+    throw new Error('trusted provider boundary map does not match the armed fault request')
   }
 
   const armed = await armProviderFault(adapter, request)
