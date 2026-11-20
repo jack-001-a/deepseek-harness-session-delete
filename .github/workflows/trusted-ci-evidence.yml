@@ -66,6 +66,8 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/trusted-ci-evidence.yml" \
             --source-ref "$GITHUB_REF" \
+            --source-digest "$GITHUB_SHA" \
+            --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/trusted-ci-evidence.yml@refs/heads/main" \
             --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
             --deny-self-hosted-runners \
             --format json > ci-evidence/attestation-verification.json
