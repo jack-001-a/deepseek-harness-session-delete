@@ -37,6 +37,8 @@ export abstract class SessionPersistence extends Service {
 
 A provider overrides the getter only after its durable lifecycle state has been opened and recovery has reached a safe, ready state. Before the service has completed startup, the getter returns `undefined`; after startup, its result is stable for that service instance. If recovery fails or detects ambiguous/corrupt state, lifecycle remains unavailable (ordinary non-destructive persistence may remain usable only if the provider can prove it is safe). A replacement service has a new `identity` and a newly discovered capability.
 
+`recoveryEpoch` is an opaque durable namespace discriminator, not a process-local service version. `inspect`, `inspectOperation`, and token-based mutations are scoped to the capability's current epoch; a prior-epoch token or operation ID must be rejected as foreign/stale rather than resolved against a restored ledger. Historical records may remain for audit but cannot authorize current mutations.
+
 Consumers capture both the active service reference and its `identity` before beginning a workflow. Before a later phase or retry, they verify that the currently resolved service still has the same identity. A replaced service invalidates the old capability reference; the consumer must rediscover capability and reconcile by operation ID rather than continuing through a stale provider object.
 
 This shape is a recommendation for review, not a claim about an accepted upstream signature. An equivalent typed optional capability is acceptable if it preserves the same instance-binding and compatibility properties.
