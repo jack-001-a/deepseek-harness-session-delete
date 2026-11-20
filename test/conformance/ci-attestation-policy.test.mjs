@@ -44,7 +44,7 @@ function fixture() {
           runInvocationURI: `https://github.com/${repository}/actions/runs/123456789/attempts/1`,
         },
       },
-      statement: { subject: [{ name: 'ci-evidence.json', digest: { sha256: digest } }] },
+      statement: { predicateType: 'https://slsa.dev/provenance/v1', subject: [{ name: 'ci-evidence.json', digest: { sha256: digest } }] },
     },
   }]
   return { evidence, runMetadata, verification, artifactBytes: bytes }
@@ -99,6 +99,7 @@ for (const [name, mutate] of [
   ['wrong evidence workflow SHA', f => { f.evidence.source.workflowSha = 'fedcba9876543210fedcba9876543210fedcba98' }],
   ['wrong source commit', f => { f.runMetadata.head_sha = 'fedcba9876543210fedcba9876543210fedcba98' }],
   ['wrong subject digest', f => { f.verification[0].verificationResult.statement.subject[0].digest.sha256 = '0'.repeat(64) }],
+  ['wrong predicate type', f => { f.verification[0].verificationResult.statement.predicateType = 'https://example.invalid/predicate' }],
   ['wrong run attempt', f => { f.runMetadata.run_attempt = 2 }],
   ['missing certificate issuer', f => { delete f.verification[0].verificationResult.signature.certificate.issuer }],
   ['self-hosted runner', f => { f.verification[0].verificationResult.signature.certificate.runnerEnvironment = 'self-hosted' }],
