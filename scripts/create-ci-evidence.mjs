@@ -32,6 +32,10 @@ if (!/^[a-f0-9]{40}$/.test(process.env.GITHUB_SHA)) {
   throw new Error('GITHUB_SHA must be a full commit object ID')
 }
 
+if (!/^[a-f0-9]{40}$/.test(process.env.GITHUB_WORKFLOW_SHA)) {
+  throw new Error('GITHUB_WORKFLOW_SHA must be a full commit object ID')
+}
+
 async function hash(path) {
   const bytes = await readFile(path)
   return createHash('sha256').update(bytes).digest('hex')
