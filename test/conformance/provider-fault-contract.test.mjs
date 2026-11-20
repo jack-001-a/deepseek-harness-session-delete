@@ -73,6 +73,7 @@ const evidenceContext = {
   observerId: 'parent-process-observer',
 }
 const verified = {
+  evidenceContext,
   verifyHit: async () => ({ ...validEvidence }),
   evidenceContext,
 }
@@ -215,6 +216,7 @@ test('provider fault scenario rejects an unverified external action and still cl
   const { adapter, calls } = fixture()
   await assert.rejects(
     withProviderFault(adapter, request, expectedBoundary, async () => 'must-not-run', {
+      evidenceContext,
       verifyHit: async () => false,
     }),
     /incomplete or mismatched evidence/,
@@ -227,6 +229,7 @@ test('provider fault verifier rejects boolean success instead of an evidence rec
   const { adapter, calls } = fixture()
   await assert.rejects(
     withProviderFault(adapter, request, expectedBoundary, async () => 'must-not-run', {
+      evidenceContext,
       verifyHit: async () => true,
     }),
     /incomplete or mismatched evidence/,
@@ -256,6 +259,7 @@ test('provider fault evidence must correlate every request identity field', asyn
     const { adapter } = fixture()
     await assert.rejects(
       withProviderFault(adapter, request, expectedBoundary, async () => {}, {
+        evidenceContext,
         verifyHit: async () => ({ ...validEvidence, [field]: 'mismatched-value' }),
       }),
       /incomplete or mismatched evidence/,
@@ -281,6 +285,7 @@ test('provider fault evidence requires a supported schema version and stable evi
     const { adapter } = fixture()
     await assert.rejects(
       withProviderFault(adapter, request, expectedBoundary, async () => {}, {
+        evidenceContext,
         verifyHit: async () => ({ ...validEvidence, ...patch }),
       }),
       /incomplete or mismatched evidence/,
