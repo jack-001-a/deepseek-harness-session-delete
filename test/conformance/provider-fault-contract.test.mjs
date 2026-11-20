@@ -49,7 +49,19 @@ const expectedBoundary = {
   reviewedAtCommit: '0123456789abcdef0123456789abcdef01234567',
 }
 
-const verified = { verifyHit: async () => true }
+const validEvidence = {
+  verified: true,
+  observer: 'parent-process-observer',
+  effect: 'worker-exited-after-kill',
+  artifactRef: 'test-artifacts/fault-1/worker-exit.json',
+  faultId: 'fault-1',
+  operationId: 'op-123',
+  point: 'retire.commit',
+  phase: 'after-commit-before-response',
+  operation: 'retire',
+  action: 'kill',
+}
+const verified = { verifyHit: async () => ({ ...validEvidence }) }
 
 const request = {
   point: 'retire.commit',
@@ -106,11 +118,13 @@ test('provider boundary map must pin an immutable source revision', () => {
 
 test('provider fault scenario always disarms after a successful callback', async () => {
   const { adapter, calls } = fixture()
-  const value = await withProviderFault(adapter, request, expectedBoundary, async (hit) => {
+  const result = await withProviderFault(adapter, request, expectedBoundary, async (hit, armed, evidence) => {
     assert.equal(hit.actionApplied, true)
+    assert.equal(evidence.artifactRef, validEvidence.artifactRef)
     return 'scenario-result'
   }, verified)
-  assert.equal(value, 'scenario-result')
+  assert.equal(result.value, 'scenario-result')
+  assert.deepEqual(result.evidence, validEvidence)
   assert.deepEqual(calls.map(([kind]) => kind), ['arm', 'hit', 'disarm'])
 })
 
@@ -189,7 +203,58 @@ test('provider fault scenario rejects an unverified external action and still cl
     withProviderFault(adapter, request, expectedBoundary, async () => 'must-not-run', {
       verifyHit: async () => false,
     }),
-    /did not confirm the external action/,
+    /incomplete or mismatched evidence/,
+  )
+  assert.deepEqual(calls.map(([kind]) => kind), ['arm', 'hit', 'disarm'])
+})
+
+
+test('provider fault verifier rejects boolean success instead of an evidence record', async () => {
+  const { adapter, calls } = fixture()
+  await assert.rejects(
+    withProviderFault(adapter, request, expectedBoundary, async () => 'must-not-run', {
+      verifyHit: async () => true,
+    }),
+    /incomplete or mismatched evidence/,
+  )
+  assert.deepEqual(calls.map(([kind]) => kind), ['arm', 'hit', 'disarm'])
+})
+
+test('provider fault evidence requires observer, effect, and artifact reference', async () => {
+  for (const field of ['observer', 'effect', 'artifactRef']) {
+    const { adapter } = fixture()
+    await assert.rejects(
+      withProviderFault(adapter, request, expectedBoundary, async () => {}, {
+        verifyHit: async () => {
+          const evidence = { ...validEvidence }
+          delete evidence[field]
+          return evidence
+        },
+      }),
+      /incomplete or mismatched evidence/,
+    )
+  }
+})
+
+test('provider fault evidence must correlate every request identity field', async () => {
+  for (const field of ['faultId', 'operationId', 'point', 'phase', 'operation', 'action']) {
+    const { adapter } = fixture()
+    await assert.rejects(
+      withProviderFault(adapter, request, expectedBoundary, async () => {}, {
+        verifyHit: async () => ({ ...validEvidence, [field]: 'mismatched-value' }),
+      }),
+      /incomplete or mismatched evidence/,
+    )
+  }
+})
+
+test('provider fault verifier exceptions still disarm the hook', async () => {
+  const { adapter, calls } = fixture()
+  await assert.rejects(
+    withProviderFault(adapter, request, expectedBoundary, async () => {}, {
+      verifyHit: async () => { throw new Error('observer unavailable') },
+    }),
+    /observer unavailable/,
   )
   assert.deepEqual(calls.map(([kind]) => kind), ['arm', 'hit', 'disarm'])
 })
