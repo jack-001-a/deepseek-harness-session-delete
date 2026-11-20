@@ -5,6 +5,7 @@
 - Depends on: plugin-level cross-process operation lock in PR #12
 - Replaces: the earlier JSONL-directory-move protocol
 - Non-goal: exposing provider-private paths, lock files, database tables, or kernel primitives to plugins
+- Evidence trust policy: [Evidence provenance and trust policy](./evidence-provenance-and-trust-policy.md)
 
 ## Context and verified constraints
 
