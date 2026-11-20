@@ -35,6 +35,7 @@ function fixture() {
           sourceRepositoryDigest: commit,
           subjectAlternativeName: { type: 'URI', value: `https://github.com/${workflow}@refs/heads/main` },
           issuer: 'https://token.actions.githubusercontent.com',
+          runnerEnvironment: 'github-hosted',
           buildSignerURI: `https://github.com/${workflow}@refs/heads/main`,
           buildSignerDigest: workflowSha,
           buildConfigURI: `https://github.com/${workflow}@refs/heads/main`,
@@ -87,6 +88,7 @@ for (const [name, mutate] of [
   ['wrong subject digest', f => { f.verification[0].verificationResult.statement.subject[0].digest.sha256 = '0'.repeat(64) }],
   ['wrong run attempt', f => { f.runMetadata.run_attempt = 2 }],
   ['missing certificate issuer', f => { delete f.verification[0].verificationResult.signature.certificate.issuer }],
+  ['self-hosted runner', f => { f.verification[0].verificationResult.signature.certificate.runnerEnvironment = 'self-hosted' }],
 ]) {
   test(`rejects ${name}`, () => {
     const f = fixture()
