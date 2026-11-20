@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readVerifiedEvidenceArtifact, writeEvidenceArtifact } from './evidence-artifacts.mjs'
@@ -18,6 +18,18 @@ test('evidence artifacts use opaque content digests and verify on read', async (
   }
 })
 
+test('concurrent writes of identical evidence use collision-free temporary files', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-evidence-concurrent-'))
+  try {
+    const payload = { evidenceId: 'concurrent-1', observer: 'parent', effect: 'worker-exited' }
+    const references = await Promise.all(Array.from({ length: 32 }, () => writeEvidenceArtifact(root, payload)))
+    assert.equal(new Set(references.map((item) => item.artifactRef)).size, 1)
+    assert.deepEqual(await readVerifiedEvidenceArtifact(root, references[0].artifactRef), payload)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('evidence artifact reader fails closed on missing, malformed, and modified references', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-evidence-'))
   try {
@@ -30,7 +42,6 @@ test('evidence artifact reader fails closed on missing, malformed, and modified 
     await rm(root, { recursive: true, force: true })
   }
 })
-
 
 test('manifest artifact verification rejects a payload bound to a different run', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-evidence-binding-'))
@@ -55,8 +66,7 @@ test('manifest artifact verification rejects a payload bound to a different run'
   }
 })
 
-
-test('verified report writer refuses missing or tampered artifacts without writing a report', async () => {
+test('verified report writer refuses missing or tampered artifacts without replacing a report', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-evidence-report-gate-'))
   try {
     const { writeVerifiedManifest } = await import('./evidence-artifacts.mjs')
@@ -70,28 +80,37 @@ test('verified report writer refuses missing or tampered artifacts without writi
       effect: 'worker-exit', faultId: 'f1', operationId: 'o1',
       point: 'retire.commit', phase: 'after-commit', operation: 'retire', action: 'kill',
     }
-    const artifact = await writeEvidenceArtifact(join(root, 'artifacts'), payload)
+    const artifactRoot = join(root, 'artifacts')
+    const artifact = await writeEvidenceArtifact(artifactRoot, payload)
     recordEvidence(manifest, {
       schemaVersion: 1, verified: true, ...payload,
       artifactRef: artifact.artifactRef, artifactSha256: artifact.artifactSha256,
     })
     const report = join(root, 'report.json')
-    await writeVerifiedManifest(report, manifest, ['P-FAULT-001'], join(root, 'artifacts'))
-    assert.equal(JSON.parse(await readFile(report, 'utf8')).evidence.length, 1)
+    await writeVerifiedManifest(report, manifest, ['P-FAULT-001'], artifactRoot)
+    const originalReport = await readFile(report, 'utf8')
+    assert.equal(JSON.parse(originalReport).evidence.length, 1)
 
-    await rm(report, { force: true })
-    await writeFile(join(root, 'artifacts', `${artifact.artifactRef}.json`), '{"tampered":true}\n')
+    await writeFile(join(artifactRoot, `${artifact.artifactRef}.json`), '{"tampered":true}\n')
     await assert.rejects(
-      writeVerifiedManifest(report, manifest, ['P-FAULT-001'], join(root, 'artifacts')),
+      writeVerifiedManifest(report, manifest, ['P-FAULT-001'], artifactRoot),
       /digest mismatch/,
     )
-    await assert.rejects(readFile(report), { code: 'ENOENT' })
+    assert.equal(await readFile(report, 'utf8'), originalReport)
+
+    await writeEvidenceArtifact(artifactRoot, payload)
+    await unlink(join(artifactRoot, `${artifact.artifactRef}.json`))
+    await assert.rejects(
+      writeVerifiedManifest(report, manifest, ['P-FAULT-001'], artifactRoot),
+      /ENOENT/,
+    )
+    assert.equal(await readFile(report, 'utf8'), originalReport)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
 })
 
-test('verified report writer rejects a failed required case before creating a report', async () => {
+test('verified report writer rejects a failed required case without creating or replacing a report', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-evidence-release-gate-'))
   try {
     const { writeVerifiedManifest } = await import('./evidence-artifacts.mjs')
@@ -99,8 +118,10 @@ test('verified report writer rejects a failed required case before creating a re
     const manifest = createManifest({ sourceCommit: 'd'.repeat(40), provider: 'fixture' })
     recordCase(manifest, { id: 'P-FAULT-001', status: 'FAIL' })
     const report = join(root, 'report.json')
+    const originalReport = '{"previous":"report"}\n'
+    await writeFile(report, originalReport)
     await assert.rejects(writeVerifiedManifest(report, manifest, ['P-FAULT-001'], root), /P-FAULT-001:FAIL/)
-    await assert.rejects(readFile(report), { code: 'ENOENT' })
+    assert.equal(await readFile(report, 'utf8'), originalReport)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
