@@ -117,6 +117,10 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
     const buildConfigUri = certificate.buildConfigURI
     const trigger = certificate.buildTrigger
     const invocation = certificate.runInvocationURI
+    const githubWorkflowRepository = certificate.githubWorkflowRepository
+    const githubWorkflowRef = certificate.githubWorkflowRef
+    const githubWorkflowSHA = certificate.githubWorkflowSHA
+    const githubWorkflowTrigger = certificate.githubWorkflowTrigger
 
     if (repositoryUri !== `https://github.com/${REPOSITORY}`) continue
     if (sourceRef !== REF) continue
@@ -131,6 +135,10 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
     if (signerDigest !== evidence.source.workflowSha) continue
     if (workflowDigest !== evidence.source.workflowSha) continue
     if (trigger !== runMetadata.event) continue
+    if (githubWorkflowRepository !== REPOSITORY) continue
+    if (githubWorkflowRef !== REF) continue
+    if (githubWorkflowSHA !== evidence.source.workflowSha) continue
+    if (githubWorkflowTrigger !== runMetadata.event) continue
     if (invocation !== `https://github.com/${REPOSITORY}/actions/runs/${expectedRunId}/attempts/${expectedAttempt}`) continue
 
     const subjectMatches = (statement.subject ?? []).some(subject =>
