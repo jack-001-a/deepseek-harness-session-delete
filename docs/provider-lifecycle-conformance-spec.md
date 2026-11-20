@@ -125,7 +125,7 @@ Each case is run against every built-in provider and on all three operating syst
 
 ### 4.1 Create response loss is not lifecycle-operation idempotency
 
-The existing `SessionPersistence.create` contract does not accept a caller-supplied operation ID. S-010 therefore tests the observable distinction between a process-local, unmaterialized create reservation and a durably materialized Session; it MUST NOT imply that `create` can recover a lost response by an idempotency key. Lifecycle mutators (`retire`, `restore`, and `purge`) have their own required operation-ID contract. If a future upstream revision adds idempotent create semantics, that is a separate additive API change and requires its own compatibility and conformance tests.
+The existing `SessionPersistence.create` contract does not accept a caller-supplied operation ID. S-010 therefore tests the observable distinction between a process-local, unmaterialized create reservation and a durably materialized Session; it MUST NOT imply that `create` can recover a lost response by an idempotency key. `retire` requires a caller-persisted operation ID and exact historical recovery. `restore` and `purge` are idempotently keyed by the original opaque retirement token and do not require a second operation ID; providers may add optional IDs for those methods only as an additive extension. If a future upstream revision adds idempotent create semantics, that is a separate additive API change and requires its own compatibility and conformance tests.
 
 ### 4.1 Operation-ledger retention and exact recovery
 
