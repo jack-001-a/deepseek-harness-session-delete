@@ -58,18 +58,12 @@ export interface SessionLifecycleCapability {
 
   restore(
     token: SessionRetirementToken,
-    options: {
-      operationId: string
-      signal?: AbortSignal
-    },
+    options?: { signal?: AbortSignal },
   ): Promise<SessionRetirement>
 
   purge(
     token: SessionRetirementToken,
-    options: {
-      operationId: string
-      signal?: AbortSignal
-    },
+    options?: { signal?: AbortSignal },
   ): Promise<SessionRetirement>
 
   inspect(
@@ -123,7 +117,7 @@ A separate public `recover()` is not required in the minimal surface. Provider s
 
 ## 4. Idempotency and lost-response contract
 
-Every mutating operation accepts a caller-generated `operationId`, unique within the provider-root namespace. The caller persists it before invoking the provider and reuses the exact same value after timeout, process death, transport failure, or unknown response. The provider's deduplication record (or a compact, equally authoritative tombstone for it) must outlive every possible caller retry; silently expiring an operation ID and later treating it as new is forbidden. Storage compaction may discard bulky result payloads only if it preserves enough durable fingerprint and outcome information to reject conflicting reuse and resolve the original operation.
+`retire` requires a caller-generated `operationId`, unique within the provider-root namespace. The caller persists it before invoking `retire` and reuses the exact same value after timeout, process death, transport failure, or unknown response. Its provider deduplication record (or a compact, equally authoritative tombstone) must outlive every possible caller retry; silently expiring the key and later treating it as new is forbidden. `restore` and `purge` are keyed by the opaque retirement token and do not require a second operation ID: the token identifies the exact retired generation and makes retries idempotent. A provider may add optional operation IDs to those methods for audit/deduplication, but that is an additive extension, not a requirement of this minimal API. Any optional key must be durably bound to the token, operation kind, and request fingerprint. Storage compaction may discard bulky result payloads only if it preserves enough durable identity and outcome information to resolve retries and reject conflicting reuse.
 
 The provider stores an operation mapping durably with the lifecycle transition:
 
