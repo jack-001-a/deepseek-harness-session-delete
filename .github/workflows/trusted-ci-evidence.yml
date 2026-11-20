@@ -28,6 +28,11 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Require a protected main ref
+        env:
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+        run: test "$GITHUB_REF_PROTECTED" = "true"
+
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
