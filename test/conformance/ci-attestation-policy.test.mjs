@@ -16,7 +16,7 @@ function fixture() {
   const runMetadata = {
     id: 123456789,
     run_attempt: 1,
-    repository: { full_name: repository },
+    repository: { full_name: repository, id: 1428060802 },
     head_sha: commit,
     head_branch: 'main',
     event: 'push',
@@ -27,6 +27,8 @@ function fixture() {
       signature: {
         certificate: {
           SourceRepositoryURI: `https://github.com/${repository}`,
+          SourceRepositoryIdentifier: '1428060802',
+          SourceRepositoryOwnerIdentifier: '320086254',
           SourceRepositoryRef: 'refs/heads/main',
           SourceRepositoryDigest: commit,
           subjectAlternativeName: `https://github.com/${workflow}@refs/heads/main`,
@@ -51,6 +53,7 @@ test('accepts a verified certificate and exact subject bound to independent GitH
 
 for (const [name, mutate] of [
   ['wrong repository', f => { f.verification[0].verificationResult.signature.certificate.SourceRepositoryURI = 'https://github.com/attacker/repo' }],
+  ['wrong immutable repository identity', f => { f.verification[0].verificationResult.signature.certificate.SourceRepositoryIdentifier = '999' }],
   ['wrong workflow identity', f => { f.verification[0].verificationResult.signature.certificate.BuildSignerURI = 'https://github.com/attacker/other.yml@refs/heads/main' }],
   ['wrong ref', f => { f.verification[0].verificationResult.signature.certificate.SourceRepositoryRef = 'refs/heads/feature' }],
   ['wrong event', f => { f.runMetadata.event = 'pull_request' }],
