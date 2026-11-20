@@ -885,7 +885,7 @@ A disaster restore may roll the durable state backward to its backup point; ther
 
 ### Conformance tests
 
-- Retire A, purge A, recreate the same Session ID as B; replay A's retire/restore/purge operation IDs and tokens and prove none can read, mutate, or delete B.
+- Retire A, purge A, recreate the same Session ID as B; replay A's retire operation ID and retirement token for restore/purge and prove none can read, mutate, or delete B.
 - Hold a stale writer callback/read handle for A across purge and ID reuse; verify it cannot reopen or append to B.
 - Race create/create, create/retire, create/purge, restore/recreate, and ID reuse across multiple processes; all decisions serialize on the stable Session lock and durable incarnation registry.
 - Inject crashes before/after incarnation allocation, registry publication, artifact no-replace publication, retire intent, rename, terminal fence, and new-incarnation publication.
