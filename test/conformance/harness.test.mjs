@@ -170,6 +170,41 @@ test('failed manifest replacement removes its temporary file and preserves the d
   }
 })
 
+test('release gate requires evidence for cases explicitly marked as fault-evidence-required', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-required-case-evidence-'))
+  try {
+    const sourceCommit = 'e'.repeat(40)
+    const manifest = createManifest({ sourceCommit, provider: 'fixture' })
+    assert.throws(() => recordCase(manifest, {
+      id: 'P-FAULT-REQUIRED', status: 'PASS', requiresEvidence: 'yes',
+    }), /optional boolean requiresEvidence/)
+    recordCase(manifest, {
+      id: 'P-FAULT-REQUIRED', status: 'PASS', requiresEvidence: true,
+    })
+    assert.throws(
+      () => assertReleaseGate(manifest, ['P-FAULT-REQUIRED']),
+      /P-FAULT-REQUIRED:missing-evidence/,
+    )
+
+    const payload = {
+      evidenceId: 'e-required-1', caseId: 'P-FAULT-REQUIRED',
+      testRunId: 'run-required-1', sourceCommit,
+      providerVersion: 'fixture-v1', observer: 'parent-observer',
+      effect: 'worker-exit', faultId: 'fault-required-1',
+      operationId: 'operation-required-1', point: 'retire.commit',
+      phase: 'after-commit-before-response', operation: 'retire', action: 'kill',
+    }
+    const artifact = await writeEvidenceArtifact(join(directory, 'artifacts'), payload)
+    recordEvidence(manifest, {
+      schemaVersion: 1, verified: true, ...payload,
+      artifactRef: artifact.artifactRef, artifactSha256: artifact.artifactSha256,
+    })
+    assert.doesNotThrow(() => assertReleaseGate(manifest, ['P-FAULT-REQUIRED']))
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('manifest rejects duplicate IDs and non-passing required cases', async () => {
   const manifest = createManifest({ sourceCommit: 'test-sha', provider: 'harness-smoke' })
   recordCase(manifest, { id: 'S-001', status: 'PASS', durationMs: 1 })
