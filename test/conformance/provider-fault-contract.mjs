@@ -145,6 +145,7 @@ export async function withProviderFault(adapter, request, expectedBoundary, run,
     })
     const evidence = await verifyHit(hit, armed)
     const evidenceFields = [
+      'evidenceId',
       'observer',
       'effect',
       'artifactRef',
@@ -156,7 +157,9 @@ export async function withProviderFault(adapter, request, expectedBoundary, run,
       'action',
     ]
     if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence) ||
-        evidence.verified !== true || evidenceFields.some((field) => !nonEmpty(evidence[field])) ||
+        evidence.schemaVersion !== 1 || evidence.verified !== true ||
+        Object.keys(evidence).some((field) => !['schemaVersion', 'verified', ...evidenceFields].includes(field)) ||
+        evidenceFields.some((field) => !nonEmpty(evidence[field])) ||
         evidence.faultId !== hit.faultId || evidence.operationId !== hit.operationId ||
         evidence.point !== hit.point || evidence.phase !== hit.phase ||
         evidence.operation !== hit.operation || evidence.action !== hit.action) {
