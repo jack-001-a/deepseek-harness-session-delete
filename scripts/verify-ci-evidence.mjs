@@ -123,7 +123,7 @@ async function main() {
     const runId = String(evidence?.source?.runId ?? '')
     const attempt = String(evidence?.source?.runAttempt ?? '')
     const commit = String(evidence?.source?.commit ?? '')
-    if (!/^\\d+$/.test(runId) || !/^\\d+$/.test(attempt) || !/^[a-f0-9]{40}$/.test(commit)) {
+    if (!/^\d+$/.test(runId) || !/^\d+$/.test(attempt) || !/^[a-f0-9]{40}$/.test(commit)) {
       fail('evidence cannot safely identify a GitHub run attempt')
     }
     const commonArgs = [
@@ -150,7 +150,7 @@ async function main() {
   }
 
   const result = evaluateAttestationPolicy({ verification, runMetadata, evidence, artifactBytes })
-  process.stdout.write(JSON.stringify(result, null, 2) + '\\n')
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n')
 }
 
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
