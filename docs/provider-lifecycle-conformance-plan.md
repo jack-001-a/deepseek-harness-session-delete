@@ -70,6 +70,19 @@ restart. The artifact reference must identify retained test evidence (for exampl
 process-exit record or recovery-state snapshot); it is an audit locator, not a
 cryptographic proof.
 
+Verified evidence is persisted as a content-addressed JSON artifact. The artifact
+store derives an opaque reference from the SHA-256 digest of the exact bytes,
+creates the file without overwriting an existing object, and rejects malformed
+references, missing files, symlinks, and digest mismatches on read. The run
+manifest stores the evidence identity, run provenance, fault correlation, opaque
+artifact reference, and digest—not arbitrary Provider payloads.
+
+The report orchestration must call `verifyManifestEvidence` before treating
+recorded evidence as usable. It re-reads every referenced artifact and compares
+its evidence ID, run ID, source commit, Provider version, and observer identity
+with the manifest. A syntactically valid reference alone is never proof that the
+artifact exists or is intact.
+
 The runner also requires an explicit trusted `evidenceContext` supplied by the
 harness orchestration layer, not by the Provider adapter. It pins the test-run ID,
 full source commit SHA, expected Provider version, and registered observer ID.
