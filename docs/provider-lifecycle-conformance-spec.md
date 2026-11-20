@@ -180,6 +180,7 @@ SQLite tests MUST preserve the shared database and shared Segment graph semantic
 | Q-018 | Logical vs forensic purge | API/documentation never claims secure erasure from row deletion alone |
 | Q-019 | SQLite total lock order | Barrier-controlled processes prove lifecycle gate -> DB-scoped Session lease -> legacy-artifact/creation lease -> SQLite transaction, then reverse-order release (artifact/creation before DB-scoped); no concurrent/out-of-order release, leaked lease, or deadlock across create, write-open, legacy import, and retire |
 | Q-020 | Busy/unknown commit | Busy is retryable; ambiguous commit is inspected/recovered, never assumed rolled back |
+| Q-021 | SQLite close admission seal | Pause after the final empty-buffer observation and before close completion; deliver a delayed `session/event` callback | Callback is rejected after the seal, or—if admitted before it—is included in the final durable drain; no buffered event is abandoned when writer leases are released |
 
 ## 7. Test result and evidence format
 
