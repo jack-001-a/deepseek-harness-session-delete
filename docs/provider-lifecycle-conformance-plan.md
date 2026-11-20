@@ -68,7 +68,19 @@ Provider's self-reported hit payload, such as a parent-observed worker exit, an
 independently read durable recovery marker, or state observed after a fresh process
 restart. The artifact reference must identify retained test evidence (for example a
 process-exit record or recovery-state snapshot); it is an audit locator, not a
-cryptographic proof. The runner passes the frozen evidence record to the scenario
+cryptographic proof.
+
+The runner also requires an explicit trusted `evidenceContext` supplied by the
+harness orchestration layer, not by the Provider adapter. It pins the test-run ID,
+full source commit SHA, expected Provider version, and registered observer ID.
+The evidence record must match all four values exactly. This prevents accidental
+cross-run or cross-revision evidence reuse and rejects an observer identity that
+differs from the harness registration. This context is still an assertion boundary:
+the production harness must obtain it from its own run manifest and observer
+registration, keep those records outside Provider control, and retain the referenced
+artifact. These checks do not make a caller-supplied callback trustworthy by
+themselves; provider-specific black-box observation and artifact-integrity controls
+remain required. The runner passes the frozen evidence record to the scenario
 callback and returns it alongside the scenario result so callers can persist it in
 their conformance report. A verifier exception, malformed record, or correlation
 mismatch fails the scenario and still triggers mandatory disarm.
