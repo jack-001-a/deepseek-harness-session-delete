@@ -52,8 +52,8 @@ The contract request identifies a named point, one of the phases
 and the stable operation ID.
 
 A scheduled point counts as exercised only when `waitForHit` returns a correlated
-record containing the provider-issued fault ID, exact point/phase/action/operation ID,
-`hit: true`, `actionApplied: true`, and a non-empty provider boundary ID. Missing
+record containing the provider-issued fault ID, exact point/phase/lifecycle operation/
+action/operation ID, `hit: true`, `actionApplied: true`, and a non-empty provider boundary ID. Missing
 hooks, timeouts, mismatched records, or an action that was not applied are failures;
 they must never be converted to a skipped PASS. Prefer the shared `withProviderFault`
 runner, which performs disarm after both hit-verification and scenario failures. A
@@ -84,8 +84,9 @@ fault point, that map records:
   primitive; and
 - the exact provider source commit reviewed for that mapping.
 
-The hit record must return the same fields. The harness compares it against the
-independently maintained expectation and rejects missing or mismatched metadata. A
+The hit record must return the same fields. The harness validates the expected map
+before waiting for a hit, binds its point/phase/operation to the armed request, and
+compares the provider record against that independently maintained expectation. A
 provider cannot make an arbitrary string pass by returning it as its own `boundaryId`.
 
 This comparison is still not a substitute for source review and provider-specific
