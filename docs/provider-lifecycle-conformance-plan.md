@@ -64,6 +64,34 @@ and test the mapping from its named boundary to the actual durable operation, in
 the pre-commit, committed-response-loss, and outcome-unknown semantics. The fixture
 tests for this contract do not count as Provider lifecycle conformance evidence.
 
+
+### Independently reviewed durability-boundary map
+
+A Provider's `boundaryId` string is correlation metadata, not proof of a durable boundary.
+Each provider-specific conformance adapter must be paired with a trusted boundary map
+maintained by the conformance suite (not generated from the adapter response). For every
+fault point, that map records:
+
+- provider identity and exact provider version/build;
+- lifecycle operation, named point, and semantic phase;
+- the actual durability primitive (for example file sync, containing-directory sync,
+  atomic rename, provider journal commit, or SQLite transaction commit);
+- a source reference identifying the implementation function responsible for that
+  primitive; and
+- the exact provider source commit reviewed for that mapping.
+
+The hit record must return the same fields. The harness compares it against the
+independently maintained expectation and rejects missing or mismatched metadata. A
+provider cannot make an arbitrary string pass by returning it as its own `boundaryId`.
+
+This comparison is still not a substitute for source review and provider-specific
+black-box tests. The map must be reviewed against the exact provider source revision,
+and tests must establish the externally observable durability semantics around the
+mapped instruction (including restart/recovery). Until a real provider mapping is
+reviewed and exercised, the boundary remains unverified and no Provider conformance
+claim is permitted. The current fixture only tests that the adapter protocol enforces
+the map; it does not provide a JSONL or SQLite boundary mapping.
+
 ## Required scenario matrix
 
 | Scenario | Process A | Process B | Required result |
