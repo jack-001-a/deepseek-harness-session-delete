@@ -58,6 +58,7 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
     const certificate = result?.signature?.certificate
     const statement = result?.statement
     if (!certificate || !statement) continue
+    if (statement.predicateType !== 'https://slsa.dev/provenance/v1') continue
 
     // These certificate claims are populated from GitHub's OIDC token. Do not
     // fall back to statement.predicate for identity: that content is workflow-controlled.
