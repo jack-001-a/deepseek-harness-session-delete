@@ -108,7 +108,7 @@ export function assertReleaseGate(manifest, requiredIds) {
         !/^[a-f0-9]{64}$/.test(evidence.artifactRef || '') ||
         evidence.artifactSha256 !== evidence.artifactRef ||
         evidence.sourceCommit !== manifest.sourceCommit ||
-      !['effect', 'faultId', 'operationId', 'point', 'phase', 'operation', 'action'].every((field) => typeof evidence[field] === 'string' && evidence[field])) {
+      !['testRunId', 'providerVersion', 'observer', 'effect', 'faultId', 'operationId', 'point', 'phase', 'operation', 'action'].every((field) => typeof evidence[field] === 'string' && evidence[field])) {
       throw new TypeError('manifest contains invalid or unbound fault evidence')
     }
     if (evidenceIds.has(evidence.evidenceId)) throw new Error(`manifest contains duplicate evidence ID: ${evidence.evidenceId}`)
