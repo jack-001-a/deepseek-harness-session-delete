@@ -64,7 +64,8 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
     const sourceDigest = first(certificate, ['sourceRepositoryDigest', 'SourceRepositoryDigest'])
     const san = certificate.subjectAlternativeName
     const sanValue = san?.type === 'URI' && typeof san.value === 'string' ? san.value : undefined
-    const issuer = first(certificate, ['issuer', 'oidcIssuer', 'Issuer'])
+    const issuer = first(certificate, ['issuer'])
+    const runnerEnvironment = first(certificate, ['runnerEnvironment'])
     const workflowRef = first(certificate, ['buildSignerURI'])
     const workflowDigest = first(certificate, ['buildConfigDigest'])
     const signerDigest = first(certificate, ['buildSignerDigest'])
@@ -78,6 +79,7 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
     if (ownerUri !== 'https://github.com/jack-001-a') continue
     if (sourceDigest !== expectedCommit) continue
     if (issuer !== OIDC_ISSUER) continue
+    if (runnerEnvironment !== 'github-hosted') continue
     if (workflowRef !== `https://github.com/${WORKFLOW}@${REF}`) continue
     if (sanValue !== `https://github.com/${WORKFLOW}@${REF}`) continue
     if (buildConfigUri !== `https://github.com/${WORKFLOW}@${REF}`) continue
