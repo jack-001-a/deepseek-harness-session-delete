@@ -121,11 +121,11 @@ export async function disarmProviderFault(armed) {
  */
 export async function withProviderFault(adapter, request, expectedBoundary, run, waitOptions = {}) {
   if (typeof run !== 'function') throw new TypeError('provider fault scenario requires a callback')
-  if (typeof waitOptions?.verifyHit !== 'function') {
-    throw new TypeError('provider fault scenario requires an independent hit verifier')
-  }
   if (!expectedBoundary || typeof expectedBoundary !== 'object') {
     throw new TypeError('provider fault scenario requires an independently maintained boundary expectation')
+  }
+  if (typeof waitOptions?.verifyHit !== 'function') {
+    throw new TypeError('provider fault scenario requires an independent hit verifier')
   }
   assertBoundaryAttestation({ boundary: expectedBoundary }, expectedBoundary)
   if (expectedBoundary.point !== request?.point || expectedBoundary.phase !== request?.phase ||
