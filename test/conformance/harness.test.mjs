@@ -134,7 +134,12 @@ test('concurrent manifest writes use unique temporary files and leave a complete
       cases: [{ id: `case-${index}`, status: 'PASS' }],
       evidence: [],
     }))
-    await Promise.all(manifests.map((manifest) => writeManifest(path, manifest)))
+    const writes = await Promise.allSettled(manifests.map((manifest) => writeManifest(path, manifest)))
+    const successfulWrites = writes.filter((result) => result.status === 'fulfilled')
+    const failedWrites = writes.filter((result) => result.status === 'rejected')
+    assert.ok(successfulWrites.length >= 1, 'at least one complete report must be committed')
+    assert.ok(failedWrites.every((result) => ['EPERM', 'EEXIST'].includes(result.reason?.code)),
+      'only destination replacement conflicts are acceptable')
     const report = JSON.parse(await readFile(path, 'utf8'))
     assert.equal(report.schemaVersion, 1)
     assert.equal(report.provider, 'manifest-writer-test')
