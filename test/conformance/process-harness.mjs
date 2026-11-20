@@ -90,8 +90,11 @@ export class ProcessWorker {
     const deadline = Date.now() + timeoutMs
     while (true) {
       if (this.#protocolError && !ignoreProtocolError) throw this.#protocolError
-      const found = this.#events.find(predicate)
-      if (found) return found
+      // Events are one-shot messages. Consuming the match prevents a later wait
+      // from accidentally succeeding on an earlier barrier with the same name,
+      // and prevents concurrent waiters from observing the same event twice.
+      const foundIndex = this.#events.findIndex(predicate)
+      if (foundIndex !== -1) return this.#events.splice(foundIndex, 1)[0]
       if (this.#closed) throw new Error(`worker exited before expected event; stderr: ${this.stderr}`)
       const remaining = deadline - Date.now()
       if (remaining <= 0) throw new Error(`timed out waiting for worker event; stderr: ${this.stderr}`)
