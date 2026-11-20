@@ -53,6 +53,9 @@ const validEvidence = {
   schemaVersion: 1,
   verified: true,
   evidenceId: 'evidence-001',
+  testRunId: 'run-abc123',
+  sourceCommit: 'abcdef0123456789abcdef0123456789abcdef01',
+  providerVersion: 'test-build-1',
   observer: 'parent-process-observer',
   effect: 'worker-exited-after-kill',
   artifactRef: 'test-artifacts/fault-1/worker-exit.json',
@@ -63,7 +66,16 @@ const validEvidence = {
   operation: 'retire',
   action: 'kill',
 }
-const verified = { verifyHit: async () => ({ ...validEvidence }) }
+const evidenceContext = {
+  testRunId: 'run-abc123',
+  sourceCommit: 'abcdef0123456789abcdef0123456789abcdef01',
+  providerVersion: 'test-build-1',
+  observerId: 'parent-process-observer',
+}
+const verified = {
+  verifyHit: async () => ({ ...validEvidence }),
+  evidenceContext,
+}
 
 const request = {
   point: 'retire.commit',
@@ -227,6 +239,7 @@ test('provider fault evidence requires observer, effect, and artifact reference'
     const { adapter } = fixture()
     await assert.rejects(
       withProviderFault(adapter, request, expectedBoundary, async () => {}, {
+        evidenceContext,
         verifyHit: async () => {
           const evidence = { ...validEvidence }
           delete evidence[field]
@@ -254,6 +267,7 @@ test('provider fault verifier exceptions still disarm the hook', async () => {
   const { adapter, calls } = fixture()
   await assert.rejects(
     withProviderFault(adapter, request, expectedBoundary, async () => {}, {
+      evidenceContext,
       verifyHit: async () => { throw new Error('observer unavailable') },
     }),
     /observer unavailable/,
@@ -280,4 +294,40 @@ test('provider fault evidence is returned as a frozen versioned record', async (
   assert.equal(result.evidence.schemaVersion, 1)
   assert.equal(result.evidence.evidenceId, 'evidence-001')
   assert.equal(Object.isFrozen(result.evidence), true)
+})
+
+
+test('provider fault evidence must match trusted test-run provenance', async () => {
+  for (const field of ['testRunId', 'sourceCommit', 'providerVersion', 'observer']) {
+    const { adapter } = fixture()
+    const changed = {
+      ...validEvidence,
+      [field]: field === 'sourceCommit' ? '1111111111111111111111111111111111111111' : 'untrusted-value',
+    }
+    await assert.rejects(
+      withProviderFault(adapter, request, expectedBoundary, async () => {}, {
+        evidenceContext,
+        verifyHit: async () => changed,
+      }),
+      /incomplete or mismatched evidence/,
+    )
+  }
+})
+
+test('provider fault scenario rejects missing or invalid trusted provenance before arming', async () => {
+  for (const context of [
+    null,
+    { ...evidenceContext, sourceCommit: 'main' },
+    { ...evidenceContext, providerVersion: 'different-build' },
+  ]) {
+    const { adapter, calls } = fixture()
+    await assert.rejects(
+      withProviderFault(adapter, request, expectedBoundary, async () => {}, {
+        evidenceContext: context,
+        verifyHit: async () => ({ ...validEvidence }),
+      }),
+      /trusted test-run/,
+    )
+    assert.deepEqual(calls, [])
+  }
 })
