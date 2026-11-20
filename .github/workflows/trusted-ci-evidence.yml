@@ -74,6 +74,7 @@ jobs:
             --source-digest "$GITHUB_SHA" \
             --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/trusted-ci-evidence.yml@refs/heads/main" \
             --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --predicate-type "https://slsa.dev/provenance/v1" \
             --deny-self-hosted-runners \
             --format json > ci-evidence/attestation-verification.json
 
