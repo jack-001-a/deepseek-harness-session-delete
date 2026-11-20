@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { evaluateAttestationPolicy } from '../../scripts/verify-ci-evidence.mjs'
+import { evaluateAttestationPolicy, getOnlineVerificationCoordinates } from '../../scripts/verify-ci-evidence.mjs'
 
 const repository = 'jack-001-a/deepseek-harness-session-delete'
 const workflow = `${repository}/.github/workflows/trusted-ci-evidence.yml`
@@ -50,6 +50,38 @@ function fixture() {
   return { evidence, runMetadata, verification, artifactBytes: bytes }
 }
 
+test('validates online lookup coordinates before any GitHub CLI request', () => {
+  const f = fixture()
+  assert.deepEqual(getOnlineVerificationCoordinates(f.evidence), { runId: '123456789', attempt: '1', commit, workflowSha })
+})
+
+for (const [name, mutate] of [
+  ['missing workflow SHA', source => { delete source.workflowSha }],
+  ['abbreviated source commit', source => { source.commit = commit.slice(0, 12) }],
+  ['non-numeric run ID', source => { source.runId = '../runs/123' }],
+  ['non-numeric run attempt', source => { source.runAttempt = '1/../../2' }],
+  ['unapproved event', source => { source.event = 'pull_request' }],
+  ['unprotected ref claim', source => { source.refProtected = false }],
+  ['wrong workflow ref', source => { source.workflowRef = 'attacker/repo/.github/workflows/evil.yml@refs/heads/main' }],
+]) {
+  test('rejects online lookup coordinates with ' + name, () => {
+    const f = fixture()
+    mutate(f.evidence.source)
+    assert.throws(() => getOnlineVerificationCoordinates(f.evidence), /provenance policy rejected/)
+  })
+}
+
+test('rejects verified output entries without certificate or statement', () => {
+  const f = fixture()
+  f.verification = [{ verificationResult: { statement: f.verification[0].verificationResult.statement } }]
+  assert.throws(() => evaluateAttestationPolicy(f), /provenance policy rejected/)
+})
+
+test('ignores an invalid attestation entry when a later entry satisfies the full policy', () => {
+  const f = fixture()
+  f.verification.unshift({ verificationResult: { signature: { certificate: {} }, statement: { predicateType: 'https://slsa.dev/provenance/v1', subject: [] } } })
+  assert.equal(evaluateAttestationPolicy(f).status, 'provenance_verified')
+})
 test('classifies missing attestation data as unavailable', () => {
   const f = fixture()
   f.verification = []
