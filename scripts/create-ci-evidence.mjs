@@ -10,6 +10,7 @@ const required = [
   'GITHUB_WORKFLOW_SHA',
   'GITHUB_RUN_ID',
   'GITHUB_RUN_ATTEMPT',
+  'GITHUB_REF_PROTECTED',
 ]
 for (const name of required) {
   if (!process.env[name]) throw new Error(`missing required GitHub context: ${name}`)
@@ -23,6 +24,9 @@ if (process.env.GITHUB_REF !== 'refs/heads/main') {
 }
 if (!['push', 'workflow_dispatch'].includes(process.env.GITHUB_EVENT_NAME)) {
   throw new Error('untrusted event type cannot produce accepted evidence')
+}
+if (process.env.GITHUB_REF_PROTECTED !== 'true') {
+  throw new Error('evidence requires GitHub to report the main ref as protected')
 }
 if (!/^[a-f0-9]{40}$/.test(process.env.GITHUB_SHA)) {
   throw new Error('GITHUB_SHA must be a full commit object ID')
@@ -40,6 +44,7 @@ const evidence = {
   source: {
     repository: process.env.GITHUB_REPOSITORY,
     ref: process.env.GITHUB_REF,
+    refProtected: process.env.GITHUB_REF_PROTECTED === 'true',
     commit: process.env.GITHUB_SHA,
     event: process.env.GITHUB_EVENT_NAME,
     workflowRef: process.env.GITHUB_WORKFLOW_REF,
