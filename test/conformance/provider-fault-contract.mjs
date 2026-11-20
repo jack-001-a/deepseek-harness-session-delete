@@ -80,7 +80,8 @@ export async function armProviderFault(adapter, request) {
 /** A schedule is not evidence: require a correlated hit and an applied action. */
 export async function waitForProviderFaultHit(armed, options) {
   if (!armed?.hooks || !armed?.handle || !armed?.request) throw new TypeError('armed provider fault is required')
-  const hit = await armed.hooks.waitForHit(armed.handle, options)
+  const { expectedBoundary, ...waitOptions } = options || {}
+  const hit = await armed.hooks.waitForHit(armed.handle, waitOptions)
   const expected = armed.request
   if (!hit || hit.hit !== true || hit.actionApplied !== true ||
       hit.faultId !== armed.handle.id || hit.point !== expected.point ||
@@ -88,6 +89,7 @@ export async function waitForProviderFaultHit(armed, options) {
       hit.operationId !== expected.operationId || !nonEmpty(hit.boundaryId)) {
     throw new Error('provider fault hit was not proven at the requested durability boundary')
   }
+  assertBoundaryAttestation(hit, expectedBoundary)
   return Object.freeze({ ...hit })
 }
 
