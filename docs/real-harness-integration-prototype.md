@@ -58,6 +58,8 @@ The last command emits the real Host package libraries, including the Cordis, Ag
 10. A separate real Host child writes the `.restoring` marker and promotes the trash artifact back to its original path.
 11. The controller kills that child with `SIGKILL` at the explicit post-promotion stdout barrier, before graceful Host disposal, accounting replay, or marker cleanup.
 12. A fresh Host composition's Cordis `ready` listener recovers the interrupted restore and the real provider verifies the session; the runner then deletes and purges it.
+13. A second seeded session is deleted through the real plugin in a child Host process. The test replaces only the child service's post-commit accounting method with a barrier, so the real `delete()` path completes the artifact move and then pauses before workspace accounting.
+14. The controller sends `SIGKILL` at that post-move/pre-accounting barrier. A fresh Host's awaited Cordis `ready` listener replays delete accounting, retains the trash entry, and verifies the original provider session is absent.
 
 
 This proves a useful first integration seam: **a session materialized by one real Harness process can be consumed by the plugin running in another real Harness composition**, with a fresh provider instance and real on-disk artifacts.
@@ -84,7 +86,7 @@ The runner additionally verifies the pinned JSONL provider's cross-process write
 
 The integration workflow uploads `provider-conformance.json` as a run artifact, including when the integration step fails. Schema version 2 records the pinned upstream commit, runtime environment, run start/finish timestamps, measured run duration, and individual case outcomes with evidence.
 
-Each completed stage is recorded as its own manifest case: capability discovery, plugin delete-to-trash, committed-delete startup recovery, restore, post-promotion interrupted-restore recovery, and purge. These plugin-level cases are intentionally named separately from the `JSONL-PROVIDER-*` lifecycle probes, which remain `SKIP` until the upstream provider exposes the required public mutation contract. The manifest writer uses a unique temporary file and removes it on both successful and failed writes before reporting the artifact path.
+Each completed stage is recorded as its own manifest case: capability discovery, plugin delete-to-trash, committed-delete startup recovery, restore, post-promotion interrupted-restore recovery, final purge, and process-death recovery after a real delete has committed its artifact move but before workspace accounting begins. These plugin-level cases are intentionally named separately from the `JSONL-PROVIDER-*` lifecycle probes, which remain `SKIP` until the upstream provider exposes the required public mutation contract. The manifest writer uses a unique temporary file and removes it on both successful and failed writes before reporting the artifact path.
 
 The top-level status is deliberately conservative:
 
@@ -112,7 +114,9 @@ This is not yet a destructive live-writer fencing or full desktop/web Host test:
 - It does not race AgentLoop teardown against delete.
 - It does not claim that Session Delete acquires or participates in the JSONL provider's Host-native write lease.
 - It does not validate workspace membership, pin/archive accounting, projection cache, or cross-process workspace transactions.
-- The runner now prepares the post-promotion interrupted-restore state in a separate real Host child process and the controller sends `SIGKILL` after the child reports the completed marker+rename barrier. A fresh Host then verifies recovery through its Cordis `ready` listener. This is one deterministic process-death point, not a general instruction-level fault-injection framework; it does not test interruption during the cross-volume copy itself or crash injection during delete/purge.
+- The runner prepares the post-promotion interrupted-restore state in a separate real Host child process and the controller sends `SIGKILL` after the child reports the completed marker+rename barrier. A fresh Host then verifies recovery through its Cordis `ready` listener.
+- The runner also invokes the real plugin `delete()` in a separate Host child, pauses at the first post-commit workspace-accounting call, and has the controller send `SIGKILL`. A fresh Host verifies that startup reconciliation replays the committed delete. This covers one deterministic post-move/pre-accounting boundary; it does not test interruption during cross-volume copy or general instruction-level fault injection.
+- Purge remains a destructive recursive removal without a persisted transaction marker or corresponding startup replay contract. This prototype does not claim crash recovery for an interrupted purge.
 - It does not make the existing plugin-only filesystem lock safe against an independent live Host writer.
 
 Preventing Session Delete from beginning a destructive operation while a live Harness writer exists remains gated on a public provider-owned artifact lease/tombstone contract and a full Host lifecycle fixture. The writer probe above validates only the provider's own write-open exclusion. Do not run destructive operations against a live writer based on this prototype.
