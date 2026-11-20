@@ -725,3 +725,12 @@ a production conformance report-generation path through this API. Those tests
 therefore do not establish that an actual Provider run has published a verified
 report. Any future runner that emits fault evidence MUST use
 `writeVerifiedManifest` rather than `writeManifest`.
+
+
+## Root recovery gate platform acceptance (required)
+
+The root recovery gate is a process-lifetime shared lease with an exclusive disaster-recovery cutover mode. It is separate from the per-Session admission gate and is the outermost lock role. The provider must acquire the shared lease before recovery-envelope validation and lifecycle capability readiness, retain it through complete shutdown drain, and never upgrade it in place. Disaster recovery must stop all old-epoch processes before a separate coordinator acquires exclusive ownership.
+
+For every supported OS, the conformance harness must use independent OS processes and prove all S-045 assertions: multiple concurrent shared holders; exclusive waiter blocked by every remaining holder; killing one holder releases only that holder; no new shared holder enters during exclusive cutover; killing the exclusive owner releases ownership; and recovery can resume by inspecting the atomic envelope and transition ID. Include lock-order inversion attempts and assert they fail deterministically rather than deadlock. Do not use sleeps as proof; use explicit IPC barriers and bounded watchdogs only to detect hangs.
+
+The test adapter must identify the actual kernel primitive/protocol used on that OS and record OS version, filesystem, primitive mode, process IDs, observed acquisition/release order, and crash point in the evidence manifest. A mocked lock, one-process test, or POSIX result reused for Windows is insufficient. An exclusive-only Windows named semaphore/mutex is a failed implementation for this contract. If the platform cannot prove shared/exclusive and independent crash-release semantics, mark it unsupported and keep lifecycle capability unavailable there; do not weaken the contract.
