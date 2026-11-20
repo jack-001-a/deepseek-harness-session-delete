@@ -199,7 +199,8 @@ A generic rejected Promise is insufficient where it prevents the caller from dec
 - Retirement records preserve the logical root needed for restore.
 - Purge uses reachability-aware Segment garbage collection. Shared ancestors remain while referenced by any live or restorable retired Session.
 - Routing markers, legacy JSONL import/fallback, and tombstones participate in one identity protocol so retired IDs cannot reappear.
-- Schema migration is explicit, versioned, data-preserving, and recoverable after ambiguous commit.
+- The lock order is lifecycle/admission gate -> DB-scoped per-Session lease -> legacy-artifact lease or root creation/artifact guard -> SQLite transaction. The current SQLite provider acquires the DB-scoped lease before the artifact/creation lease; no code path may reverse that order or acquire the gate while holding either lease. Release both leases on every failure path, in reverse acquisition order.
+- Schema migration is explicit, versioned, data-preserving, and recoverable after ambiguous commit. Schema/bootstrap migration is maintenance-gated and must not run concurrently with mixed-version readers or writers.
 - Logical row reclamation is not forensic erasure. WAL files, pages, snapshots, and backups may retain old bytes; user-facing claims must state this limitation.
 
 ## 8. Plugin integration protocol
