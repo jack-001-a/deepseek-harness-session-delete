@@ -124,6 +124,6 @@ test('provider adapter contract rejects incomplete adapters', () => {
   const adapter = { name: 'fixture' }
   for (const key of ['start', 'stop', 'create', 'openRead', 'openWrite']) adapter[key] = async () => {}
   adapter.lifecycle = { supported: true }
-  for (const key of ['retire', 'restore', 'purge', 'inspect']) adapter.lifecycle[key] = async () => {}
+  for (const key of ['retire', 'restore', 'purge', 'inspect', 'inspectById', 'inspectOperation']) adapter.lifecycle[key] = async () => {}
   assert.equal(assertProviderAdapter(adapter).lifecycle, adapter.lifecycle)
 })
