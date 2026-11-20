@@ -24,6 +24,12 @@ export class ProcessWorker {
     this.stderr = ''
     this.#child.stderr.setEncoding('utf8')
     this.#child.stderr.on('data', (chunk) => { this.stderr = (this.stderr + chunk).slice(-MAX_LINE_BYTES) })
+    for (const [streamName, stream] of [['stdin', this.#child.stdin], ['stdout', this.#child.stdout], ['stderr', this.#child.stderr]]) {
+      stream.on('error', (error) => {
+        this.#fail(new Error(`worker ${streamName} stream failed: ${error.message}`, { cause: error }))
+        if (streamName !== 'stderr') this.kill()
+      })
+    }
     const lines = createInterface({ input: this.#child.stdout, crlfDelay: Infinity })
     lines.on('line', (line) => {
       if (Buffer.byteLength(line) > MAX_LINE_BYTES) {
@@ -54,7 +60,8 @@ export class ProcessWorker {
   }
 
   #fail(error) {
-    this.#protocolError = error
+    // Preserve the first failure: later stream/worker errors are often only fallout.
+    if (!this.#protocolError) this.#protocolError = error
     for (const waiter of [...this.#waiters]) waiter()
   }
 
