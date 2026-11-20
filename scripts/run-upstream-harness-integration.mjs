@@ -488,6 +488,9 @@ async function runIntegration() {
       expected: 'purge() reports success, the trash listing no longer contains the session, and stat() returns undefined.',
       observed: 'purge() returned purged=true, listTrash() omitted the entry, and stat() returned undefined.',
     })
+    record('JSONL-PLUGIN-PURGE-INTERRUPTION-RECOVERY-001', 'SKIP', 'Purge has no persisted transaction marker or startup replay contract; interrupted recursive removal is not claimed to be recoverable.', {
+      reasonCode: 'purge-recovery-contract-unavailable',
+    })
 
     // Exercise the real delete commit point in a separate process. The
     // child pauses after moveToTrash() has committed the artifact move and
