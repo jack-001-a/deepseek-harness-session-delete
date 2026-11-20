@@ -59,7 +59,7 @@ they must never be converted to a skipped PASS. Prefer the shared `withProviderF
 runner, which performs disarm after both hit-verification and scenario failures. A
 successful `disarm()` must explicitly return `true`; `false`, `undefined`, or a thrown
 error is a cleanup failure and fails the scenario. If both the scenario and cleanup
-fail, both causes must remain observable (for example via `AggregateError),` rather
+fail, both causes must remain observable (for example via `AggregateError`) rather
 than allowing cleanup to hide the original failure.
 
 This is an adapter protocol contract, not proof that the hook is placed at a real
