@@ -41,6 +41,29 @@ export function getOnlineVerificationCoordinates(evidence) {
   if (source.workflowRef !== WORKFLOW + '@' + REF) fail('evidence workflow ref mismatch')
   return { runId: String(source.runId), attempt: String(source.runAttempt), commit: source.commit, workflowSha: source.workflowSha }
 }
+export function buildAttestationVerifyArgs(artifactPath, coordinates) {
+  if (typeof artifactPath !== 'string' || artifactPath.length === 0) fail('artifact path is required')
+  if (!coordinates || !/^\\d+$/.test(String(coordinates.runId)) ||
+      !/^\\d+$/.test(String(coordinates.attempt)) ||
+      !/^[a-f0-9]{40}$/.test(coordinates.commit ?? '') ||
+      !/^[a-f0-9]{40}$/.test(coordinates.workflowSha ?? '')) {
+    fail('invalid attestation verification coordinates')
+  }
+  return [
+    'attestation', 'verify', artifactPath,
+    '--repo', REPOSITORY,
+    '--signer-workflow', WORKFLOW,
+    '--signer-digest', coordinates.workflowSha,
+    '--source-ref', REF,
+    '--source-digest', coordinates.commit,
+    '--cert-identity', `https://github.com/${WORKFLOW}@${REF}`,
+    '--cert-oidc-issuer', OIDC_ISSUER,
+    '--predicate-type', 'https://slsa.dev/provenance/v1',
+    '--deny-self-hosted-runners',
+    '--format', 'json',
+  ]
+}
+
 export function evaluateAttestationPolicy({ verification, runMetadata, evidence, artifactBytes }) {
   if (!Array.isArray(verification) || verification.length === 0) fail('no verified attestations returned', 'provenance_unavailable')
 
@@ -145,20 +168,10 @@ async function main() {
 
   if (args.length === 1) {
     const { runId, attempt, commit, workflowSha } = getOnlineVerificationCoordinates(evidence)
-    const commonArgs = [
-      '--repo', REPOSITORY,
-      '--signer-workflow', WORKFLOW,
-      '--signer-digest', workflowSha,
-      '--source-ref', REF,
-      '--source-digest', commit,
-      '--cert-identity', `https://github.com/${WORKFLOW}@${REF}`,
-      '--cert-oidc-issuer', OIDC_ISSUER,
-      '--predicate-type', 'https://slsa.dev/provenance/v1',
-      '--deny-self-hosted-runners',
-    ]
-    verification = JSON.parse(runGitHubCli([
-      'attestation', 'verify', artifactPath, ...commonArgs, '--format', 'json',
-    ], 'GitHub attestation verification failed'))
+    verification = JSON.parse(runGitHubCli(
+      buildAttestationVerifyArgs(artifactPath, { runId, attempt, commit, workflowSha }),
+      'GitHub attestation verification failed',
+    ))
     runMetadata = JSON.parse(runGitHubCli([
       'api', `repos/${REPOSITORY}/actions/runs/${runId}/attempts/${attempt}`,
     ], 'GitHub workflow-run metadata lookup failed'))
