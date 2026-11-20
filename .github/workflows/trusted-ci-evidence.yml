@@ -1,6 +1,6 @@
 name: trusted-ci-evidence
 
-# Only protected-main executions may mint provenance. PR workflows remain read-only.
+# Only canonical-repository main-branch executions may mint provenance. PR workflows remain read-only.
 on:
   push:
     branches: [main]
