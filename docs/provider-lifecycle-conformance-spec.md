@@ -125,7 +125,7 @@ Each case is run against every built-in provider and on all three operating syst
 
 ### 4.1 Operation-ledger retention and exact recovery
 
-The public capability contract includes an exact `inspectOperation(operationId)` query. `inspectById(id)` reports only the current lifecycle state for a public Session ID and MUST NOT be used as a substitute for recovering a particular committed operation after same-ID restore/re-retire cycles.
+The public capability contract includes an exact `inspectOperation(id, operationId)` query. `inspectById(id)` reports only the current lifecycle state for a public Session ID and MUST NOT be used as a substitute for recovering a particular committed operation after same-ID restore/re-retire cycles.
 
 Operation-ID deduplication records, or compact authoritative tombstones containing the request fingerprint and committed outcome, MUST outlive every possible caller retry. Compaction MUST NOT make an old operation ID appear unused. Reusing a retained operation ID with a different request fingerprint MUST continue to return `operation_id_conflict`.
 
