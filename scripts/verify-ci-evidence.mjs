@@ -23,7 +23,7 @@ function runGitHubCli(args, label) {
   } catch (error) {
     const detail = String(error.stderr ?? error.message ?? '').trim().slice(0, 500)
     const unavailable = error.code === 'ENOENT' ||
-      /no attestations|not found|HTTP 401|HTTP 403|HTTP 404|unauthorized|forbidden|authentication required|failed to connect|timeout|rate limit/i.test(detail)
+      /no attestations|no attestation|not found|HTTP 401|HTTP 403|HTTP 404|unauthorized|forbidden|authentication required|failed to connect|timeout|rate limit/i.test(detail)
     fail(`${label}: ${detail || 'GitHub CLI request failed'}`, unavailable ? 'provenance_unavailable' : 'provenance_rejected')
   }
 }
@@ -141,6 +141,7 @@ async function main() {
       '--source-digest', commit,
       '--cert-identity', `https://github.com/${WORKFLOW}@${REF}`,
       '--cert-oidc-issuer', OIDC_ISSUER,
+      '--predicate-type', 'https://slsa.dev/provenance/v1',
       '--deny-self-hosted-runners',
     ]
     verification = JSON.parse(runGitHubCli([
