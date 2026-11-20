@@ -20,6 +20,20 @@ function fail(message, status = 'provenance_rejected') {
   throw error
 }
 
+export function assertMinimumGitHubCliVersion(versionOutput) {
+  const match = /^gh version (\\d+)\\.(\\d+)\\.(\\d+)(?:\\s|$)/m.exec(String(versionOutput ?? ''))
+  if (!match) fail('GitHub CLI version output is missing or unrecognized')
+  const actual = match.slice(1).map(Number)
+  const required = [2, 102, 0]
+  for (let i = 0; i < required.length; i++) {
+    if (actual[i] > required[i]) return actual.join('.')
+    if (actual[i] < required[i]) {
+      fail(`GitHub CLI 2.102.0 or newer is required (found ${actual.join('.')})`)
+    }
+  }
+  return actual.join('.')
+}
+
 function runGitHubCli(args, label) {
   try {
     return execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
@@ -183,6 +197,7 @@ async function main() {
   let runMetadata
 
   if (args.length === 1) {
+    assertMinimumGitHubCliVersion(runGitHubCli(['--version'], 'GitHub CLI version check failed'))
     const { runId, attempt, commit, workflowSha, signerSha } = getOnlineVerificationCoordinates(evidence)
     verification = JSON.parse(runGitHubCli(
       buildAttestationVerifyArgs(artifactPath, { runId, attempt, commit, workflowSha, signerSha }),
