@@ -97,7 +97,12 @@ test('verified report writer refuses missing or tampered artifacts without repla
       /digest mismatch/,
     )
     assert.equal(await readFile(report, 'utf8'), originalReport)
+    await assert.rejects(
+      writeEvidenceArtifact(artifactRoot, payload),
+      /existing evidence artifact failed digest verification/,
+    )
 
+    await unlink(join(artifactRoot, `${artifact.artifactRef}.json`))
     await writeEvidenceArtifact(artifactRoot, payload)
     await unlink(join(artifactRoot, `${artifact.artifactRef}.json`))
     await assert.rejects(
