@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, rename, rm, unlink, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, rename, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
@@ -259,6 +259,81 @@ async function interruptDeleteWorker(sessionRoot, sessionId) {
   await service.delete(sessionId)
 }
 
+async function interruptDeleteCopyInSeparateProcess(sessionRoot, sessionId) {
+  const worker = spawn(
+    process.execPath,
+    [fileURLToPath(import.meta.url), '--interrupt-delete-copy', sessionRoot, sessionId],
+    {
+      cwd: harnessRoot,
+      env: { ...process.env, DSH_HARNESS_ROOT: harnessRoot },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  )
+  let stdout = ''
+  let stderr = ''
+  let killedAtStagingBarrier = false
+
+  await new Promise((resolvePromise, rejectPromise) => {
+    let settled = false
+    const finish = (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      if (error) rejectPromise(error)
+      else resolvePromise()
+    }
+    const timeout = setTimeout(() => {
+      worker.kill('SIGKILL')
+      finish(new Error(
+        'Delete copy-stage worker timed out before the pre-promotion barrier.\\nstdout:\\n'
+          + stdout + '\\nstderr:\\n' + stderr,
+      ))
+    }, 60_000)
+
+    worker.stdout.setEncoding('utf8')
+    worker.stderr.setEncoding('utf8')
+    worker.stdout.on('data', chunk => {
+      stdout += chunk
+      if (!killedAtStagingBarrier && stdout.includes('delete-copy-staged\\n')) {
+        killedAtStagingBarrier = true
+        worker.kill('SIGKILL')
+      }
+    })
+    worker.stderr.on('data', chunk => { stderr += chunk })
+    worker.once('error', error => finish(error))
+    worker.once('close', (code, signal) => {
+      if (killedAtStagingBarrier && signal === 'SIGKILL') {
+        finish()
+      } else {
+        finish(new Error(
+          'Delete copy-stage worker did not die before promotion '
+            + '(exit ' + code + ', signal ' + signal + ').\\nstdout:\\n'
+            + stdout + '\\nstderr:\\n' + stderr,
+        ))
+      }
+    })
+  })
+}
+
+async function interruptDeleteCopyWorker(sessionRoot, sessionId) {
+  const { ctx } = await createHostContext(sessionRoot)
+  applySessionDelete(ctx, { trashRoot: trashRootFor(sessionRoot) })
+  const service = ctx.get('sessionDelete')
+  // Reproduce the real EXDEV copy phase and stop after the private staging
+  // copy is complete but before its atomic promotion to the visible artifact.
+  // The durable .copying marker and original source are created by runDelete.
+  service.moveArtifact = async (source, destination) => {
+    await cp(source, destination + '.partial', {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+    })
+    process.stdout.write('delete-copy-staged\\n')
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 60_000))
+  }
+  await service.delete(sessionId)
+}
+
 async function interruptRestoreInSeparateProcess(sessionRoot) {
   const worker = spawn(
     process.execPath,
@@ -363,6 +438,7 @@ async function runIntegration() {
   const manifestPath = resolve(process.env.DSH_CONFORMANCE_MANIFEST_PATH
     || join(process.cwd(), 'artifacts', 'provider-conformance.json'))
   let ctx
+  let copyRecoverySessionRoot
   try {
     await seedInSeparateProcess(sessionRoot)
     record('JSONL-SEED-CROSS-PROCESS', 'PASS', 'Child Host created, flushed, closed, and disposed a real JSONL writer; parent opens a fresh Host over the same root.', {
@@ -520,6 +596,31 @@ async function runIntegration() {
       observed: 'The controller observed SIGKILL at the delete barrier; reconcileStartup() returned { deleted: 1, restored: 0, preserved: 0 }, listTrash() retained the entry, and stat() returned undefined.',
     })
 
+    // Exercise the earlier EXDEV-copy crash boundary. The real delete path
+    // writes its manifest and .copying marker; the child completes the private
+    // .partial copy, then dies before the atomic promotion. Recovery must keep
+    // the original source and discard the uncommitted trash entry and staging.
+    copyRecoverySessionRoot = await mkdtemp(join(tmpdir(), 'dsh-session-delete-copy-recovery-'))
+    const interruptedCopyId = SESSION_ID + '-copy-crash'
+    await seedInSeparateProcess(copyRecoverySessionRoot, interruptedCopyId)
+    await interruptDeleteCopyInSeparateProcess(copyRecoverySessionRoot, interruptedCopyId)
+    const copyRecoveryHost = await createHostContext(copyRecoverySessionRoot)
+    const copyRecoveryCtx = copyRecoveryHost.ctx
+    applySessionDelete(copyRecoveryCtx, { trashRoot: trashRootFor(copyRecoverySessionRoot) })
+    const copyRecoveryService = copyRecoveryCtx.get('sessionDelete')
+    const copyRecovery = await copyRecoveryService.reconcileStartup()
+    assert.deepEqual(copyRecovery, { deleted: 0, restored: 0, preserved: 0 })
+    assert.equal((await copyRecoveryCtx.sessionPersistence.stat(interruptedCopyId))?.header?.id, interruptedCopyId)
+    assert.equal(
+      (await copyRecoveryService.listTrash()).entries.some(entry => entry.sessionId === interruptedCopyId),
+      false,
+    )
+    record('JSONL-PLUGIN-DELETE-COPY-STAGING-RECOVERY-001', 'PASS', 'A real delete child was SIGKILLed after completing the private cross-device staging copy but before atomic promotion; startup recovery discarded the uncommitted entry and preserved the original session.', {
+      expected: 'The original session remains readable, no trash entry is exposed, and the incomplete staging path is removed.',
+      observed: 'reconcileStartup() returned { deleted: 0, restored: 0, preserved: 0 }; stat() returned the original session and listTrash() omitted the interrupted entry.',
+    })
+    await copyRecoveryCtx.fiber.dispose()
+
     process.stdout.write(
       'PASS: real Cordis + AgentLoop testkit + JSONL provider; cross-process seed/close and writer exclusion/release; ready-hook delete/restore recovery; post-commit delete SIGKILL recovery; purge\n',
     )
@@ -534,7 +635,11 @@ async function runIntegration() {
     } catch (error) {
       finalizationErrors.push('Host disposal failed: ' + String(error?.stack || error))
     }
-    for (const path of [sessionRoot, trashRootFor(sessionRoot)]) {
+    for (const path of [
+      sessionRoot,
+      trashRootFor(sessionRoot),
+      ...(copyRecoverySessionRoot ? [copyRecoverySessionRoot, trashRootFor(copyRecoverySessionRoot)] : []),
+    ]) {
       try {
         await rm(path, { recursive: true, force: true })
       } catch (error) {
@@ -568,6 +673,8 @@ if (process.argv[2] === '--seed') {
   await seedWorker(resolve(process.argv[3]), process.argv[4] || SESSION_ID)
 } else if (process.argv[2] === '--interrupt-delete') {
   await interruptDeleteWorker(resolve(process.argv[3]), process.argv[4] || SESSION_ID)
+} else if (process.argv[2] === '--interrupt-delete-copy') {
+  await interruptDeleteCopyWorker(resolve(process.argv[3]), process.argv[4] || SESSION_ID)
 } else if (process.argv[2] === '--interrupt-restore') {
   await interruptRestoreWorker(resolve(process.argv[3]))
 } else if (process.argv[2] === '--hold-writer') {
