@@ -20,13 +20,15 @@ export function createManifest({ sourceCommit, provider, os = process.platform, 
 
 /** Append a validated result; secrets and arbitrary payloads are not accepted. */
 export function recordCase(manifest, result) {
-  if (!result || typeof result.id !== 'string' || !STATUSES.has(result.status)) {
-    throw new TypeError('case result requires id and a supported status')
+  if (!result || typeof result.id !== 'string' || !STATUSES.has(result.status) ||
+      (result.requiresEvidence !== undefined && typeof result.requiresEvidence !== 'boolean')) {
+    throw new TypeError('case result requires id, a supported status, and an optional boolean requiresEvidence')
   }
   if (manifest.cases.some((item) => item.id === result.id)) throw new Error(`duplicate case id: ${result.id}`)
   manifest.cases.push({
     id: result.id,
     status: result.status,
+    requiresEvidence: result.requiresEvidence === true,
     durationMs: Number.isFinite(result.durationMs) && result.durationMs >= 0 ? result.durationMs : 0,
     expected: result.expected ?? null,
     observed: result.observed ?? null,
@@ -126,9 +128,13 @@ export function assertReleaseGate(manifest, requiredIds) {
     evidenceIds.add(evidence.evidenceId)
   }
 
-  const failures = requiredIds.flatMap((id) => {
+  const evidenceCaseIds = new Set(manifest.evidence.map((item) => item.caseId))
+  const missingEvidence = manifest.cases
+    .filter((item) => item.requiresEvidence === true && !evidenceCaseIds.has(item.id))
+    .map((item) => `${item.id}:missing-evidence`)
+  const failures = [...missingEvidence, ...requiredIds.flatMap((id) => {
     const item = byId.get(id)
     return !item ? [`${id}:missing`] : item.status !== 'PASS' ? [`${id}:${item.status}`] : []
-  })
+  })]
   if (failures.length) throw new Error(`conformance release gate not met: ${failures.join(', ')}`)
 }
