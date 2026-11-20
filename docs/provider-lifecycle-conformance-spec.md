@@ -91,7 +91,7 @@ Each case is run against every built-in provider and on all three operating syst
 | S-007 | Double close | Invoke close concurrently twice | Both calls converge on one close outcome; lease released exactly once |
 | S-008 | Delayed callback | Schedule callback, complete close, then release callback | Callback cannot append or reopen by Session ID |
 | S-009 | Create reservation vs retire | Pause create after durable reservation before materialization; request retire | Operations serialize; no phantom absence, duplicate incarnation, or orphan publication |
-| S-010 | Lost create response | Kill caller after provider create commit | Same creation operation ID recovers original identity/result |
+| S-010 | Lost create response | Kill caller after `create()` returns but before materialization, then repeat with a fresh provider; separately kill after the first durable materialization | An unmaterialized pending create is absent after process death and may be created again; a materialized Session remains present and a duplicate create returns the documented already-exists outcome. Retirement must serialize with either state; this case does not require create-operation idempotency |
 | S-011 | Read admission before fence | Acquire pinned descriptor/snapshot, then retire | Existing admitted read may finish under documented pinned-read model |
 | S-012 | Read admission after fence | Commit retire, then open/read | New read admission is rejected with typed state outcome |
 | S-013 | Incremental read re-admission | Read first chunk, retire, request next chunk | Later chunk rejected; no silent generation switch |
@@ -122,6 +122,10 @@ Each case is run against every built-in provider and on all three operating syst
 | S-038 | Provider replacement | Replace active Cordis persistence service between discovery and operation | Cached capability rejected unless source identity still matches active service |
 | S-039 | Mixed-version process | Keep v1 process alive while v2 lifecycle is enabled in test environment | Deployment gate rejects enablement; v2 must not claim cross-version safety |
 | S-040 | Cancellation boundaries | Cancel before intent, after intent, and after commit | Only proven pre-commit cancellation returns `cancelled_before_commit`; later ambiguity is recoverable |
+
+### 4.1 Create response loss is not lifecycle-operation idempotency
+
+The existing `SessionPersistence.create` contract does not accept a caller-supplied operation ID. S-010 therefore tests the observable distinction between a process-local, unmaterialized create reservation and a durably materialized Session; it MUST NOT imply that `create` can recover a lost response by an idempotency key. Lifecycle mutators (`retire`, `restore`, and `purge`) have their own required operation-ID contract. If a future upstream revision adds idempotent create semantics, that is a separate additive API change and requires its own compatibility and conformance tests.
 
 ### 4.1 Operation-ledger retention and exact recovery
 
