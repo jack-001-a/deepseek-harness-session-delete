@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
 
 const REPOSITORY = 'jack-001-a/deepseek-harness-session-delete'
 const REF = 'refs/heads/main'
@@ -56,7 +57,8 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
     // These certificate claims are populated from GitHub's OIDC token. Do not
     // fall back to statement.predicate for identity: that content is workflow-controlled.
     const repositoryUri = first(certificate, ['sourceRepositoryURI', 'SourceRepositoryURI', 'sourceRepository', 'SourceRepository'])
-    const repositoryId = first(certificate, ['sourceRepositoryIdentifier', 'SourceRepositoryIdentifier'])
+    const repositoryId = first(certificate, ['sourceRepositoryIdentifier'])
+    const ownerUri = first(certificate, ['sourceRepositoryOwnerURI'])
     const ownerId = first(certificate, ['sourceRepositoryOwnerIdentifier', 'SourceRepositoryOwnerIdentifier'])
     const sourceRef = first(certificate, ['sourceRepositoryRef', 'SourceRepositoryRef'])
     const sourceDigest = first(certificate, ['sourceRepositoryDigest', 'SourceRepositoryDigest'])
@@ -73,6 +75,7 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
     if (repositoryUri !== `https://github.com/${REPOSITORY}`) continue
     if (sourceRef !== REF) continue
     if (repositoryId !== REPOSITORY_ID || ownerId !== OWNER_ID) continue
+    if (ownerUri !== 'https://github.com/jack-001-a') continue
     if (sourceDigest !== expectedCommit) continue
     if (issuer !== OIDC_ISSUER) continue
     if (workflowRef !== `https://github.com/${WORKFLOW}@${REF}`) continue
@@ -105,18 +108,49 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
 }
 
 async function main() {
-  const [artifactPath, verificationPath, runMetadataPath] = process.argv.slice(2)
-  if (!artifactPath || !verificationPath || !runMetadataPath) {
-    throw new Error('usage: node scripts/verify-ci-evidence.mjs <evidence-json> <gh-verification-json> <github-run-metadata-json>')
+  const args = process.argv.slice(2)
+  if (args.length !== 1 && args.length !== 3) {
+    throw new Error('usage: node scripts/verify-ci-evidence.mjs <evidence-json> [<gh-verification-json> <github-run-metadata-json>]')
   }
-  const [artifactBytes, verification, runMetadata] = await Promise.all([
-    readFile(artifactPath),
-    readFile(verificationPath, 'utf8').then(JSON.parse),
-    readFile(runMetadataPath, 'utf8').then(JSON.parse),
-  ])
+
+  const artifactPath = args[0]
+  const artifactBytes = await readFile(artifactPath)
   const evidence = JSON.parse(artifactBytes.toString('utf8'))
+  let verification
+  let runMetadata
+
+  if (args.length === 1) {
+    const runId = String(evidence?.source?.runId ?? '')
+    const attempt = String(evidence?.source?.runAttempt ?? '')
+    const commit = String(evidence?.source?.commit ?? '')
+    if (!/^\\d+$/.test(runId) || !/^\\d+$/.test(attempt) || !/^[a-f0-9]{40}$/.test(commit)) {
+      fail('evidence cannot safely identify a GitHub run attempt')
+    }
+    const commonArgs = [
+      '--repo', REPOSITORY,
+      '--signer-workflow', WORKFLOW,
+      '--source-ref', REF,
+      '--source-digest', commit,
+      '--cert-identity', `https://github.com/${WORKFLOW}@${REF}`,
+      '--cert-oidc-issuer', OIDC_ISSUER,
+      '--deny-self-hosted-runners',
+    ]
+    verification = JSON.parse(execFileSync('gh', [
+      'attestation', 'verify', artifactPath, ...commonArgs, '--format', 'json',
+    ], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }))
+    runMetadata = JSON.parse(execFileSync('gh', [
+      'api', `repos/${REPOSITORY}/actions/runs/${runId}/attempts/${attempt}`,
+    ], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 }))
+  } else {
+    const [, verificationPath, runMetadataPath] = args
+    ;[verification, runMetadata] = await Promise.all([
+      readFile(verificationPath, 'utf8').then(JSON.parse),
+      readFile(runMetadataPath, 'utf8').then(JSON.parse),
+    ])
+  }
+
   const result = evaluateAttestationPolicy({ verification, runMetadata, evidence, artifactBytes })
-  process.stdout.write(JSON.stringify(result, null, 2) + '\n')
+  process.stdout.write(JSON.stringify(result, null, 2) + '\\n')
 }
 
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
