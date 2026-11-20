@@ -20,7 +20,7 @@ function fixture() {
     head_sha: commit,
     head_branch: 'main',
     event: 'push',
-    path: '.github/workflows/trusted-ci-evidence.yml',
+    path: '.github/workflows/trusted-ci-evidence.yml@main',
   }
   const verification = [{
     verificationResult: {
