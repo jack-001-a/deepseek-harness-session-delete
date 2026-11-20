@@ -1,6 +1,8 @@
 name: trusted-ci-evidence
 
-# Only canonical-repository main-branch executions may mint provenance. PR workflows remain read-only.
+# Only canonical-repository main-branch executions may mint provenance.
+# The called reusable workflow is the cryptographic Build Signer identity;
+# this file remains the top-level Build Config identity.
 on:
   push:
     branches: [main]
@@ -16,80 +18,9 @@ concurrency:
 jobs:
   test-and-attest:
     if: github.repository == 'jack-001-a/deepseek-harness-session-delete' && github.ref == 'refs/heads/main' && github.ref_protected == true && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    uses: ./.github/workflows/trusted-ci-evidence-reusable.yml
     permissions:
       contents: read
       actions: read
       id-token: write
       attestations: write
-    steps:
-      - name: Checkout protected source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Require a protected main ref
-        run: test "$GITHUB_REF_PROTECTED" = "true"
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-
-      - name: Check JavaScript syntax
-        run: npm run check
-
-      - name: Run unit tests
-        shell: bash
-        run: |
-          mkdir -p ci-evidence
-          set -o pipefail
-          npm test 2>&1 | tee ci-evidence/unit-tests.log
-
-      - name: Run conformance harness smoke tests
-        shell: bash
-        run: |
-          set -o pipefail
-          npm run test:conformance 2>&1 | tee ci-evidence/conformance-tests.log
-
-      - name: Create immutable CI evidence subject
-        run: node scripts/create-ci-evidence.mjs
-
-      - name: Attest CI evidence subject
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
-        with:
-          subject-path: ci-evidence/ci-evidence.json
-          show-summary: true
-
-      - name: Verify generated attestation
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh attestation verify ci-evidence/ci-evidence.json \
-            --repo "$GITHUB_REPOSITORY" \
-            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/trusted-ci-evidence.yml" \
-            --signer-digest "$GITHUB_WORKFLOW_SHA" \
-            --source-ref "$GITHUB_REF" \
-            --source-digest "$GITHUB_SHA" \
-            --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/trusted-ci-evidence.yml@refs/heads/main" \
-            --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
-            --predicate-type "https://slsa.dev/provenance/v1" \
-            --deny-self-hosted-runners \
-            --format json > ci-evidence/attestation-verification.json
-
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \
-            > ci-evidence/github-run-metadata.json
-
-          node scripts/verify-ci-evidence.mjs \
-            ci-evidence/ci-evidence.json \
-            ci-evidence/attestation-verification.json \
-            ci-evidence/github-run-metadata.json
-
-      - name: Upload attested evidence and logs
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: trusted-ci-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ci-evidence/
-          if-no-files-found: error
-          retention-days: 90
