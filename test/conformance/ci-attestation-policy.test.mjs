@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { buildAttestationVerifyArgs, evaluateAttestationPolicy, getOnlineVerificationCoordinates } from '../../scripts/verify-ci-evidence.mjs'
+import { assertMinimumGitHubCliVersion, buildAttestationVerifyArgs, evaluateAttestationPolicy, getOnlineVerificationCoordinates } from '../../scripts/verify-ci-evidence.mjs'
 
 const repository = 'jack-001-a/deepseek-harness-session-delete'
 const workflow = `${repository}/.github/workflows/trusted-ci-evidence.yml`
@@ -57,6 +57,28 @@ function fixture() {
     },
   }]
   return { evidence, runMetadata, verification, artifactBytes: bytes }
+}
+
+for (const version of [
+  'gh version 2.102.0 (2026-09-30)',
+  'gh version 2.103.1 (2026-10-01)',
+  'gh version 3.0.0 (2027-01-01)',
+]) {
+  test('accepts patched GitHub CLI version: ' + version, () => {
+    assert.doesNotThrow(() => assertMinimumGitHubCliVersion(version))
+  })
+}
+
+for (const version of [
+  'gh version 2.101.0 (2026-09-29)',
+  'gh version 2.9.0 (2026-01-01)',
+  'gh version 2.102.0-rc.1',
+  'GitHub CLI version unavailable',
+  '',
+]) {
+  test('rejects unsafe or unrecognized GitHub CLI version: ' + version, () => {
+    assert.throws(() => assertMinimumGitHubCliVersion(version), /provenance policy rejected/)
+  })
 }
 
 test('builds a pinned GitHub attestation verification command', () => {
