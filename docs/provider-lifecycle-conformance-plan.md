@@ -55,8 +55,12 @@ A scheduled point counts as exercised only when `waitForHit` returns a correlate
 record containing the provider-issued fault ID, exact point/phase/action/operation ID,
 `hit: true`, `actionApplied: true`, and a non-empty provider boundary ID. Missing
 hooks, timeouts, mismatched records, or an action that was not applied are failures;
-they must never be converted to a skipped PASS. Callers must disarm in a `finally`
-path.
+they must never be converted to a skipped PASS. Prefer the shared `withProviderFault`
+runner, which performs disarm after both hit-verification and scenario failures. A
+successful `disarm()` must explicitly return `true`; `false`, `undefined`, or a thrown
+error is a cleanup failure and fails the scenario. If both the scenario and cleanup
+fail, both causes must remain observable (for example via `AggregateError),` rather
+than allowing cleanup to hide the original failure.
 
 This is an adapter protocol contract, not proof that the hook is placed at a real
 filesystem sync or SQLite commit instruction. Each Provider must separately document
