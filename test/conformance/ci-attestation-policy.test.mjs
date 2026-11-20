@@ -46,6 +46,18 @@ function fixture() {
   return { evidence, runMetadata, verification, artifactBytes: bytes }
 }
 
+test('classifies missing attestation data as unavailable', () => {
+  const f = fixture()
+  f.verification = []
+  assert.throws(() => evaluateAttestationPolicy(f), error => error.status === 'provenance_unavailable')
+})
+
+test('rejects evidence that claims an unprotected ref', () => {
+  const f = fixture()
+  f.evidence.source.refProtected = false
+  assert.throws(() => evaluateAttestationPolicy(f), /provenance policy rejected/)
+})
+
 test('accepts a verified certificate and exact subject bound to independent GitHub run metadata', () => {
   const result = evaluateAttestationPolicy(fixture())
   assert.equal(result.status, 'provenance_verified')
