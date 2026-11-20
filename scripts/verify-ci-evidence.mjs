@@ -5,6 +5,8 @@ const REPOSITORY = 'jack-001-a/deepseek-harness-session-delete'
 const REF = 'refs/heads/main'
 const WORKFLOW = `${REPOSITORY}/.github/workflows/trusted-ci-evidence.yml`
 const OIDC_ISSUER = 'https://token.actions.githubusercontent.com'
+const REPOSITORY_ID = '1428060802'
+const OWNER_ID = '320086254'
 
 function first(object, names) {
   for (const name of names) {
@@ -29,6 +31,7 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
   if (!/^[a-f0-9]{40}$/.test(expectedCommit ?? '')) fail('evidence source commit is not a full SHA')
   if (!/^\d+$/.test(expectedRunId) || !/^\d+$/.test(expectedAttempt)) fail('GitHub run metadata is incomplete')
   if (runMetadata?.repository?.full_name !== REPOSITORY) fail('run repository mismatch')
+  if (String(runMetadata?.repository?.id ?? '') !== REPOSITORY_ID) fail('run repository immutable ID mismatch')
   if (runMetadata?.head_sha !== expectedCommit) fail('run head SHA does not match evidence source commit')
   if (runMetadata?.event !== 'push' && runMetadata?.event !== 'workflow_dispatch') fail('run event is not allowed')
   if (runMetadata?.head_branch !== 'main') fail('run is not for main')
@@ -46,6 +49,8 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
     // These certificate claims are populated from GitHub's OIDC token. Do not
     // fall back to statement.predicate for identity: that content is workflow-controlled.
     const repositoryUri = first(certificate, ['sourceRepositoryURI', 'SourceRepositoryURI', 'sourceRepository', 'SourceRepository'])
+    const repositoryId = first(certificate, ['sourceRepositoryIdentifier', 'SourceRepositoryIdentifier'])
+    const ownerId = first(certificate, ['sourceRepositoryOwnerIdentifier', 'SourceRepositoryOwnerIdentifier'])
     const sourceRef = first(certificate, ['sourceRepositoryRef', 'SourceRepositoryRef'])
     const sourceDigest = first(certificate, ['sourceRepositoryDigest', 'SourceRepositoryDigest'])
     const san = first(certificate, ['subjectAlternativeName', 'SubjectAlternativeName', 'san', 'SAN'])
@@ -56,6 +61,7 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
 
     if (repositoryUri !== `https://github.com/${REPOSITORY}` && repositoryUri !== REPOSITORY) continue
     if (sourceRef !== REF) continue
+    if (repositoryId !== REPOSITORY_ID || ownerId !== OWNER_ID) continue
     if (sourceDigest !== expectedCommit) continue
     if (issuer !== OIDC_ISSUER) continue
     if (workflowRef !== `https://github.com/${WORKFLOW}@${REF}`) continue
