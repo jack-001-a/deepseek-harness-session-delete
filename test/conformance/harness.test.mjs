@@ -8,7 +8,7 @@ import { ProcessWorker, withWorkers } from './process-harness.mjs'
 import { assertProviderAdapter } from './fixture-contract.mjs'
 import { BarrierController, FaultPlan } from './orchestration.mjs'
 import { assertReleaseGate, createManifest, recordCase, recordEvidence, writeManifest } from './manifest.mjs'
-import { readVerifiedEvidenceArtifact, verifyManifestEvidence, writeEvidenceArtifact } from './evidence-artifacts.mjs'
+import { readVerifiedEvidenceArtifact, verifyManifestEvidence, writeEvidenceArtifact, writeVerifiedManifest } from './evidence-artifacts.mjs'
 
 test('worker barrier is controlled by the parent process, not sleeps', async () => {
   await withWorkers([{ role: 'writer', caseId: 'harness-smoke' }], async ([worker]) => {
@@ -186,12 +186,11 @@ test('verified provider evidence is persisted, digest-checked, and registered in
       phase: 'after-commit-before-response', operation: 'retire', action: 'kill',
     }
     recordEvidence(manifest, evidence)
-    assert.doesNotThrow(() => assertReleaseGate(manifest, ['P-FAULT-001']))
+    const reportPath = join(directory, 'report.json')
+    await writeVerifiedManifest(reportPath, manifest, ['P-FAULT-001'], join(directory, 'artifacts'))
     const verifiedArtifacts = await verifyManifestEvidence(manifest, join(directory, 'artifacts'))
     assert.equal(verifiedArtifacts.length, 1)
     assert.equal(verifiedArtifacts[0].evidenceId, observation.evidenceId)
-    const reportPath = join(directory, 'report.json')
-    await writeManifest(reportPath, manifest)
     const report = JSON.parse(await readFile(reportPath, 'utf8'))
     assert.equal(report.evidence[0].artifactSha256, artifact.artifactSha256)
     assert.deepEqual(await readVerifiedEvidenceArtifact(join(directory, 'artifacts'), artifact.artifactRef), observation)
