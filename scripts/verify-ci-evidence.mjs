@@ -48,7 +48,8 @@ export function buildAttestationVerifyArgs(artifactPath, coordinates) {
   if (!coordinates || !/^\d+$/.test(String(coordinates.runId)) ||
       !/^\d+$/.test(String(coordinates.attempt)) ||
       !/^[a-f0-9]{40}$/.test(coordinates.commit ?? '') ||
-      !/^[a-f0-9]{40}$/.test(coordinates.workflowSha ?? '')) {
+      !/^[a-f0-9]{40}$/.test(coordinates.workflowSha ?? '') ||
+      !/^[a-f0-9]{40}$/.test(coordinates.signerSha ?? '')) {
     fail('invalid attestation verification coordinates')
   }
   return [
@@ -182,9 +183,9 @@ async function main() {
   let runMetadata
 
   if (args.length === 1) {
-    const { runId, attempt, commit, workflowSha } = getOnlineVerificationCoordinates(evidence)
+    const { runId, attempt, commit, workflowSha, signerSha } = getOnlineVerificationCoordinates(evidence)
     verification = JSON.parse(runGitHubCli(
-      buildAttestationVerifyArgs(artifactPath, { runId, attempt, commit, workflowSha }),
+      buildAttestationVerifyArgs(artifactPath, { runId, attempt, commit, workflowSha, signerSha }),
       'GitHub attestation verification failed',
     ))
     runMetadata = JSON.parse(runGitHubCli([
