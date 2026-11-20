@@ -81,10 +81,16 @@ export interface SessionLifecycleCapability {
     id: SessionId,
     options?: { signal?: AbortSignal },
   ): Promise<SessionRetirement | undefined>
+
+  inspectOperation(
+    operationId: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<SessionRetirement | undefined>
 }
 
+declare const sessionRetirementTokenBrand: unique symbol
 export type SessionRetirementToken = string & {
-  readonly __sessionRetirementToken: unique symbol
+  readonly [sessionRetirementTokenBrand]: true
 }
 
 export type SessionRetirementState =
@@ -109,13 +115,14 @@ The exact branding and exported type names are open to upstream review. The sema
 - `restore` makes the retired generation live again without requiring a live artifact to exist first.
 - `purge` permanently removes the retired logical generation according to the provider's documented retention and erasure guarantees.
 - `inspect` resolves a lost response when the caller retained the token.
-- `inspectById` recovers a provider commit when the caller crashed after provider commit but before persisting the returned token.
+- `inspectById` observes the current lifecycle record for a Session.
+- `inspectOperation` recovers the exact provider commit when the caller crashed after provider commit but before persisting the returned token; this avoids ambiguity when the same public Session ID is retired again after a restore.
 
 A separate public `recover()` is not required in the minimal surface. Provider startup must complete or safely refuse its own durable recovery before exposing the capability. Consumers must not be asked to implement provider recovery.
 
 ## 4. Idempotency and lost-response contract
 
-Every mutating operation accepts a caller-generated `operationId`. The caller persists it before invoking the provider and reuses the exact same value after timeout, process death, transport failure, or unknown response.
+Every mutating operation accepts a caller-generated `operationId`, unique within the provider-root namespace for the lifetime of its durable operation ledger. The caller persists it before invoking the provider and reuses the exact same value after timeout, process death, transport failure, or unknown response.
 
 The provider stores an operation mapping durably with the lifecycle transition:
 
