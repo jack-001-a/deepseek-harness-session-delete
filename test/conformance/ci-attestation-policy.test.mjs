@@ -26,12 +26,14 @@ function fixture() {
     verificationResult: {
       signature: {
         certificate: {
-          sourceRepository: repository,
-          sourceRepositoryRef: 'refs/heads/main',
-          sourceRepositoryDigest: commit,
+          SourceRepositoryURI: `https://github.com/${repository}`,
+          SourceRepositoryRef: 'refs/heads/main',
+          SourceRepositoryDigest: commit,
           subjectAlternativeName: `https://github.com/${workflow}@refs/heads/main`,
-          issuer: 'https://token.actions.githubusercontent.com',
-          buildSignerURI: `https://github.com/${workflow}@refs/heads/main`,
+          Issuer: 'https://token.actions.githubusercontent.com',
+          BuildSignerURI: `https://github.com/${workflow}@refs/heads/main`,
+          BuildTrigger: 'push',
+          RunInvocationURI: `https://github.com/${repository}/actions/runs/123456789/attempts/1`,
         },
       },
       statement: { subject: [{ name: 'ci-evidence.json', digest: { sha256: digest } }] },
@@ -48,14 +50,14 @@ test('accepts a verified certificate and exact subject bound to independent GitH
 })
 
 for (const [name, mutate] of [
-  ['wrong repository', f => { f.verification[0].verificationResult.signature.certificate.sourceRepository = 'attacker/repo' }],
-  ['wrong workflow identity', f => { f.verification[0].verificationResult.signature.certificate.buildSignerURI = 'https://github.com/attacker/other.yml@refs/heads/main' }],
-  ['wrong ref', f => { f.verification[0].verificationResult.signature.certificate.sourceRepositoryRef = 'refs/heads/feature' }],
+  ['wrong repository', f => { f.verification[0].verificationResult.signature.certificate.SourceRepositoryURI = 'https://github.com/attacker/repo' }],
+  ['wrong workflow identity', f => { f.verification[0].verificationResult.signature.certificate.BuildSignerURI = 'https://github.com/attacker/other.yml@refs/heads/main' }],
+  ['wrong ref', f => { f.verification[0].verificationResult.signature.certificate.SourceRepositoryRef = 'refs/heads/feature' }],
   ['wrong event', f => { f.runMetadata.event = 'pull_request' }],
   ['wrong source commit', f => { f.runMetadata.head_sha = 'fedcba9876543210fedcba9876543210fedcba98' }],
   ['wrong subject digest', f => { f.verification[0].verificationResult.statement.subject[0].digest.sha256 = '0'.repeat(64) }],
   ['wrong run attempt', f => { f.runMetadata.run_attempt = 2 }],
-  ['missing certificate issuer', f => { delete f.verification[0].verificationResult.signature.certificate.issuer }],
+  ['missing certificate issuer', f => { delete f.verification[0].verificationResult.signature.certificate.Issuer }],
 ]) {
   test(`rejects ${name}`, () => {
     const f = fixture()
