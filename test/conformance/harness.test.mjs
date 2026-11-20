@@ -187,6 +187,7 @@ test('verified provider evidence is persisted, digest-checked, and registered in
     }
     recordEvidence(manifest, evidence)
     const reportPath = join(directory, 'report.json')
+    await assert.rejects(writeManifest(reportPath, manifest), /must use writeVerifiedManifest/)
     await writeVerifiedManifest(reportPath, manifest, ['P-FAULT-001'], join(directory, 'artifacts'))
     const verifiedArtifacts = await verifyManifestEvidence(manifest, join(directory, 'artifacts'))
     assert.equal(verifiedArtifacts.length, 1)
