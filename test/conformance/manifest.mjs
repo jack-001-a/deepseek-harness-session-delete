@@ -43,6 +43,7 @@ export function recordEvidence(manifest, evidence) {
       typeof evidence.evidenceId !== 'string' || !evidence.evidenceId ||
       typeof evidence.artifactRef !== 'string' || !digest.test(evidence.artifactRef) ||
       evidence.artifactSha256 !== evidence.artifactRef ||
+      !['effect', 'faultId', 'operationId', 'point', 'phase', 'operation', 'action'].every((field) => typeof evidence[field] === 'string' && evidence[field]) ||
       evidence.sourceCommit !== manifest.sourceCommit ||
       typeof evidence.testRunId !== 'string' || !evidence.testRunId ||
       typeof evidence.providerVersion !== 'string' || !evidence.providerVersion ||
@@ -68,12 +69,6 @@ export function recordEvidence(manifest, evidence) {
     action: evidence.action,
     artifactRef: evidence.artifactRef,
     artifactSha256: evidence.artifactSha256,
-    faultId: evidence.faultId,
-    operationId: evidence.operationId,
-    point: evidence.point,
-    phase: evidence.phase,
-    operation: evidence.operation,
-    action: evidence.action,
   })
 }
 
