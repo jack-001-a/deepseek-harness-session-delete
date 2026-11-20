@@ -49,6 +49,8 @@ The capability should expose only provider-owned lifecycle operations and observ
 
 ```ts
 export interface SessionLifecycleCapability {
+  /** Opaque durable identity of the provider storage root; stable across recovery. */
+  readonly providerRootId: string
   /**
    * Opaque durable recovery epoch for this provider root.
    * Stable across ordinary process/service restarts; rotated by an approved
