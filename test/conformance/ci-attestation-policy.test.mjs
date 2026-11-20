@@ -59,6 +59,8 @@ for (const [name, mutate] of [
   ['wrong owner identity', f => { f.verification[0].verificationResult.signature.certificate.sourceRepositoryOwnerIdentifier = '999' }],
   ['wrong run invocation', f => { f.verification[0].verificationResult.signature.certificate.runInvocationURI = 'https://github.com/attacker/repo/actions/runs/1/attempts/1' }],
   ['wrong workflow identity', f => { f.verification[0].verificationResult.signature.certificate.buildSignerURI = 'https://github.com/attacker/other.yml@refs/heads/main' }],
+  ['wrong certificate SAN', f => { f.verification[0].verificationResult.signature.certificate.subjectAlternativeName = 'https://github.com/attacker/other.yml@refs/heads/main' }],
+  ['missing certificate SAN', f => { delete f.verification[0].verificationResult.signature.certificate.subjectAlternativeName }],
   ['wrong workflow revision', f => { f.verification[0].verificationResult.signature.certificate.buildConfigDigest = commit }],
   ['wrong ref', f => { f.verification[0].verificationResult.signature.certificate.sourceRepositoryRef = 'refs/heads/feature' }],
   ['wrong event', f => { f.runMetadata.event = 'pull_request' }],
