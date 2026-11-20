@@ -5,7 +5,8 @@
  */
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { mkdir, mkdtemp, rename, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
@@ -305,6 +306,10 @@ async function runIntegration() {
     const capabilities = await service.describe()
     assert.equal(capabilities.supported, true)
     assert.equal(capabilities.canRestore, true)
+    record('JSONL-PLUGIN-CAPABILITIES-001', 'PASS', 'The real Cordis plugin registered and advertised supported delete and restore capabilities.', {
+      expected: 'The plugin registers on the real Cordis context and reports delete/restore support.',
+      observed: 'describe() returned supported=true and canRestore=true.',
+    })
 
     // Verify provider-level writer exclusion in a separate process; this does
     // not imply that Session Delete can fence a live writer during mutation.
@@ -330,6 +335,10 @@ async function runIntegration() {
 
     const trashAfterDelete = await service.listTrash()
     assert.ok(trashAfterDelete.entries.some(entry => entry.sessionId === SESSION_ID))
+    record('JSONL-PLUGIN-DELETE-TRASH-001', 'PASS', 'The real plugin moved the closed session into its isolated trash and exposed the entry through listTrash().', {
+      expected: 'Delete reports a stored trash operation and the session appears in the trash listing.',
+      observed: 'delete() returned removed/trashed/stored=true and listTrash() contained the session.',
+    })
 
     // Re-open the same durable store through a fresh Host composition. The
     // startup reconciler must safely replay committed-delete accounting.
@@ -351,12 +360,20 @@ async function runIntegration() {
     assert.ok((await recoveryService.listTrash()).entries.some(
       entry => entry.sessionId === SESSION_ID,
     ))
+    record('JSONL-PLUGIN-DELETE-STARTUP-RECOVERY-001', 'PASS', 'A fresh real Host composition replayed committed-delete accounting from its awaited Cordis ready listener.', {
+      expected: 'Startup reconciliation reports one deleted operation and preserves the trash entry.',
+      observed: 'reconcileStartup() returned { deleted: 1, restored: 0, preserved: 0 } and the trash entry remained.',
+    })
     service = recoveryService
 
     const restored = await service.restore(SESSION_ID)
     assert.equal(restored.restored, true)
     const snapshot = await ctx.sessionPersistence.stat(SESSION_ID)
     assert.equal(snapshot.header.id, SESSION_ID)
+    record('JSONL-PLUGIN-RESTORE-001', 'PASS', 'The plugin restored the trashed session and the real JSONL provider observed the restored session header.', {
+      expected: 'restore() reports success and stat() resolves the restored session.',
+      observed: 'restore() returned restored=true and stat() returned the expected session ID.',
+    })
 
     const removedAgain = await service.delete(SESSION_ID)
     assert.equal(removedAgain.trashed, true)
@@ -379,6 +396,10 @@ async function runIntegration() {
     assert.deepEqual(restoreRecovery, { deleted: 0, restored: 1, preserved: 0 })
     const recoveredSnapshot = await ctx.sessionPersistence.stat(SESSION_ID)
     assert.equal(recoveredSnapshot.header.id, SESSION_ID)
+    record('JSONL-PLUGIN-RESTORE-STARTUP-RECOVERY-001', 'PASS', 'A fresh real Host composition recovered a child process killed after trash promotion and before restore accounting.', {
+      expected: 'Startup reconciliation reports one restored operation and the provider can read the session.',
+      observed: 'reconcileStartup() returned { deleted: 0, restored: 1, preserved: 0 } and stat() returned the session.',
+    })
     service = restoreRecoveryService
 
     const removedAfterRecovery = await service.delete(SESSION_ID)
@@ -391,6 +412,10 @@ async function runIntegration() {
     // The persistence contract intentionally models stat() as an optional
     // observation: absence is returned as undefined, not thrown as an error.
     assert.equal(await ctx.sessionPersistence.stat(SESSION_ID), undefined)
+    record('JSONL-PLUGIN-PURGE-001', 'PASS', 'The plugin purged the restored session from trash and the real provider reported the session absent.', {
+      expected: 'purge() reports success, the trash listing no longer contains the session, and stat() returns undefined.',
+      observed: 'purge() returned purged=true, listTrash() omitted the entry, and stat() returned undefined.',
+    })
 
     process.stdout.write(
       'PASS: real Cordis + AgentLoop testkit + JSONL provider; cross-process seed/close and writer exclusion/release; ready-hook plugin delete/restore recovery; purge\n',
@@ -425,9 +450,13 @@ async function runIntegration() {
     manifest.finishedAt = new Date().toISOString()
     manifest.durationMs = Number((process.hrtime.bigint() - runStartedAt) / 1_000_000n)
     await mkdir(dirname(manifestPath), { recursive: true })
-    const temporaryManifest = manifestPath + '.tmp-' + process.pid
-    await writeFile(temporaryManifest, JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx', mode: 0o600 })
-    await rename(temporaryManifest, manifestPath)
+    const temporaryManifest = manifestPath + '.tmp-' + process.pid + '-' + randomUUID()
+    try {
+      await writeFile(temporaryManifest, JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx', mode: 0o600 })
+      await rename(temporaryManifest, manifestPath)
+    } finally {
+      await unlink(temporaryManifest).catch(() => {})
+    }
     process.stdout.write('Conformance manifest: ' + manifestPath + '\n')
   }
 }
