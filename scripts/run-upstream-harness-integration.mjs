@@ -129,7 +129,7 @@ async function verifyCrossProcessWriterOwnership(ctx, persistence, sessionRoot) 
       // fixture cleanup must never race a still-running worker.
       timeoutError ??= new Error(
         'Worker process error before close: ' + String(error?.stack || error)
-          + '\\nstdout:\\n' + stdout + '\\nstderr:\\n' + stderr,
+          + '\nstdout:\n' + stdout + '\nstderr:\n' + stderr,
       )
       worker.kill('SIGKILL')
     })
@@ -259,7 +259,7 @@ async function interruptDeleteInSeparateProcess(sessionRoot, sessionId) {
       // fixture cleanup must never race a still-running worker.
       timeoutError ??= new Error(
         'Worker process error before close: ' + String(error?.stack || error)
-          + '\\nstdout:\\n' + stdout + '\\nstderr:\\n' + stderr,
+          + '\nstdout:\n' + stdout + '\nstderr:\n' + stderr,
       )
       worker.kill('SIGKILL')
     })
@@ -347,7 +347,7 @@ async function interruptDeleteCopyInSeparateProcess(sessionRoot, sessionId) {
       // fixture cleanup must never race a still-running worker.
       timeoutError ??= new Error(
         'Worker process error before close: ' + String(error?.stack || error)
-          + '\\nstdout:\\n' + stdout + '\\nstderr:\\n' + stderr,
+          + '\nstdout:\n' + stdout + '\nstderr:\n' + stderr,
       )
       worker.kill('SIGKILL')
     })
@@ -441,7 +441,7 @@ async function interruptRestoreInSeparateProcess(sessionRoot) {
       // fixture cleanup must never race a still-running worker.
       timeoutError ??= new Error(
         'Worker process error before close: ' + String(error?.stack || error)
-          + '\\nstdout:\\n' + stdout + '\\nstderr:\\n' + stderr,
+          + '\nstdout:\n' + stdout + '\nstderr:\n' + stderr,
       )
       worker.kill('SIGKILL')
     })
