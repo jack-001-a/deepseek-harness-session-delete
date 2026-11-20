@@ -604,8 +604,10 @@ async function runIntegration() {
     const interruptedCopyId = SESSION_ID + '-copy-crash'
     await seedInSeparateProcess(copyRecoverySessionRoot, interruptedCopyId)
     await interruptDeleteCopyInSeparateProcess(copyRecoverySessionRoot, interruptedCopyId)
+    await ctx.fiber.dispose()
     const copyRecoveryHost = await createHostContext(copyRecoverySessionRoot)
-    const copyRecoveryCtx = copyRecoveryHost.ctx
+    ctx = copyRecoveryHost.ctx
+    const copyRecoveryCtx = ctx
     applySessionDelete(copyRecoveryCtx, { trashRoot: trashRootFor(copyRecoverySessionRoot) })
     const copyRecoveryService = copyRecoveryCtx.get('sessionDelete')
     const copyRecovery = await copyRecoveryService.reconcileStartup()
@@ -615,11 +617,10 @@ async function runIntegration() {
       (await copyRecoveryService.listTrash()).entries.some(entry => entry.sessionId === interruptedCopyId),
       false,
     )
-    record('JSONL-PLUGIN-DELETE-COPY-STAGING-RECOVERY-001', 'PASS', 'A real delete child was SIGKILLed after completing the private cross-device staging copy but before atomic promotion; startup recovery discarded the uncommitted entry and preserved the original session.', {
-      expected: 'The original session remains readable, no trash entry is exposed, and the incomplete staging path is removed.',
+    record('JSONL-PLUGIN-DELETE-COPY-STAGING-RECOVERY-001', 'PASS', 'A real delete child was SIGKILLed after creating the private .partial staging copy but before atomic promotion; startup recovery discarded the uncommitted entry and preserved the original session.', {
+      expected: 'The original session remains readable, no trash entry is exposed, and the unpromoted staging path is removed.',
       observed: 'reconcileStartup() returned { deleted: 0, restored: 0, preserved: 0 }; stat() returned the original session and listTrash() omitted the interrupted entry.',
     })
-    await copyRecoveryCtx.fiber.dispose()
 
     process.stdout.write(
       'PASS: real Cordis + AgentLoop testkit + JSONL provider; cross-process seed/close and writer exclusion/release; ready-hook delete/restore recovery; post-commit delete SIGKILL recovery; purge\n',
