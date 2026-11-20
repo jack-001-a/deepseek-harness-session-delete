@@ -30,15 +30,18 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
 
   if (!/^[a-f0-9]{40}$/.test(expectedCommit ?? '')) fail('evidence source commit is not a full SHA')
   if (evidence?.source?.refProtected !== true) fail('evidence does not record a protected ref')
+  if (evidence?.source?.repository !== REPOSITORY || evidence?.source?.ref !== REF) fail('evidence repository/ref mismatch')
   if (!/^\d+$/.test(expectedRunId) || !/^\d+$/.test(expectedAttempt)) fail('GitHub run metadata is incomplete')
   if (runMetadata?.repository?.full_name !== REPOSITORY) fail('run repository mismatch')
   if (String(runMetadata?.repository?.id ?? '') !== REPOSITORY_ID) fail('run repository immutable ID mismatch')
   if (runMetadata?.head_sha !== expectedCommit) fail('run head SHA does not match evidence source commit')
   if (runMetadata?.event !== 'push' && runMetadata?.event !== 'workflow_dispatch') fail('run event is not allowed')
+  if (evidence?.source?.event !== runMetadata.event) fail('evidence event does not match GitHub run metadata')
   if (runMetadata?.head_branch !== 'main') fail('run is not for main')
   if (!String(runMetadata?.path ?? '').startsWith('.github/workflows/trusted-ci-evidence.yml@')) fail('run workflow path mismatch')
   if (String(runMetadata?.run_attempt) !== String(evidence?.source?.runAttempt)) fail('run attempt does not match evidence')
   if (String(runMetadata?.id) !== String(evidence?.source?.runId)) fail('run ID does not match evidence')
+  if (evidence?.source?.workflowRef !== `${WORKFLOW}@${REF}`) fail('evidence workflow ref mismatch')
 
   const accepted = []
   for (const entry of verification) {
