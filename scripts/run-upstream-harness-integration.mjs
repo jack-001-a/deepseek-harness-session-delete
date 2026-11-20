@@ -119,7 +119,20 @@ async function verifyCrossProcessWriterOwnership(ctx, persistence, sessionRoot) 
       if (stdout.includes('writer-held\n')) finish()
     })
     worker.stderr.on('data', chunk => { stderr += chunk })
-    worker.once('error', error => finish(error))
+    worker.on('error', error => {
+      if (worker.pid === undefined) {
+        // A spawn failure has no child process to drain.
+        finish(error)
+        return
+      }
+      // Once a child exists, do not reject before its close event: outer
+      // fixture cleanup must never race a still-running worker.
+      timeoutError ??= new Error(
+        'Worker process error before close: ' + String(error?.stack || error)
+          + '\\nstdout:\\n' + stdout + '\\nstderr:\\n' + stderr,
+      )
+      worker.kill('SIGKILL')
+    })
     worker.once('close', (code, signal) => {
       if (timeoutError) {
         finish(timeoutError)
@@ -236,7 +249,20 @@ async function interruptDeleteInSeparateProcess(sessionRoot, sessionId) {
       }
     })
     worker.stderr.on('data', chunk => { stderr += chunk })
-    worker.once('error', error => finish(error))
+    worker.on('error', error => {
+      if (worker.pid === undefined) {
+        // A spawn failure has no child process to drain.
+        finish(error)
+        return
+      }
+      // Once a child exists, do not reject before its close event: outer
+      // fixture cleanup must never race a still-running worker.
+      timeoutError ??= new Error(
+        'Worker process error before close: ' + String(error?.stack || error)
+          + '\\nstdout:\\n' + stdout + '\\nstderr:\\n' + stderr,
+      )
+      worker.kill('SIGKILL')
+    })
     worker.once('close', (code, signal) => {
       if (timeoutError) {
         finish(timeoutError)
@@ -311,7 +337,20 @@ async function interruptDeleteCopyInSeparateProcess(sessionRoot, sessionId) {
       }
     })
     worker.stderr.on('data', chunk => { stderr += chunk })
-    worker.once('error', error => finish(error))
+    worker.on('error', error => {
+      if (worker.pid === undefined) {
+        // A spawn failure has no child process to drain.
+        finish(error)
+        return
+      }
+      // Once a child exists, do not reject before its close event: outer
+      // fixture cleanup must never race a still-running worker.
+      timeoutError ??= new Error(
+        'Worker process error before close: ' + String(error?.stack || error)
+          + '\\nstdout:\\n' + stdout + '\\nstderr:\\n' + stderr,
+      )
+      worker.kill('SIGKILL')
+    })
     worker.once('close', (code, signal) => {
       if (timeoutError) {
         finish(timeoutError)
@@ -392,7 +431,20 @@ async function interruptRestoreInSeparateProcess(sessionRoot) {
       }
     })
     worker.stderr.on('data', chunk => { stderr += chunk })
-    worker.once('error', error => finish(error))
+    worker.on('error', error => {
+      if (worker.pid === undefined) {
+        // A spawn failure has no child process to drain.
+        finish(error)
+        return
+      }
+      // Once a child exists, do not reject before its close event: outer
+      // fixture cleanup must never race a still-running worker.
+      timeoutError ??= new Error(
+        'Worker process error before close: ' + String(error?.stack || error)
+          + '\\nstdout:\\n' + stdout + '\\nstderr:\\n' + stderr,
+      )
+      worker.kill('SIGKILL')
+    })
     worker.once('close', (code, signal) => {
       if (timeoutError) {
         finish(timeoutError)
