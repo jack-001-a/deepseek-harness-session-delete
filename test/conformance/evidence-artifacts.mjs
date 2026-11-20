@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, lstat, open, link, unlink, writeFile, rename } from 'node:fs/promises'
+import { mkdir, lstat, open, link, unlink, writeFile, rename } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { assertReleaseGate } from './manifest.mjs'
 
