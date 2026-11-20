@@ -94,3 +94,37 @@ The next meaningful milestone is an upstream-reviewed API contract followed by p
 6. Enable destructive plugin actions only for an active provider instance that advertises the complete capability and has completed recovery.
 
 A green plugin integration run is necessary evidence for the consumer boundary, but it is not a substitute for these provider gates.
+
+## Pinned-source public API boundary audit
+
+Audited the exact upstream source revision `deepseek-ai/deepseek-harness@2e39e70496aa02986ca6a820c5d497e816b69d7e`. This is an implementation-feasibility review of the public seam, not an upstream change.
+
+### What the public Host surface can do today
+
+- The public `SessionPersistence` service contract declares only `create`, `open`, `flush`, `stat`, and `list`. Its per-session `SessionHandle` contract ends with `close()`; neither contract declares retire, restore, purge, lifecycle operation IDs, generation tokens, or a destructive-mutation admission fence. See upstream [SessionPersistence](https://github.com/deepseek-ai/deepseek-harness/blob/2e39e70496aa02986ca6a820c5d497e816b69d7e/packages/session/session-persistence/src/index.ts#L160-L237) and [SessionHandle](https://github.com/deepseek-ai/deepseek-harness/blob/2e39e70496aa02986ca6a820c5d497e816b69d7e/packages/session/session-persistence/src/handle.ts#L17-L118).
+- The public `WorkspaceRegistry` supports durable soft archive and unarchive. Archive preserves the Session's workspace-accounting slot; unarchive removes the ID from the archive set. These are visibility/admission semantics, not artifact retirement or deletion. See upstream [archive/unarchive](https://github.com/deepseek-ai/deepseek-harness/blob/2e39e70496aa02986ca6a820c5d497e816b69d7e/packages/workspace/workspace/src/index.ts#L369-L440).
+- Cordis exposes useful consumer extension points: `workspace/session-activity`, `workspace/session-stop`, `workspace/session-archived`, and `workspace/session-unarchiving`. They coordinate Host activity and follow-up work around soft archive; they do not add an atomic gate to persistence `create/open/read/close`. See upstream [Workspace lifecycle events](https://github.com/deepseek-ai/deepseek-harness/blob/2e39e70496aa02986ca6a820c5d497e816b69d7e/packages/workspace/workspace/src/index.ts#L116-L185).
+- The existing archived-session gate blocks Agent pre-step for archived Sessions and their subagent ancestry. It is an execution-admission guard, not a provider storage fence. See upstream [archived-session-gate.ts](https://github.com/deepseek-ai/deepseek-harness/blob/2e39e70496aa02986ca6a820c5d497e816b69d7e/packages/api/session-controller/src/archived-session-gate.ts).
+
+### Provider-owned internals are not a generic lifecycle contract
+
+- The JSONL implementation is a concrete `SessionPersistence` subclass. Its root service API still implements the limited shared contract; the provider-specific `flush()` delegates to its own tracker. See upstream [JSONL provider](https://github.com/deepseek-ai/deepseek-harness/blob/2e39e70496aa02986ca6a820c5d497e816b69d7e/packages/session/session-persistence-jsonl/src/index.ts#L325-L336) and [flush](https://github.com/deepseek-ai/deepseek-harness/blob/2e39e70496aa02986ca6a820c5d497e816b69d7e/packages/session/session-persistence-jsonl/src/index.ts#L565-L576).
+- JSONL's cross-process writer exclusion is implemented by provider-owned `SessionWriteLease`, which acquires a kernel lock in the provider's per-session artifact directory and releases it by closing the held OS handle. That lock is not a Host-wide admission barrier and does not coordinate an external plugin's move/delete/restore/purge operation. See upstream [JSONL lease implementation](https://github.com/deepseek-ai/deepseek-harness/blob/2e39e70496aa02986ca6a820c5d497e816b69d7e/packages/session/session-persistence-jsonl/src/lease.ts#L58-L135) and [handle close/drain](https://github.com/deepseek-ai/deepseek-harness/blob/2e39e70496aa02986ca6a820c5d497e816b69d7e/packages/session/session-persistence-jsonl/src/storage.ts#L210-L268).
+- Importing or probing provider-private paths, moving JSONL session directories, unlinking lock files, or editing SQLite internals from a plugin would bypass the shared Provider contract. It would also fail to provide equivalent semantics for other persistence implementations.
+
+### Feasibility matrix
+
+| Capability | Existing public extension point | Feasibility in a downstream plugin | Required boundary |
+|---|---|---|---|
+| Soft archive / unarchive | `WorkspaceRegistry.archiveSession()` / `unarchiveSession()` | Supported | Use the Host registry; do not call it deletion |
+| Stop or reject new Agent work around archive | Workspace activity/stop events and archived-session gate | Supported within Host execution semantics | Does not fence persistence opens or reads |
+| Retire a stored Session atomically | No Provider lifecycle method or shared admission barrier | Not safely implementable generically | Add provider-owned retire + admission/fencing contract |
+| Restore a retired Session with generation safety | No Provider restore method or opaque retirement token | Not safely implementable generically | Add provider-owned restore + incarnation/generation contract |
+| Purge with crash recovery and idempotent lookup | No Provider purge, operation ID, or durable lifecycle transaction | Not safely implementable generically | Add provider-owned purge + durable operation/recovery contract |
+| Fence create, pending create, read-open, write-open, close/drain against lifecycle mutations | No common root/session lifecycle gate | Not safely implementable generically | Shared provider admission protocol implemented by JSONL and SQLite |
+
+### Implementation decision
+
+Do not extend the downstream plugin by manipulating provider paths or by trying to reuse the JSONL lock implementation. The safe downstream work is limited to Host-level archive behavior, activity coordination, diagnostics, and capability-gated UI. The next implementation milestone must be an additive upstream Provider API and matching JSONL/SQLite implementations; only after that API exists can the integration prototype replace its explicit Provider lifecycle skips with real conformance tests.
+
+This audit confirms the existing `PARTIAL` integration classification. It does not promote the 11 plugin/storage PASS cases into Provider lifecycle conformance and does not claim an upstream implementation exists.
