@@ -6,6 +6,7 @@ import { resolve } from 'node:path'
 
 const REPOSITORY = 'jack-001-a/deepseek-harness-session-delete'
 const REF = 'refs/heads/main'
+const WORKFLOW_PATH = '.github/workflows/trusted-ci-evidence.yml'
 const WORKFLOW = `${REPOSITORY}/.github/workflows/trusted-ci-evidence.yml`
 const OIDC_ISSUER = 'https://token.actions.githubusercontent.com'
 const REPOSITORY_ID = '1428060802'
@@ -55,11 +56,14 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
   if (!/^\d+$/.test(expectedRunId) || !/^\d+$/.test(expectedAttempt)) fail('GitHub run metadata is incomplete')
   if (runMetadata?.repository?.full_name !== REPOSITORY) fail('run repository mismatch')
   if (String(runMetadata?.repository?.id ?? '') !== REPOSITORY_ID) fail('run repository immutable ID mismatch')
+  if (runMetadata?.repository?.owner?.login !== 'jack-001-a') fail('run repository owner mismatch')
+  if (String(runMetadata?.repository?.owner?.id ?? '') !== OWNER_ID) fail('run repository owner immutable ID mismatch')
+  if (runMetadata?.status !== 'completed' || runMetadata?.conclusion !== 'success') fail('GitHub workflow run did not complete successfully')
   if (runMetadata?.head_sha !== expectedCommit) fail('run head SHA does not match evidence source commit')
   if (runMetadata?.event !== 'push' && runMetadata?.event !== 'workflow_dispatch') fail('run event is not allowed')
   if (evidence?.source?.event !== runMetadata.event) fail('evidence event does not match GitHub run metadata')
   if (runMetadata?.head_branch !== 'main') fail('run is not for main')
-  if (!String(runMetadata?.path ?? '').startsWith('.github/workflows/trusted-ci-evidence.yml@')) fail('run workflow path mismatch')
+  if (runMetadata?.path !== `${WORKFLOW_PATH}@${REF}`) fail('run workflow path/ref mismatch')
   if (String(runMetadata?.run_attempt) !== String(evidence?.source?.runAttempt)) fail('run attempt does not match evidence')
   if (String(runMetadata?.id) !== String(evidence?.source?.runId)) fail('run ID does not match evidence')
   if (evidence?.source?.workflowRef !== `${WORKFLOW}@${REF}`) fail('evidence workflow ref mismatch')
