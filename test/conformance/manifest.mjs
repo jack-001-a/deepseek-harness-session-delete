@@ -1,4 +1,5 @@
-import { mkdir, rename, writeFile } from 'node:fs/promises'
+import { mkdir, rename, unlink, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
 
 const STATUSES = new Set(['PASS', 'FAIL', 'SKIP', 'FLAKY'])
@@ -80,9 +81,13 @@ export async function writeManifest(path, manifest) {
     throw new Error('manifests with fault evidence must use writeVerifiedManifest')
   }
   await mkdir(dirname(path), { recursive: true })
-  const temporary = `${path}.tmp-${process.pid}`
-  await writeFile(temporary, JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx', mode: 0o600 })
-  await rename(temporary, path)
+  const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`
+  try {
+    await writeFile(temporary, JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx', mode: 0o600 })
+    await rename(temporary, path)
+  } finally {
+    await unlink(temporary).catch(() => {})
+  }
 }
 
 /** Required release cases cannot be hidden by skips or flaky outcomes. */
