@@ -163,6 +163,7 @@ test('verified provider evidence is persisted, digest-checked, and registered in
     recordCase(manifest, { id: 'P-FAULT-001', status: 'PASS' })
     const observation = {
       evidenceId: 'evidence-report-001',
+      caseId: 'P-FAULT-001',
       testRunId: 'run-report-001',
       sourceCommit,
       providerVersion: 'sqlite-test-build',
