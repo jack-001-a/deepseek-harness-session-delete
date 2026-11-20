@@ -100,9 +100,9 @@ Before claiming CI provenance:
 - [x] Add a least-privilege protected-main evidence job with OIDC and attestation permissions; ordinary PR CI remains read-only.
 - [ ] Execute the workflow on protected `main` and produce an Artifact Attestation for the evidence subject.
 - [ ] Verify the attestation in CI and independently inspect the recorded certificate/identity claims.
-- [ ] Enforce repository/workflow/ref/event/commit/run identity policy.
+- [x] Implement a fail-closed policy evaluator for repository/workflow/ref/event/commit/run identity and subject digest (synthetic policy tests only; real attestation still pending).
 - [ ] Independently verify that `main` has required branch protection/rulesets and that the attested commit entered through the approved review path.
-- [ ] Add positive and negative verification tests, including wrong repository, workflow, ref, event, commit, and subject digest.
+- [x] Add positive synthetic-policy and negative verification tests for wrong repository, immutable repository/owner identity, workflow, ref, event, commit, run invocation/attempt, issuer, and subject digest.
 - [ ] Preserve a clear distinction between PR evidence and protected-branch evidence.
 - [ ] Update the evidence map only with actual attestation and verifier results.
 
@@ -113,7 +113,7 @@ This provenance work is independent of provider lifecycle conformance. A trusted
 
 The repository now includes `scripts/verify-ci-evidence.mjs`, a fail-closed consumer for the JSON output of `gh attestation verify --format json`. It evaluates the verified certificate extensions (not the workflow-controlled provenance predicate) and compares the subject SHA-256 with the exact evidence subject bytes. It also fetches the specific GitHub Actions run attempt through the GitHub API and binds the evidence metadata to that independent run record.
 
-The policy pins both mutable names and immutable identities:
+The workflow additionally requires GitHub's `github.ref_protected` signal to be true before it can build or attest evidence. The builder independently requires `GITHUB_REF_PROTECTED=true`; this prevents a main-branch name alone from being treated as proof of protection. The policy pins both mutable names and immutable identities:
 
 - repository URI/name: `https://github.com/jack-001-a/deepseek-harness-session-delete`;
 - repository ID: `1428060802`;
