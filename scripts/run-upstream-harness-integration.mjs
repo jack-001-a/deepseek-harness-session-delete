@@ -57,10 +57,10 @@ function trashRootFor(sessionRoot) {
   return join(dirname(sessionRoot), basename(sessionRoot) + '-trash')
 }
 
-async function seedInSeparateProcess(sessionRoot) {
+async function seedInSeparateProcess(sessionRoot, sessionId = SESSION_ID) {
   const worker = spawnSync(
     process.execPath,
-    [fileURLToPath(import.meta.url), '--seed', sessionRoot],
+    [fileURLToPath(import.meta.url), '--seed', sessionRoot, sessionId],
     {
       cwd: harnessRoot,
       encoding: 'utf8',
@@ -166,12 +166,12 @@ async function holdWriterWorker(sessionRoot) {
   await new Promise(() => {})
 }
 
-async function seedWorker(sessionRoot) {
+async function seedWorker(sessionRoot, sessionId = SESSION_ID) {
   const { ctx, session } = await createHostContext(sessionRoot)
   try {
     const handle = await ctx.sessionPersistence.create({
       version: session.SESSION_FORMAT_VERSION,
-      id: SESSION_ID,
+      id: sessionId,
       createdAt: Date.now(),
       cwd: harnessRoot,
       isSeeded: false,
@@ -187,6 +187,78 @@ async function seedWorker(sessionRoot) {
     await ctx.fiber.dispose()
   }
 }
+async function interruptDeleteInSeparateProcess(sessionRoot, sessionId) {
+  const worker = spawn(
+    process.execPath,
+    [fileURLToPath(import.meta.url), '--interrupt-delete', sessionRoot, sessionId],
+    {
+      cwd: harnessRoot,
+      env: { ...process.env, DSH_HARNESS_ROOT: harnessRoot },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  )
+  let stdout = ''
+  let stderr = ''
+  let killedAtDeleteBarrier = false
+
+  await new Promise((resolvePromise, rejectPromise) => {
+    let settled = false
+    const finish = (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      if (error) rejectPromise(error)
+      else resolvePromise()
+    }
+    const timeout = setTimeout(() => {
+      worker.kill('SIGKILL')
+      finish(new Error(
+        'Delete interruption worker timed out before the artifact-promotion barrier.\nstdout:\n'
+          + stdout + '\nstderr:\n' + stderr,
+      ))
+    }, 60_000)
+
+    worker.stdout.setEncoding('utf8')
+    worker.stderr.setEncoding('utf8')
+    worker.stdout.on('data', chunk => {
+      stdout += chunk
+      if (!killedAtDeleteBarrier && stdout.includes('delete-artifact-promoted\n')) {
+        killedAtDeleteBarrier = true
+        // Kill after the real delete path has moved the artifact, but before
+        // releaseWorkspaceAccounting can run.
+        worker.kill('SIGKILL')
+      }
+    })
+    worker.stderr.on('data', chunk => { stderr += chunk })
+    worker.once('error', error => finish(error))
+    worker.once('close', (code, signal) => {
+      if (killedAtDeleteBarrier && signal === 'SIGKILL') {
+        finish()
+      } else {
+        finish(new Error(
+          'Delete interruption worker did not die at the artifact-promotion barrier '
+            + '(exit ' + code + ', signal ' + signal + ').\nstdout:\n'
+            + stdout + '\nstderr:\n' + stderr,
+        ))
+      }
+    })
+  })
+}
+
+async function interruptDeleteWorker(sessionRoot, sessionId) {
+  const { ctx } = await createHostContext(sessionRoot)
+  applySessionDelete(ctx, { trashRoot: trashRootFor(sessionRoot) })
+  const service = ctx.get('sessionDelete')
+  // The real delete() path performs all validation and commits the artifact
+  // move. Pause at the first post-commit accounting call, then let the
+  // controller SIGKILL this process before any accounting can be released.
+  service.releaseWorkspaceAccounting = async () => {
+    process.stdout.write('delete-artifact-promoted\n')
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 60_000))
+  }
+  await service.delete(sessionId)
+}
+
 async function interruptRestoreInSeparateProcess(sessionRoot) {
   const worker = spawn(
     process.execPath,
@@ -417,10 +489,37 @@ async function runIntegration() {
       observed: 'purge() returned purged=true, listTrash() omitted the entry, and stat() returned undefined.',
     })
 
+    // Exercise the real delete commit point in a separate process. The
+    // child pauses after moveToTrash() has committed the artifact move and
+    // before releaseWorkspaceAccounting(); the controller kills it there.
+    await ctx.fiber.dispose()
+    const interruptedDeleteId = SESSION_ID + '-delete-crash'
+    await seedInSeparateProcess(sessionRoot, interruptedDeleteId)
+    await interruptDeleteInSeparateProcess(sessionRoot, interruptedDeleteId)
+    const deleteRecoveryHost = await createHostContext(sessionRoot)
+    ctx = deleteRecoveryHost.ctx
+    applySessionDelete(ctx, { trashRoot: trashRootFor(sessionRoot) })
+    const deleteRecoveryService = ctx.get('sessionDelete')
+    const reconcileDelete = deleteRecoveryService.reconcileStartup.bind(deleteRecoveryService)
+    let deleteRecovery
+    deleteRecoveryService.reconcileStartup = async () => {
+      deleteRecovery = await reconcileDelete()
+      return deleteRecovery
+    }
+    await ctx.parallel('ready')
+    assert.deepEqual(deleteRecovery, { deleted: 1, restored: 0, preserved: 0 })
+    assert.ok((await deleteRecoveryService.listTrash()).entries.some(
+      entry => entry.sessionId === interruptedDeleteId,
+    ))
+    assert.equal(await ctx.sessionPersistence.stat(interruptedDeleteId), undefined)
+    record('JSONL-PLUGIN-DELETE-INTERRUPTION-RECOVERY-001', 'PASS', 'A real delete() child was SIGKILLed after its artifact move committed and before workspace accounting; a fresh Host recovered the trash entry on Cordis ready.', {
+      expected: 'After process death at the post-move/pre-accounting boundary, startup reconciliation reports one deleted operation, retains the trash entry, and the provider reports the original session absent.',
+      observed: 'The controller observed SIGKILL at the delete barrier; reconcileStartup() returned { deleted: 1, restored: 0, preserved: 0 }, listTrash() retained the entry, and stat() returned undefined.',
+    })
+
     process.stdout.write(
-      'PASS: real Cordis + AgentLoop testkit + JSONL provider; cross-process seed/close and writer exclusion/release; ready-hook plugin delete/restore recovery; purge\n',
-    )
-  } catch (error) {
+      'PASS: real Cordis + AgentLoop testkit + JSONL provider; cross-process seed/close and writer exclusion/release; ready-hook delete/restore recovery; post-commit delete SIGKILL recovery; purge\n',
+    )  } catch (error) {
     runStatus = 'FAIL'
     record('JSONL-INTEGRATION-RUN', 'FAIL', String(error?.stack || error).slice(0, 1800))
     throw error
@@ -462,7 +561,9 @@ async function runIntegration() {
 }
 
 if (process.argv[2] === '--seed') {
-  await seedWorker(resolve(process.argv[3]))
+  await seedWorker(resolve(process.argv[3]), process.argv[4] || SESSION_ID)
+} else if (process.argv[2] === '--interrupt-delete') {
+  await interruptDeleteWorker(resolve(process.argv[3]), process.argv[4] || SESSION_ID)
 } else if (process.argv[2] === '--interrupt-restore') {
   await interruptRestoreWorker(resolve(process.argv[3]))
 } else if (process.argv[2] === '--hold-writer') {
