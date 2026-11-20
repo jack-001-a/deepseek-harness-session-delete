@@ -44,7 +44,7 @@ const expectedBoundary = {
   operation: 'retire',
   durabilityPrimitive: 'sqlite-commit',
   sourceRef: 'src/sqlite-lifecycle.ts#commitRetirement',
-  reviewedAtCommit: 'provider-source-sha',
+  reviewedAtCommit: '0123456789abcdef0123456789abcdef01234567',
 }
 
 const request = {
@@ -89,4 +89,11 @@ test('provider fault contract correlates arm, hit, and disarm', async () => {
 test('provider boundary attestation rejects adapter self-report drift', () => {
   assert.throws(() => assertBoundaryAttestation({ boundary: { ...expectedBoundary, sourceRef: 'unreviewed.ts#fake' } }, expectedBoundary), /trusted provider boundary map/)
   assert.throws(() => assertBoundaryAttestation({ boundary: { ...expectedBoundary } }, { ...expectedBoundary, reviewedAtCommit: '' }), /expectation is incomplete/)
+})
+
+test('provider boundary map must pin an immutable source revision', () => {
+  assert.throws(() => assertBoundaryAttestation(
+    { boundary: { ...expectedBoundary, reviewedAtCommit: 'main' } },
+    { ...expectedBoundary, reviewedAtCommit: 'main' },
+  ), /full source commit SHA/)
 })
