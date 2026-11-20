@@ -159,6 +159,7 @@ export async function withProviderFault(adapter, request, expectedBoundary, run,
       'observer',
       'effect',
       'artifactRef',
+      'artifactSha256',
       'faultId',
       'operationId',
       'point',
@@ -176,7 +177,9 @@ export async function withProviderFault(adapter, request, expectedBoundary, run,
         evidence.testRunId !== evidenceContext.testRunId ||
         evidence.sourceCommit !== evidenceContext.sourceCommit ||
         evidence.providerVersion !== evidenceContext.providerVersion ||
-        evidence.observer !== evidenceContext.observerId) {
+        evidence.observer !== evidenceContext.observerId ||
+        !/^[a-f0-9]{64}$/.test(evidence.artifactRef) ||
+        evidence.artifactSha256 !== evidence.artifactRef) {
       throw new Error('independent provider fault verifier returned incomplete or mismatched evidence')
     }
     verifiedEvidence = Object.freeze({ ...evidence })
