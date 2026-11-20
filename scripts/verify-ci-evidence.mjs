@@ -43,8 +43,8 @@ export function getOnlineVerificationCoordinates(evidence) {
 }
 export function buildAttestationVerifyArgs(artifactPath, coordinates) {
   if (typeof artifactPath !== 'string' || artifactPath.length === 0) fail('artifact path is required')
-  if (!coordinates || !/^\\d+$/.test(String(coordinates.runId)) ||
-      !/^\\d+$/.test(String(coordinates.attempt)) ||
+  if (!coordinates || !/^\d+$/.test(String(coordinates.runId)) ||
+      !/^\d+$/.test(String(coordinates.attempt)) ||
       !/^[a-f0-9]{40}$/.test(coordinates.commit ?? '') ||
       !/^[a-f0-9]{40}$/.test(coordinates.workflowSha ?? '')) {
     fail('invalid attestation verification coordinates')
