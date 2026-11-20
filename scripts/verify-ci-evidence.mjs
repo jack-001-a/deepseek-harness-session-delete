@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import { resolve } from 'node:path'
 
 const REPOSITORY = 'jack-001-a/deepseek-harness-session-delete'
 const REF = 'refs/heads/main'
@@ -166,7 +168,7 @@ async function main() {
   process.stdout.write(JSON.stringify(result, null, 2) + '\n')
 }
 
-if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   main().catch(error => {
     process.stderr.write(JSON.stringify({ status: error.status ?? 'provenance_rejected', reason: error.message }) + '\n')
     process.exitCode = 1
