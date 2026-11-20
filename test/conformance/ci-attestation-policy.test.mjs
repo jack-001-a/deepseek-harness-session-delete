@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { evaluateAttestationPolicy, getOnlineVerificationCoordinates } from '../../scripts/verify-ci-evidence.mjs'
+import { buildAttestationVerifyArgs, evaluateAttestationPolicy, getOnlineVerificationCoordinates } from '../../scripts/verify-ci-evidence.mjs'
 
 const repository = 'jack-001-a/deepseek-harness-session-delete'
 const workflow = `${repository}/.github/workflows/trusted-ci-evidence.yml`
@@ -50,6 +50,34 @@ function fixture() {
     },
   }]
   return { evidence, runMetadata, verification, artifactBytes: bytes }
+}
+
+test('builds a pinned GitHub attestation verification command', () => {
+  const args = buildAttestationVerifyArgs('./ci-evidence.json', { runId: '123456789', attempt: '2', commit, workflowSha })
+  assert.deepEqual(args, [
+    'attestation', 'verify', './ci-evidence.json',
+    '--repo', repository,
+    '--signer-workflow', workflow,
+    '--signer-digest', workflowSha,
+    '--source-ref', 'refs/heads/main',
+    '--source-digest', commit,
+    '--cert-identity', `https://github.com/${workflow}@refs/heads/main`,
+    '--cert-oidc-issuer', 'https://token.actions.githubusercontent.com',
+    '--predicate-type', 'https://slsa.dev/provenance/v1',
+    '--deny-self-hosted-runners',
+    '--format', 'json',
+  ])
+})
+
+for (const [name, coordinates] of [
+  ['nonnumeric run ID', { runId: '../123', attempt: '1', commit, workflowSha }],
+  ['nonnumeric attempt', { runId: '123', attempt: '1/2', commit, workflowSha }],
+  ['short commit', { runId: '123', attempt: '1', commit: 'abc', workflowSha }],
+  ['short workflow SHA', { runId: '123', attempt: '1', commit, workflowSha: 'abc' }],
+]) {
+  test('rejects unsafe attestation CLI coordinates: ' + name, () => {
+    assert.throws(() => buildAttestationVerifyArgs('./ci-evidence.json', coordinates), /provenance policy rejected/)
+  })
 }
 
 test('validates online lookup coordinates before any GitHub CLI request', () => {
