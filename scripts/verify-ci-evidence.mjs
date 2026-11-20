@@ -35,7 +35,7 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
   if (runMetadata?.head_sha !== expectedCommit) fail('run head SHA does not match evidence source commit')
   if (runMetadata?.event !== 'push' && runMetadata?.event !== 'workflow_dispatch') fail('run event is not allowed')
   if (runMetadata?.head_branch !== 'main') fail('run is not for main')
-  if (runMetadata?.path !== '.github/workflows/trusted-ci-evidence.yml') fail('run workflow path mismatch')
+  if (!String(runMetadata?.path ?? '').startsWith('.github/workflows/trusted-ci-evidence.yml@')) fail('run workflow path mismatch')
   if (String(runMetadata?.run_attempt) !== String(evidence?.source?.runAttempt)) fail('run attempt does not match evidence')
   if (String(runMetadata?.id) !== String(evidence?.source?.runId)) fail('run ID does not match evidence')
 
