@@ -53,6 +53,7 @@ const validEvidence = {
   schemaVersion: 1,
   verified: true,
   evidenceId: 'evidence-001',
+  caseId: 'P-FAULT-001',
   testRunId: 'run-abc123',
   sourceCommit: 'abcdef0123456789abcdef0123456789abcdef01',
   providerVersion: 'test-build-1',
@@ -68,6 +69,7 @@ const validEvidence = {
   action: 'kill',
 }
 const evidenceContext = {
+  caseId: 'P-FAULT-001',
   testRunId: 'run-abc123',
   sourceCommit: 'abcdef0123456789abcdef0123456789abcdef01',
   providerVersion: 'test-build-1',
@@ -304,7 +306,7 @@ test('provider fault evidence is returned as a frozen versioned record', async (
 
 
 test('provider fault evidence must match trusted test-run provenance', async () => {
-  for (const field of ['testRunId', 'sourceCommit', 'providerVersion', 'observer']) {
+  for (const field of ['caseId', 'testRunId', 'sourceCommit', 'providerVersion', 'observer']) {
     const { adapter } = fixture()
     const changed = {
       ...validEvidence,
