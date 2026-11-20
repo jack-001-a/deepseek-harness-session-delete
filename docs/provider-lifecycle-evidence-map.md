@@ -20,17 +20,23 @@ The evidence is intentionally split into three levels:
 
 ## Reproducible integration evidence
 
-The latest recorded real Harness run is [44681203814](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44681203814), on Session Delete commit `4b2b45698e011d36d78e2b915d87714b3cd62dbc`.
+The latest recorded real Harness run is [44714943393](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44714943393), on Session Delete PR #17 commit `900671e03236f21907698db77948fab1d5fc2dfb`. It checked out the pinned upstream revision `2e39e70496aa02986ca6a820c5d497e816b69d7e` and completed successfully on Linux / Node 24. The run executed the real Cordis + AgentLoop + JSONL provider integration, including cross-process seed/close and writer exclusion/release, ready-hook delete/restore recovery, post-commit delete SIGKILL recovery, purge, and evidence upload.
 
-The companion cross-platform workflow [44681203862](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44681203862) passed all nine Linux/macOS/Windows × Node 22/24/26 jobs. This matrix validates the repository's regular CI; the real Harness integration run itself is a Linux integration job, not a nine-cell provider conformance matrix.
+The companion exact-HEAD cross-platform workflow [44714943406](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/44714943406) passed all nine Linux/macOS/Windows × Node 22/24/26 jobs. This matrix validates the repository's regular CI; the real Harness integration run itself is a Linux integration job, not a nine-platform provider conformance matrix.
 
-The integration manifest artifact was downloaded and inspected. Its ZIP SHA-256 is:
+The exact-HEAD integration manifest artifact is `jsonl-provider-conformance-manifest`, artifact ID `14618583444`. Its ZIP SHA-256 is:
 
 ```text
-1943cb5871f440d7728a612cf80d35ba859a461086506082fe9dcf1799b80d3e
+83af65fa043a3ef47419808226d63679ac0a2f40cc4dfe4a7f3e20d7c9356af2
 ```
 
-Manifest schema version 2 reports 11 PASS and 4 SKIP, with top-level status `PARTIAL`. The four skips are explicit unsupported-contract outcomes, not passing tests.
+The extracted `provider-conformance.json` SHA-256 is:
+
+```text
+0e598a8fde97c8f5b9477340d34fb8c72f356fe891b9eefaeb7e9cb24fde0601
+```
+
+Manifest schema version 2 reports 11 PASS and 4 SKIP, with top-level status `PARTIAL`. The four skips remain explicit: three Provider-owned RETIRE / RESTORE / PURGE cases because the pinned public API exposes no Provider lifecycle/admission-fence contract, and purge interruption recovery because no persisted transaction/replay contract exists. Plugin-level PASS cases do not satisfy those Provider lifecycle gates.
 
 ## Evidence provenance status
 
