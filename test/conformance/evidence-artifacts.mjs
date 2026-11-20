@@ -57,7 +57,7 @@ export async function verifyManifestEvidence(manifest, root) {
   for (const record of manifest.evidence) {
     if (record.sourceCommit !== manifest.sourceCommit) throw new Error('manifest evidence source commit mismatch')
     const artifact = await readVerifiedEvidenceArtifact(root, record.artifactRef, record.artifactSha256)
-    for (const field of ['evidenceId', 'testRunId', 'sourceCommit', 'providerVersion', 'observer', 'effect', 'faultId', 'operationId', 'point', 'phase', 'operation', 'action']) {
+    for (const field of ['evidenceId', 'caseId', 'testRunId', 'sourceCommit', 'providerVersion', 'observer', 'effect', 'faultId', 'operationId', 'point', 'phase', 'operation', 'action']) {
       if (artifact?.[field] !== record[field]) throw new Error(`evidence artifact ${field} does not match the run manifest`)
     }
     verified.push(artifact)
