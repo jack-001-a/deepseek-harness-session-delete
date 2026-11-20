@@ -5,6 +5,7 @@ import {
   assertProviderFaultInjector,
   disarmProviderFault,
   waitForProviderFaultHit,
+  assertBoundaryAttestation,
 } from './provider-fault-contract.mjs'
 
 function fixture(hitOverride = {}) {
@@ -25,6 +26,7 @@ function fixture(hitOverride = {}) {
           action: 'kill',
           operationId: 'op-123',
           boundaryId: 'sqlite-transaction-commit',
+          boundary: { ...expectedBoundary },
           ...hitOverride,
         }
       },
@@ -32,6 +34,17 @@ function fixture(hitOverride = {}) {
     },
   }
   return { adapter, calls }
+}
+
+const expectedBoundary = {
+  provider: 'sqlite-fixture',
+  providerVersion: 'test-build-1',
+  point: 'retire.commit',
+  phase: 'after-commit-before-response',
+  operation: 'retire',
+  durabilityPrimitive: 'sqlite-commit',
+  sourceRef: 'src/sqlite-lifecycle.ts#commitRetirement',
+  reviewedAtCommit: 'provider-source-sha',
 }
 
 const request = {
@@ -58,7 +71,7 @@ test('provider fault request rejects unsupported phases and missing operation id
 test('provider fault hit must prove the exact action at a correlated durable boundary', async () => {
   const { adapter } = fixture({ actionApplied: false })
   const armed = await armProviderFault(adapter, request)
-  await assert.rejects(waitForProviderFaultHit(armed), /not proven/)
+  await assert.rejects(waitForProviderFaultHit(armed, { expectedBoundary }), /not proven/)
   await disarmProviderFault(armed)
 })
 
@@ -67,7 +80,13 @@ test('provider fault contract correlates arm, hit, and disarm', async () => {
   const armed = await armProviderFault(adapter, request)
   const hit = await waitForProviderFaultHit(armed)
   assert.equal(hit.boundaryId, 'sqlite-transaction-commit')
+  assert.equal(hit.boundary.durabilityPrimitive, 'sqlite-commit')
   assert.equal(hit.operationId, request.operationId)
   assert.equal(await disarmProviderFault(armed), true)
   assert.deepEqual(calls.map(([kind]) => kind), ['arm', 'hit', 'disarm'])
+})
+
+test('provider boundary attestation rejects adapter self-report drift', () => {
+  assert.throws(() => assertBoundaryAttestation({ boundary: { ...expectedBoundary, sourceRef: 'unreviewed.ts#fake' } }, expectedBoundary), /trusted provider boundary map/)
+  assert.throws(() => assertBoundaryAttestation({ boundary: { ...expectedBoundary } }, { ...expectedBoundary, reviewedAtCommit: '' }), /expectation is incomplete/)
 })
