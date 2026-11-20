@@ -64,7 +64,7 @@ jobs:
         run: |
           set -euo pipefail
           gh --version
-          gh_version="$(gh --version | sed -n '1s/^gh version \\([0-9][0-9.]*\\).*/\\1/p')"
+          gh_version="$(gh --version | sed -n '1s/^gh version \([0-9][0-9.]*\).*/\1/p')"
           test -n "$gh_version"
           dpkg --compare-versions "$gh_version" ge 2.102.0
 
@@ -72,24 +72,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh attestation verify ci-evidence/ci-evidence.json \\
-            --repo "$GITHUB_REPOSITORY" \\
-            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/trusted-ci-evidence-reusable.yml" \\
-            --signer-digest "$GITHUB_SHA" \\
-            --source-ref "$GITHUB_REF" \\
-            --source-digest "$GITHUB_SHA" \\
-            --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/trusted-ci-evidence-reusable.yml@refs/heads/main" \\
-            --cert-oidc-issuer "https://token.actions.githubusercontent.com" \\
-            --predicate-type "https://slsa.dev/provenance/v1" \\
-            --deny-self-hosted-runners \\
+          gh attestation verify ci-evidence/ci-evidence.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/trusted-ci-evidence-reusable.yml" \
+            --signer-digest "$GITHUB_SHA" \
+            --source-ref "$GITHUB_REF" \
+            --source-digest "$GITHUB_SHA" \
+            --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/trusted-ci-evidence-reusable.yml@refs/heads/main" \
+            --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --predicate-type "https://slsa.dev/provenance/v1" \
+            --deny-self-hosted-runners \
             --format json > ci-evidence/attestation-verification.json
 
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \\
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \
             > ci-evidence/github-run-metadata.json
 
-          node scripts/verify-ci-evidence.mjs \\
-            ci-evidence/ci-evidence.json \\
-            ci-evidence/attestation-verification.json \\
+          node scripts/verify-ci-evidence.mjs \
+            ci-evidence/ci-evidence.json \
+            ci-evidence/attestation-verification.json \
             ci-evidence/github-run-metadata.json
 
       - name: Upload attested evidence and logs
