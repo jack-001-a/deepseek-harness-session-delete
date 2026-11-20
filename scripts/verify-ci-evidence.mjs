@@ -29,6 +29,7 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
   const expectedAttempt = String(runMetadata?.run_attempt ?? '')
 
   if (!/^[a-f0-9]{40}$/.test(expectedCommit ?? '')) fail('evidence source commit is not a full SHA')
+  if (!/^[a-f0-9]{40}$/.test(evidence?.source?.workflowSha ?? '')) fail('evidence workflow SHA is not a full SHA')
   if (evidence?.source?.refProtected !== true) fail('evidence does not record a protected ref')
   if (evidence?.source?.repository !== REPOSITORY || evidence?.source?.ref !== REF) fail('evidence repository/ref mismatch')
   if (!/^\d+$/.test(expectedRunId) || !/^\d+$/.test(expectedAttempt)) fail('GitHub run metadata is incomplete')
@@ -61,6 +62,7 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
     const issuer = first(certificate, ['issuer', 'oidcIssuer', 'Issuer'])
     const workflowRef = first(certificate, ['buildSignerURI', 'BuildSignerURI', 'workflowRef'])
     const trigger = first(certificate, ['buildTrigger', 'BuildTrigger'])
+    const workflowDigest = first(certificate, ['buildConfigDigest', 'BuildConfigDigest'])
     const invocation = first(certificate, ['runInvocationURI', 'RunInvocationURI'])
 
     if (repositoryUri !== `https://github.com/${REPOSITORY}` && repositoryUri !== REPOSITORY) continue
@@ -69,6 +71,7 @@ export function evaluateAttestationPolicy({ verification, runMetadata, evidence,
     if (sourceDigest !== expectedCommit) continue
     if (issuer !== OIDC_ISSUER) continue
     if (workflowRef !== `https://github.com/${WORKFLOW}@${REF}`) continue
+    if (workflowDigest !== evidence.source.workflowSha) continue
     if (trigger !== runMetadata.event) continue
     if (invocation !== `https://github.com/${REPOSITORY}/actions/runs/${expectedRunId}/attempts/${expectedAttempt}`) continue
     if (san && !san.includes(WORKFLOW)) continue
