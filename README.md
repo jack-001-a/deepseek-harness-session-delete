@@ -160,7 +160,10 @@ before anything becomes user-visible:
   locator can never turn into an arbitrary directory removal.
   The store's own `root` is the anchor for that check, never a path derived
   from the target: a self-derived root would make the containment test
-  vacuous. The shipped store's `jsonl` kind names the log *file*, which lives
+  vacuous. If a persistence backend does not expose that root, deletion and
+  restore fail closed for **all** artifact kinds, including `file` and
+  `dir`; a locator alone is not proof that its path belongs to the session
+  store. The shipped store's `jsonl` kind names the log *file*, which lives
   beside the session's write-lease lock file, so that kind removes the
   session directory that owns it — and only after the store's root has
   proved the layout.

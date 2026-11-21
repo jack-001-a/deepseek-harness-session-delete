@@ -1052,17 +1052,15 @@ class SessionDeleteService {
     const root = this.storeRoot()
     const target = kind === 'jsonl' ? dirname(resolved) : resolved
     if (root === undefined) {
-      // Without the store's own root the plugin cannot prove the target sits
-      // inside the session tree. A path the store named outright is still
-      // safe to remove, but a log file may not be widened into its directory.
-      if (kind === 'jsonl') {
-        throw new SessionDeleteError(
-          'session-delete/unsafe-path',
-          `sessionDelete: this session store does not expose its storage root, so the artifact of "${sessionId}" cannot be verified; nothing was removed`,
-          { sessionId, kind, reason: 'no-store-root' },
-        )
-      }
-      return { target, root: undefined, kind }
+      // The store root is the trust anchor for every destructive path. A
+      // locator is not sufficient evidence on its own, even when it names a
+      // file or directory directly rather than a JSONL log that would be
+      // widened to its session directory.
+      throw new SessionDeleteError(
+        'session-delete/unsafe-path',
+        `sessionDelete: this session store does not expose its storage root, so the artifact of "${sessionId}" cannot be verified; nothing was removed`,
+        { sessionId, kind, reason: 'no-store-root' },
+      )
     }
     if (!isInside(root, target)) {
       throw new SessionDeleteError(
@@ -1733,7 +1731,14 @@ class SessionDeleteService {
         { sessionId, reason: 'invalid-path' },
       )
     }
-    if (root !== undefined && !isInside(root, target)) {
+    if (root === undefined) {
+      throw new SessionDeleteError(
+        'session-delete/unsafe-path',
+        `sessionDelete: this session store does not expose its storage root, so the original path of "${sessionId}" cannot be verified; nothing was restored`,
+        { sessionId, reason: 'no-store-root' },
+      )
+    }
+    if (!isInside(root, target)) {
       throw new SessionDeleteError(
         'session-delete/unsafe-path',
         `sessionDelete: the trash entry of session "${sessionId}" names a path outside the session store; nothing was restored`,

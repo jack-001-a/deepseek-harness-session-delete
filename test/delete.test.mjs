@@ -657,7 +657,7 @@ test('a log file may not be widened into its directory without a store root', as
   assert.ok((await stat(store.log)).isFile(), 'the artifact must survive a refused target')
 })
 
-test('a store without a root has no trash, so the deletion reports trash-unavailable', async () => {
+test('a file artifact is refused when the store does not expose a root', async () => {
   const store = await makeStore()
   const h = harness({
     ...storedTarget(store),
@@ -666,12 +666,29 @@ test('a store without a root has no trash, so the deletion reports trash-unavail
   })
 
   await assert.rejects(h.service.delete(SESSION_ID), (error) => {
-    assert.equal(error.code, 'session-delete/trash-unavailable')
+    assert.equal(error.code, 'session-delete/unsafe-path')
     assert.equal(error.isDSHRemoteError, true)
-    assert.equal(error.details.reason, 'no-trash-root')
+    assert.equal(error.details.reason, 'no-store-root')
     return true
   })
   assert.ok((await stat(store.log)).isFile(), 'the artifact must survive a refused deletion')
+})
+
+test('a directory artifact is refused when the store has no root, including permanent mode', async () => {
+  const store = await makeStore()
+  const h = harness({
+    ...storedTarget(store),
+    root: undefined,
+    config: { mode: 'permanent' },
+    locate: () => ({ kind: 'dir', path: store.dir }),
+  })
+
+  await assert.rejects(h.service.delete(SESSION_ID), (error) => {
+    assert.equal(error.code, 'session-delete/unsafe-path')
+    assert.equal(error.details.reason, 'no-store-root')
+    return true
+  })
+  assert.ok((await stat(store.log)).isFile(), 'permanent mode must not remove an unverified directory')
 })
 
 test('the trash entry holds the artifact and a manifest of the identifying fields', async () => {
@@ -1020,6 +1037,27 @@ test('a manifest that names a path outside the store is refused', async () => {
     assert.equal(error.code, 'session-delete/unsafe-path')
     return true
   })
+})
+
+test('restore refuses to use a trash manifest when the store root is unavailable', async () => {
+  const store = await makeStore()
+  const h = harness({
+    ...storedTarget(store),
+    config: { trashRoot: store.trashRoot },
+  })
+  const deleted = await h.service.delete(SESSION_ID)
+  h.ctx.sessionPersistence.root = undefined
+
+  await assert.rejects(h.service.restore(SESSION_ID), (error) => {
+    assert.equal(error.code, 'session-delete/unsafe-path')
+    assert.equal(error.details.reason, 'no-store-root')
+    return true
+  })
+  assert.ok(
+    (await stat(join(trashEntry(store, deleted.trashId), 'artifact', 'session.4.jsonl'))).isFile(),
+    'the trashed artifact must remain intact when restore cannot verify its destination',
+  )
+  assert.equal(await h.service.pathExists(store.dir), false)
 })
 
 test('restore refuses an original path redirected outside the store by a symlink', async (t) => {

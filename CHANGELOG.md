@@ -6,6 +6,11 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## Unreleased
 
+### Security
+
+- Fail closed for delete and restore when the persistence backend does not expose a trusted store root, regardless of whether its locator names a file, directory, or JSONL log.
+
+
 ## [0.5.0] — 2026-11-21
 
 ### Added
