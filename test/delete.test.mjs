@@ -568,7 +568,12 @@ test('stored deletion refuses a session owned by another Harness writer', async 
   })
   assert.ok((await stat(store.log)).isFile(), 'the stored artifact must remain untouched')
   assert.deepEqual(h.calls.emitted, [], 'a refused deletion must not announce a removal')
-  await assert.rejects(stat(store.trashRoot), (error) => error.code === 'ENOENT')
+  // The refusal is still audited, so the trash root may exist; it must not
+  // contain a promoted artifact for this session.
+  assert.deepEqual(
+    (await readdir(store.trashRoot)).filter((name) => name !== 'audit.jsonl'),
+    [],
+  )
 })
 
 test('live deletion acquires the Host lease only after stopping and detaching the live writer', async () => {
