@@ -6,9 +6,18 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## Unreleased
 
+### Changed
+
+- On handle-based Hosts, acquire and hold the native JSONL write lease while removing or moving an existing session artifact; refuse with `session-delete/locked` when another Harness writer owns it. Older Hosts without `sessionPersistence.open()` retain the plugin-only lock.
+
 ### Security
 
 - Fail closed for delete and restore when the persistence backend does not expose a trusted store root, regardless of whether its locator names a file, directory, or JSONL log.
+- Keep the POSIX JSONL `session.lock` inode intact during permanent deletion; remove the session log and other artifact contents before releasing the native write handle.
+
+### Known limitation
+
+- Restore cannot reserve a missing destination through the current persistence API; exclusion against a concurrent cross-process create of the same session id remains outside the guarantee.
 
 
 ## [0.5.0] — 2026-11-21

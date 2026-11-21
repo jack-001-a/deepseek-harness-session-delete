@@ -81,42 +81,42 @@ owner-metadata write failure after creating the lock directory can therefore
 require manual removal of that orphan lock directory after verifying that no
 operation is running.
 
-This coordinates cooperating instances of this plugin on the same host
-and a local filesystem. It does **not** make the Host's session store or
-workspace registry participate in the lock protocol. In particular, it cannot
-stop a different Harness process from appending to the same session, nor
-serialize that process's native archive, pin, unpin or workspace-membership
-writes. The activity check and stop request are scoped to the current Host
-instance; they are not a cross-process session-stop protocol. Do not treat
-this lock as protection against another Harness process actively writing the
-same session.
+This lock coordinates cooperating instances of this plugin on the same host
+and a local filesystem. It does not serialize the Host's workspace-registry
+writes (native archive, pin, unpin and membership changes), and its activity
+check / stop request remain scoped to the current Host instance.
 
-### Host-native session write leases (not yet integrated)
+### Host-native session write leases
 
-The current Harness persistence seam exposes
-`ctx.sessionPersistence.open(sessionId, 'write')`. The shipped JSONL provider
-uses a kernel-backed cross-process lease for that write handle; a competing
-writer is rejected with `SessionAlreadyOwnedError`. Other persistence providers
-must document their own cross-process guarantee. This plugin currently does
-**not** acquire that Host-native lease, so PR #12 must not be interpreted as
-coordinating with Host session writers.
+On Hosts that expose the handle-based
+`ctx.sessionPersistence.open(sessionId, 'write')` API, deletion now obtains
+the provider's native write handle after stopping and detaching a live session.
+For a live writer that is still closing, acquisition is retried briefly. The
+handle is held until the artifact has left its original store path; a
+competing Harness writer is refused with `session-delete/locked` and the
+artifact is left untouched. The shipped JSONL provider's POSIX
+`session.lock` inode is kept in the now-empty session directory during
+permanent deletion, because unlinking it while held would break exclusion.
+When the conversation is moved to Trash, the complete directory (including
+that lock file) moves together. Windows uses the provider's named kernel
+semaphore and has no on-disk lock file.
 
-Lease integration needs a separate transaction design. In particular, the
-JSONL provider keeps a POSIX `session.lock` inode for the lifetime of the write
-handle and explicitly warns that unlinking it while held forfeits exclusion.
-Moving the complete session directory while holding the lease can preserve
-that inode; recursively deleting the directory while the lease is held cannot
-be treated as safe. Permanent deletion and trash purge therefore need a
-quarantine-then-cleanup protocol, while restore needs to handle a competing
-writer that opens the artifact after it returns to the store but before the
-restorer can acquire its lease. Until those cases have crash-recovery tests
-against two real Harness processes, this plugin's own lock remains a
-cooperating-plugin-instance lock only.
+This native integration is deliberately limited to the shipped JSONL artifact
+layout, whose lease lifecycle has been inspected. An unknown provider layout
+fails closed rather than having a private lock file moved or unlinked
+speculatively. Older Hosts whose persistence provider does not expose
+`open()` retain the plugin-only lock; they do not gain cross-Harness writer
+exclusion from this change.
 
-It is not a distributed lock: shared network filesystems, multiple hosts,
-PID-namespace mismatches and non-cooperating session writers are outside the
-guarantee. A live but hung process is not force-unlocked; the operation times
-out without changing the session artifact.
+**Restore has a remaining race boundary.** The persistence API cannot open a
+write handle for a missing destination, and `create()` does not reserve an
+unmaterialized session id across processes. Restore therefore still relies on
+the plugin lock plus destination-occupancy and path checks; it is not a
+cross-Harness reservation protocol. Closing that gap needs a Host-native
+quarantine/reservation API and crash-recovery tests with two real Harness
+processes. The plugin lock is also not a distributed lock: shared network
+filesystems, multiple hosts and PID-namespace mismatches are outside its
+guarantee.
 
 Setting `mode: permanent` in the plugin config removes the intermediate step
 and deletes outright — the dialog then requires the conversation title to be
@@ -126,7 +126,7 @@ typed before the destructive action unlocks.
 
 | Artifact | Effect |
 |---|---|
-| Session log artifact (`~/.dsh/sessions/<project-key>/<session-id>/`, log + lock file) | moved to the trash, or removed in permanent mode |
+| Session log artifact (`~/.dsh/sessions/<project-key>/<session-id>/`, log + lock file) | moved to the trash with its lock file, or the log contents are removed permanently; POSIX keeps the empty `session.lock` inode for future writer exclusion |
 | Projection cache record (`~/.dsh/storages/session_projcache/sessions/<id>.json`) | dropped, then re-checked against a late checkpoint write |
 | Workspace accounting — membership, saved order, pin, archive mark | released |
 | Live session and agent store entries | detached *before* the files are moved, so no writer re-creates the log |
@@ -363,7 +363,7 @@ DeepSeek Harness 只能归档会话、无法真正删除，日志会一直堆积
 
 **新增内容**：会话「…」菜单里的**红色「删除对话」**、会话行悬停时的垃圾桶按钮，以及一个显示对话标题、写明"是否可恢复"的确认框；永久删除模式下还需要手动输入会话标题才会解锁按钮。删除后确认框会原地显示结果，并提供**还原**与**彻底删除**两个后续操作。删除当前正在看的对话后，会在同一工作区重新打开一个新会话。
 
-**删除顺序是事务式的**：解析目标 → 拒绝运行中的工作 → 停并将活跃会话摘除 → **把日志移出存储**（移出前先把工作区记账写入回收站清单：所属工作区、显示位置锚点、置顶/归档标记）→ 释放工作区记账 → 删除投影缓存 → 广播移除事件。移动失败时会**先失败、不动记账和缓存**，所以侧边栏行仍在、可以直接重试。
+**删除顺序是事务式的**：解析目标 → 拒绝运行中的工作 → 停并将活跃会话摘除 → 在支持新式持久化接口的 Harness 上取得宿主原生写租约 → **把日志移出存储**（移出前先把工作区记账写入回收站清单：所属工作区、显示位置锚点、置顶/归档标记）→ 释放宿主租约 → 释放工作区记账 → 删除投影缓存 → 广播移除事件。若另一个 Harness 写入者仍持有会话租约，会返回 `session-delete/locked`，本次不移动文件。
 
 **还原是完整的**：文件移回后，插件会按清单重新挂回工作区、回复到原来的显示位置（锚点仍存在时）、重新置顶或归档，并向界面广播 `api-session/added`，所以**不必重启就能在侧边栏重新看到**。重新挂接失败时不会假装成功：结果会给出 `reattached: false` 与 `needsRestart: true`，文件保持在原位，回收站条目保留为 `accounting-pending`，再点一次「恢复」只补做记账、不会重复移动文件。旧版本（0.3.0 及更早）写入的条目没有记账信息，只会尽力按 `cwd` 推断工作区，必要时仍需重启。
 
@@ -381,7 +381,7 @@ DeepSeek Harness 只能归档会话、无法真正删除，日志会一直堆积
 
 **兼容性**：在 DeepSeek Harness `0.2.1-rc.2`（Desktop/Web，Windows，中英文界面）上验证；零运行时依赖。实现依赖少量宿主内部机制（会话存储/持久化服务、工作区注册表的重新挂接与置顶/归档集合、会话列表状态与 `api-session/added` 事件、投影缓存域、以及 API Gateway 对带 `typertRemote` 绑定的服务的运行时派发），宿主大版本变更时可能需要跟进更新；这些能力都是防御式读取，缺失时只会降级并如实报告。
 
-**已知限制**：没有全局 toast（插件无法使用该槽位），确认框内的原地提示即反馈；界面文案仅中英文；从未落盘的空白会话删除后，宿主内存里的 pending 条目可能要等重启才彻底消失。还原的精确程度受宿主 API 限制：显示位置只在锚点仍存在时恢复，否则排到最前；置顶只能前置、无法还原其在置顶集合中的旧顺序；记账恢复失败时需重启后由启动引导重新接管。
+**已知限制**：没有全局 toast（插件无法使用该槽位），确认框内的原地提示即反馈；界面文案仅中英文；旧版 Harness 没有 `sessionPersistence.open()` 时仍只有插件实例间的协作锁；restore 的目标路径尚无宿主级预留接口，因此仍不能防止另一个 Harness 在同一时刻创建同 ID 会话。POSIX 永久删除后会保留空目录中的 `session.lock` 稳定锁文件（不会被会话列表视为有效会话）；从未落盘的空白会话删除后，宿主内存里的 pending 条目可能要等重启才彻底消失。还原的精确程度受宿主 API 限制：显示位置只在锚点仍存在时恢复，否则排到最前；置顶只能前置、无法还原其在置顶集合中的旧顺序；记账恢复失败时需重启后由启动引导重新接管。
 
 ## License
 

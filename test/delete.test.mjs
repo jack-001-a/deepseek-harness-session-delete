@@ -53,6 +53,7 @@ function harness(options = {}) {
     list: options.list ?? (async () => []),
     locate: options.locate ?? (() => ({ kind: 'jsonl', path: join(options.dir ?? tmpdir(), 'session.4.jsonl') })),
   }
+  if (typeof options.open === 'function') persistence.open = options.open
   const registry = options.registry ?? {
     list: () => [],
     unpinSession: async () => {},
@@ -516,6 +517,119 @@ test('live session: flushes, detaches, and lets the session announce its own rem
   // would double-apply the removal on the browser.
   assert.deepEqual(h.calls.emitted, [])
   await assert.rejects(stat(store.log), (error) => error.code === 'ENOENT')
+})
+
+test('stored deletion holds the Host write lease until its artifact has moved to trash', async () => {
+  const store = await makeStore()
+  await writeFile(join(store.dir, 'session.lock'), '')
+  let opened = false
+  let closed = false
+  const h = harness({
+    ...storedTarget(store),
+    open: async (id, access) => {
+      assert.equal(id, SESSION_ID)
+      assert.equal(access, 'write')
+      opened = true
+      return {
+        access,
+        header: { id: SESSION_ID, cwd: store.dir },
+        close: async () => {
+          assert.equal(opened, true)
+          await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
+          closed = true
+        },
+      }
+    },
+  })
+
+  const outcome = await h.service.delete(SESSION_ID)
+
+  assert.equal(outcome.trashed, true)
+  assert.equal(opened, true)
+  assert.equal(closed, true)
+  assert.ok((await stat(join(trashEntry(store, outcome.trashId), 'artifact', 'session.lock'))).isFile())
+})
+
+test('stored deletion refuses a session owned by another Harness writer', async () => {
+  const store = await makeStore()
+  const h = harness({
+    ...storedTarget(store),
+    open: async () => {
+      const error = new Error('another Harness process owns the write handle')
+      error.name = 'SessionAlreadyOwnedError'
+      throw error
+    },
+  })
+
+  await assert.rejects(h.service.delete(SESSION_ID), (error) => {
+    assert.equal(error.code, 'session-delete/locked')
+    assert.equal(error.details.reason, 'write-owned')
+    return true
+  })
+  assert.ok((await stat(store.log)).isFile(), 'the stored artifact must remain untouched')
+  assert.deepEqual(h.calls.emitted, [], 'a refused deletion must not announce a removal')
+  await assert.rejects(stat(store.trashRoot), (error) => error.code === 'ENOENT')
+})
+
+test('live deletion acquires the Host lease only after stopping and detaching the live writer', async () => {
+  const store = await makeStore()
+  await writeFile(join(store.dir, 'session.lock'), '')
+  const live = { id: SESSION_ID, header: { id: SESSION_ID, cwd: store.dir } }
+  const h = harness({
+    ...storedTarget(store),
+    live,
+    open: async (id, access) => {
+      assert.equal(id, SESSION_ID)
+      assert.equal(access, 'write')
+      assert.deepEqual(h.calls.stopped, [SESSION_ID])
+      assert.deepEqual(h.calls.flushed, [SESSION_ID])
+      assert.deepEqual(h.calls.detached, [SESSION_ID])
+      return {
+        access,
+        header: live.header,
+        close: async () => {
+          await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
+        },
+      }
+    },
+  })
+  h.ctx.sessions.store.set(SESSION_ID, { id: SESSION_ID })
+
+  const outcome = await h.service.delete(SESSION_ID)
+
+  assert.equal(outcome.wasLive, true)
+  assert.equal(outcome.removed, true)
+})
+
+test('permanent deletion preserves the POSIX Host lease inode but removes the session log', async () => {
+  const store = await makeStore()
+  if (process.platform !== 'win32') await writeFile(join(store.dir, 'session.lock'), '')
+  const h = harness({
+    ...storedTarget(store),
+    config: { mode: 'permanent' },
+    open: async (id, access) => ({
+      access,
+      header: { id: SESSION_ID, cwd: store.dir },
+      close: async () => {
+        await assert.rejects(stat(store.log), (error) => error.code === 'ENOENT')
+        if (process.platform !== 'win32') {
+          assert.ok((await stat(join(store.dir, 'session.lock'))).isFile(), 'the stable POSIX lease inode remains until close')
+          assert.ok((await stat(store.dir)).isDirectory(), 'only the empty lease directory remains')
+        } else {
+          await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
+        }
+      },
+    }),
+  })
+
+  const outcome = await h.service.delete(SESSION_ID)
+
+  assert.equal(outcome.purged, true)
+  if (process.platform !== 'win32') {
+    assert.deepEqual(await readdir(store.dir), ['session.lock'])
+  } else {
+    await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
+  }
 })
 
 test('forked children are reported, not deleted', async () => {

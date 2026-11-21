@@ -100,6 +100,8 @@ const PROCESS_LOCK_WAIT_MS = 15000
 const PROCESS_LOCK_POLL_MS = 50
 /** Lock owner metadata stored inside each atomically-created lock directory. */
 const PROCESS_LOCK_OWNER_FILE = '.owner.json'
+/** POSIX JSONL write-lease inode; keep it stable while a write handle is held. */
+const HOST_WRITE_LOCK_FILE_NAME = 'session.lock'
 /** Most audit records the trail file keeps before it is trimmed. */
 const AUDIT_MAX_RECORDS = 1000
 /** Minimum gap between two retention sweeps. */
@@ -514,6 +516,89 @@ class SessionDeleteService {
   }
 
   /**
+   * Acquire the Host's native single-writer handle when this persistence
+   * provider exposes the handle-based API.
+   *
+   * Newer Harness builds use this handle to hold the provider's own write
+   * lease across the artifact move. A live session is first stopped and
+   * detached by runDelete(); its writer may need a short time to close. An
+   * unmaterialized live session has no durable artifact and is allowed to
+   * return NotFound. Older providers without open() retain the plugin-only
+   * coordination path.
+   *
+   * @param sessionId - durable Session identity.
+   * @param options - whether a missing live artifact is acceptable and
+   *   whether a closing live writer should be retried.
+   * @returns the acquired write handle, or undefined for an old provider /
+   *   an unmaterialized live session.
+   */
+  async acquireHostWriteHandle(sessionId, { allowMissing = false, retryOwned = false } = {}) {
+    const persistence = this.ctx.sessionPersistence
+    if (typeof persistence?.open !== 'function') return undefined
+
+    for (let attempt = 0; attempt < (retryOwned ? REMOVE_ATTEMPTS : 1); attempt += 1) {
+      try {
+        const handle = await persistence.open(sessionId, 'write')
+        if (handle?.access !== 'write' || typeof handle.close !== 'function') {
+          await Promise.resolve(handle?.close?.()).catch(() => {})
+          throw new SessionDeleteError(
+            'session-delete/unsupported-store',
+            'sessionDelete: the Host returned an invalid write handle; nothing was removed',
+            { sessionId, reason: 'invalid-write-handle' },
+          )
+        }
+        return handle
+      } catch (error) {
+        if (error instanceof SessionDeleteError) throw error
+        if (error?.name === 'SessionPersistenceNotFoundError') {
+          if (allowMissing) return undefined
+          throw new SessionDeleteError(
+            'session-delete/not-found',
+            `sessionDelete: session "${sessionId}" no longer has a stored artifact; nothing was removed`,
+            { sessionId, reason: 'write-open-not-found' },
+          )
+        }
+        if (error?.name === 'SessionAlreadyOwnedError') {
+          if (retryOwned && attempt < REMOVE_ATTEMPTS - 1) {
+            await delay(removeRetryDelay(attempt))
+            continue
+          }
+          throw new SessionDeleteError(
+            'session-delete/locked',
+            `sessionDelete: another Harness writer still owns session "${sessionId}"; nothing was removed`,
+            { sessionId, reason: 'write-owned', attempts: attempt + 1 },
+          )
+        }
+        throw new SessionDeleteError(
+          'session-delete/unreadable',
+          `sessionDelete: the Host could not acquire write ownership for session "${sessionId}": ${error instanceof Error ? error.message : String(error)}`,
+          { sessionId, reason: 'write-open-failed', causeName: error?.name },
+        )
+      }
+    }
+    throw new SessionDeleteError(
+      'session-delete/locked',
+      `sessionDelete: another Harness writer still owns session "${sessionId}"; nothing was removed`,
+      { sessionId, reason: 'write-owned', attempts: REMOVE_ATTEMPTS },
+    )
+  }
+
+  /** Release a Host-native write handle after the artifact has left its store path. */
+  async releaseHostWriteHandle(handle, sessionId) {
+    if (handle === undefined) return
+    try {
+      await handle.close()
+    } catch (error) {
+      // The artifact is already detached from the store path. A close failure
+      // is logged, not allowed to turn a committed deletion into a false
+      // "nothing changed" result.
+      this.ctx.logger?.warn(
+        `sessionDelete: closing the Host write handle for "${sessionId}" failed: ${String(error)}`,
+      )
+    }
+  }
+
+  /**
    * Read the retention window from the configuration.
    *
    * A negative or non-numeric value falls back to the default: an unbounded
@@ -584,6 +669,7 @@ class SessionDeleteService {
       }
     }
 
+    let hostWriteHandle
     try {
       // 1. Resolve the target: a live session, otherwise a stored one.
       const live = ctx.sessions.get(sessionId)
@@ -650,6 +736,15 @@ class SessionDeleteService {
         this.detach(sessionId)
       }
 
+      // 4b. On handle-based Hosts, wait for the just-detached live writer to
+      //     release ownership, then acquire the provider's native write lease.
+      //     A competing Harness process cannot append while the artifact moves.
+      hostWriteHandle = await this.acquireHostWriteHandle(sessionId, {
+        allowMissing: live !== undefined,
+        retryOwned: live !== undefined,
+      })
+      if (hostWriteHandle?.header) header = hostWriteHandle.header
+
       // 5. Remove the stored conversation. This is the irreversible step; a
       //    session that never materialized has no artifact, which counts as
       //    success rather than failure.
@@ -659,7 +754,13 @@ class SessionDeleteService {
         children,
         childrenCount,
         accounting,
+        hostWriteHandle,
       )
+      // The artifact has left its original path. Release the Host lease now;
+      // on POSIX permanent JSONL deletion the empty directory retains only the
+      // stable session.lock inode, as required by the provider.
+      await this.releaseHostWriteHandle(hostWriteHandle, sessionId)
+      hostWriteHandle = undefined
 
       // 6. Release the durable workspace accounting. Fail-soft: the artifact
       //    is already gone, so a stale membership must not fail the deletion.
@@ -696,6 +797,8 @@ class SessionDeleteService {
         mode: this.mode,
       })
       throw error
+    } finally {
+      await this.releaseHostWriteHandle(hostWriteHandle, sessionId)
     }
   }
 
@@ -1180,7 +1283,7 @@ class SessionDeleteService {
    * @param accounting - the workspace accounting captured before the release.
    * @returns what happened to the artifact.
    */
-  async removeStoredLog(header, sessionId, children = [], childrenCount = children.length, accounting) {
+  async removeStoredLog(header, sessionId, children = [], childrenCount = children.length, accounting, hostWriteHandle) {
     const artifact = await this.resolveArtifact(header, sessionId)
     if (artifact === undefined) {
       return { removed: false, trashed: false, purged: false }
@@ -1191,9 +1294,48 @@ class SessionDeleteService {
     if (!(await this.pathExists(artifact.target))) {
       return { removed: false, trashed: false, purged: false }
     }
+    // Only the shipped JSONL layout has been verified against the Host's
+    // session.lock lifecycle. Unknown file/dir providers fail closed rather
+    // than having their private lease layout moved or unlinked speculatively.
+    if (hostWriteHandle !== undefined && artifact.kind !== 'jsonl') {
+      throw new SessionDeleteError(
+        'session-delete/unsupported-store',
+        'sessionDelete: this Host write-handle provider uses an artifact layout this plugin has not verified; nothing was removed',
+        { sessionId, kind: artifact.kind, reason: 'unverified-host-lease-layout' },
+      )
+    }
     if (this.mode === 'trash') {
       const entry = await this.moveToTrash(artifact, sessionId, header, children, childrenCount, accounting)
       return { removed: true, trashed: true, trashId: entry.trashId, purged: false }
+    }
+    if (hostWriteHandle !== undefined && process.platform !== 'win32') {
+      // The POSIX provider locks the inode at <session-dir>/session.lock and
+      // explicitly requires that file to survive release. Delete every other
+      // entry while the write handle is held; after close the directory is
+      // merely an empty, unlistable shell containing the stable lease inode.
+      const lockPath = join(artifact.target, HOST_WRITE_LOCK_FILE_NAME)
+      let lockStat
+      try {
+        lockStat = await lstat(lockPath)
+      } catch (error) {
+        throw new SessionDeleteError(
+          'session-delete/unsupported-store',
+          'sessionDelete: the POSIX Host write lease file is missing; nothing was removed',
+          { sessionId, path: lockPath, reason: 'missing-host-write-lock', causeCode: error?.code },
+        )
+      }
+      if (!lockStat.isFile() || lockStat.isSymbolicLink()) {
+        throw new SessionDeleteError(
+          'session-delete/unsafe-path',
+          'sessionDelete: the Host write lease path is not a regular file; nothing was removed',
+          { sessionId, path: lockPath, reason: 'invalid-host-write-lock' },
+        )
+      }
+      for (const name of await readdir(artifact.target)) {
+        if (name === HOST_WRITE_LOCK_FILE_NAME) continue
+        await this.removeWithRetries(join(artifact.target, name), sessionId)
+      }
+      return { removed: true, trashed: false, purged: true }
     }
     await this.removeWithRetries(artifact.target, sessionId)
     return { removed: true, trashed: false, purged: true }
