@@ -892,7 +892,12 @@ test('a restore interrupted after the move is completed instead of conflicting',
 
   const deleted = await h.service.delete(SESSION_ID)
   const artifact = join(trashEntry(store, deleted.trashId), 'artifact')
-  // Simulate a crash between the move and the accounting replay.
+  // Simulate the durable marker written before a real restore move, then
+  // a crash after the artifact has reached its destination.
+  await writeFile(join(trashEntry(store, deleted.trashId), '.restoring'), JSON.stringify({
+    sessionId: SESSION_ID,
+    target: store.dir,
+  }))
   await h.service.moveArtifact(artifact, store.dir)
   registry.calls.length = 0
 
@@ -1394,4 +1399,80 @@ test('retrying an already-trashed delete completes accounting after an interrupt
   assert.ok(registry.calls.some(([kind]) => kind === 'unpin'))
   assert.ok(registry.calls.some(([kind]) => kind === 'unarchive'))
   assert.equal(cache.has(SESSION_ID), false)
+})
+
+test('restore recovers a promoted cross-device copy left beside its trash source', async () => {
+  const store = await makeStore()
+  const h = harness({ ...storedTarget(store) })
+  const deleted = await h.service.delete(SESSION_ID)
+  const originalMove = h.service.moveArtifact.bind(h.service)
+  let interrupted = false
+  h.service.moveArtifact = async (source, destination, options) => {
+    if (!interrupted) {
+      interrupted = true
+      const { cp, mkdir } = await import('node:fs/promises')
+      await mkdir(join(destination, '..'), { recursive: true })
+      await cp(source, destination, { recursive: true })
+      throw new Error('simulated process interruption after destination promotion')
+    }
+    return originalMove(source, destination, options)
+  }
+
+  await assert.rejects(h.service.restore(SESSION_ID), /simulated process interruption/)
+  const entryPath = trashEntry(store, deleted.trashId)
+  assert.ok((await stat(store.dir)).isDirectory(), 'the promoted destination must remain')
+  assert.ok((await stat(join(entryPath, 'artifact'))).isDirectory(), 'the trash source must remain until verified')
+
+  h.service.moveArtifact = originalMove
+  const restored = await h.service.restore(SESSION_ID)
+  assert.equal(restored.restored, true)
+  assert.equal((await readFile(store.log, 'utf8')), '{"seq":0}\n')
+  await assert.rejects(stat(entryPath), (error) => error.code === 'ENOENT')
+})
+
+test('restore preserves both copies when an interrupted destination differs', async () => {
+  const store = await makeStore()
+  const h = harness({ ...storedTarget(store) })
+  const deleted = await h.service.delete(SESSION_ID)
+  const originalMove = h.service.moveArtifact.bind(h.service)
+  h.service.moveArtifact = async (source, destination) => {
+    const { cp, writeFile } = await import('node:fs/promises')
+    await cp(source, destination, { recursive: true })
+    await writeFile(join(destination, 'session.4.jsonl'), 'different\n')
+    throw new Error('simulated interruption')
+  }
+
+  await assert.rejects(h.service.restore(SESSION_ID), /simulated interruption/)
+  h.service.moveArtifact = originalMove
+  await assert.rejects(h.service.restore(SESSION_ID), (error) => error.code === 'session-delete/conflict')
+  assert.ok((await stat(store.dir)).isDirectory())
+  assert.ok((await stat(trashEntry(store, deleted.trashId))).isDirectory())
+})
+
+test('restore retries after an interrupted partial cross-device copy', async () => {
+  const store = await makeStore()
+  const h = harness({ ...storedTarget(store) })
+  await h.service.delete(SESSION_ID)
+  const originalMove = h.service.moveArtifact.bind(h.service)
+  let interrupted = false
+  h.service.moveArtifact = async (_source, destination) => {
+    if (!interrupted) {
+      interrupted = true
+      const { mkdir, writeFile } = await import('node:fs/promises')
+      await mkdir(destination + '.partial', { recursive: true })
+      await writeFile(join(destination + '.partial', 'partial.txt'), 'incomplete')
+      throw new Error('simulated interruption during cross-device copy')
+    }
+    return originalMove(_source, destination)
+  }
+
+  await assert.rejects(h.service.restore(SESSION_ID), /simulated interruption during cross-device copy/)
+  await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT', 'the original path remains absent')
+  assert.ok((await stat(store.dir + '.partial')).isDirectory())
+
+  h.service.moveArtifact = originalMove
+  const restored = await h.service.restore(SESSION_ID)
+  assert.equal(restored.restored, true)
+  assert.equal(await readFile(store.log, 'utf8'), '{"seq":0}\n')
+  await assert.rejects(stat(store.dir + '.partial'), (error) => error.code === 'ENOENT')
 })
