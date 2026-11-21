@@ -25,7 +25,7 @@
  * a local directory resolves its imports from that directory, so every import
  * would have to be a Node built-in.
  */
-import { appendFile, cp, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { appendFile, cp, lstat, mkdir, readFile, readlink, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 /** Cordis service key of this plugin's service. */
@@ -378,6 +378,11 @@ class SessionDeleteService {
     //    deleted while leaving it on the disk.
     const trashed = this.mode === 'trash' ? await this.trashEntryFor(sessionId) : undefined
     if (trashed !== undefined && trashed.restoreState === undefined) {
+      // The artifact move is the durable commit point. If the process stopped
+      // immediately afterwards, a retry must finish the idempotent side effects
+      // instead of returning early and leaving stale workspace/cache records.
+      await this.releaseWorkspaceAccounting(sessionId)
+      await this.removeProjectionCache(sessionId)
       const children = Array.isArray(trashed.children) ? trashed.children : []
       return {
         sessionId,
@@ -1033,6 +1038,45 @@ class SessionDeleteService {
   }
 
   /**
+   * Compare two artifact trees without following symlinks.
+   *
+   * Crash recovery uses content equality rather than directory timestamps or
+   * inode metadata, which vary across filesystems. Unsupported special files
+   * fail closed so neither copy is discarded.
+   * @param left - first artifact path.
+   * @param right - second artifact path.
+   * @returns whether both trees have identical names, types and contents.
+   */
+  async artifactsMatch(left, right) {
+    const leftStat = await lstat(left).catch(() => undefined)
+    const rightStat = await lstat(right).catch(() => undefined)
+    if (!leftStat || !rightStat) return false
+    if (leftStat.isDirectory() !== rightStat.isDirectory() ||
+      leftStat.isFile() !== rightStat.isFile() ||
+      leftStat.isSymbolicLink() !== rightStat.isSymbolicLink()) return false
+    if (leftStat.isDirectory()) {
+      const [leftNames, rightNames] = await Promise.all([readdir(left), readdir(right)])
+      if (leftNames.length !== rightNames.length) return false
+      leftNames.sort()
+      rightNames.sort()
+      for (let index = 0; index < leftNames.length; index++) {
+        if (leftNames[index] !== rightNames[index]) return false
+        if (!(await this.artifactsMatch(join(left, leftNames[index]), join(right, rightNames[index])))) return false
+      }
+      return true
+    }
+    if (leftStat.isFile()) {
+      const [leftBytes, rightBytes] = await Promise.all([readFile(left), readFile(right)])
+      return leftBytes.equals(rightBytes)
+    }
+    if (leftStat.isSymbolicLink()) {
+      const [leftLink, rightLink] = await Promise.all([readlink(left), readlink(right)])
+      return leftLink === rightLink
+    }
+    return false
+  }
+
+  /**
    * Move one artifact into the trash and describe it.
    *
    * The manifest is written before the artifact moves, so a failure leaves the
@@ -1107,6 +1151,7 @@ class SessionDeleteService {
         JSON.stringify({
           dev: sourceStat.dev,
           ino: sourceStat.ino,
+          isDirectory: sourceStat.isDirectory(),
           size: sourceStat.size,
           mtimeMs: sourceStat.mtimeMs,
         }),
@@ -1737,11 +1782,9 @@ class SessionDeleteService {
       }
       let canonicalRoot
       let canonicalSource
-      let current
       try {
         canonicalRoot = await realpath(root)
         canonicalSource = await resolveThroughExistingAncestors(source)
-        current = await stat(source)
       } catch (error) {
         this.ctx.logger?.warn(`sessionDelete: cannot verify the source of interrupted move "${path}": ${String(error)}`)
         return false
@@ -1749,10 +1792,7 @@ class SessionDeleteService {
       if (
         !isInside(canonicalRoot, canonicalSource) ||
         samePath(dirname(canonicalSource), canonicalRoot) ||
-        current.dev !== identity.dev ||
-        current.ino !== identity.ino ||
-        current.size !== identity.size ||
-        current.mtimeMs !== identity.mtimeMs
+        !(await this.artifactsMatch(source, artifact))
       ) {
         this.ctx.logger?.warn(
           `sessionDelete: the source of interrupted move "${path}" changed; both copies were preserved for manual recovery`,
