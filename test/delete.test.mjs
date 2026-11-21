@@ -9,7 +9,8 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import { appendFile, mkdtemp, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -1335,9 +1336,12 @@ test('different trash mutations for one session are serialized', async () => {
   const h = harness()
   let release
   const firstGate = new Promise((resolve) => { release = resolve })
+  let restoreStarted
+  const restoreStartedGate = new Promise((resolve) => { restoreStarted = resolve })
   const events = []
   const first = h.service.runTrashOperation('restore', SESSION_ID, async () => {
     events.push('restore:start')
+    restoreStarted()
     await firstGate
     events.push('restore:end')
     return 'restored'
@@ -1346,8 +1350,7 @@ test('different trash mutations for one session are serialized', async () => {
     events.push('purge:start')
     return 'purged'
   })
-  await Promise.resolve()
-  await Promise.resolve()
+  await restoreStartedGate
   assert.deepEqual(events, ['restore:start'])
   release()
   assert.equal(await first, 'restored')
@@ -1359,15 +1362,18 @@ test('same trash mutation joins the in-flight operation', async () => {
   const h = harness()
   let release
   const gate = new Promise((resolve) => { release = resolve })
+  let started
+  const startedGate = new Promise((resolve) => { started = resolve })
   let runs = 0
   const run = () => h.service.runTrashOperation('restore', SESSION_ID, async () => {
     runs += 1
+    started()
     await gate
     return { restored: true }
   })
   const first = run()
   const second = run()
-  await Promise.resolve()
+  await startedGate
   assert.equal(runs, 1)
   release()
   assert.deepEqual(await first, { restored: true })
@@ -1634,4 +1640,118 @@ test('startup recovery retries workspace accounting when a host write fails', as
     ['unpin', SESSION_ID],
     ['unarchive', SESSION_ID],
   ])
+})
+
+test('filesystem session locks use one canonical path for symlinked store roots', async () => {
+  const store = await makeStore()
+  const alias = join(store.base, 'sessions-alias')
+  await symlink(store.root, alias, process.platform === 'win32' ? 'junction' : 'dir')
+
+  const direct = harness({ root: store.root })
+  const linked = harness({ root: alias })
+  assert.equal(
+    await direct.service.processLockPath(SESSION_ID),
+    await linked.service.processLockPath(SESSION_ID),
+  )
+})
+
+test('filesystem session locks serialize two independent Node processes', async () => {
+  const store = await makeStore()
+  const marker = join(store.base, 'lock-events.txt')
+  const moduleUrl = new URL('../index.js', import.meta.url).href
+  const worker = `
+    import { appendFile } from 'node:fs/promises'
+    const [moduleUrl, root, sessionId, marker, holdMs] = process.argv.slice(1)
+    const { apply } = await import(moduleUrl)
+    const provided = new Map()
+    const sessions = { get: () => undefined, store: new Map() }
+    const persistence = { root, stat: async () => undefined, list: async () => [] }
+    const ctx = {
+      sessions,
+      sessionPersistence: persistence,
+      get: (name) => name === 'sessions' ? sessions : name === 'sessionPersistence' ? persistence : undefined,
+      reflect: { provide: (name, value) => provided.set(name, value) },
+      on: () => {},
+      waterfall: async (_name, _payload, base) => base(),
+      parallel: async () => {},
+      emit: () => {},
+      logger: { warn: () => {} },
+    }
+    apply(ctx, { mode: 'permanent' })
+    const service = provided.get('sessionDelete')
+    await service.withProcessLock(sessionId, async () => {
+      await appendFile(marker, 'start\\n')
+      await new Promise((resolve) => setTimeout(resolve, Number(holdMs)))
+      await appendFile(marker, 'end\\n')
+    })
+  `
+  const launch = () => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', worker, moduleUrl, store.root, SESSION_ID, marker, '250'], {
+      stdio: 'ignore',
+    })
+    child.once('error', reject)
+    child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`lock worker exited with ${code}`)))
+  })
+  await Promise.all([launch(), launch()])
+  const events = (await readFile(marker, 'utf8')).trim().split('\n')
+  assert.deepEqual(events, ['start', 'end', 'start', 'end'])
+})
+
+test('a dead same-host lock owner is reclaimed after process exit', async () => {
+  const store = await makeStore()
+  const marker = join(store.base, 'stale-lock-events.txt')
+  const moduleUrl = new URL('../index.js', import.meta.url).href
+  const worker = `
+    import { appendFile } from 'node:fs/promises'
+    const [moduleUrl, root, sessionId, marker] = process.argv.slice(1)
+    const { apply } = await import(moduleUrl)
+    const provided = new Map()
+    const sessions = { get: () => undefined, store: new Map() }
+    const persistence = { root, stat: async () => undefined, list: async () => [] }
+    const ctx = {
+      sessions,
+      sessionPersistence: persistence,
+      get: (name) => name === 'sessions' ? sessions : name === 'sessionPersistence' ? persistence : undefined,
+      reflect: { provide: (name, value) => provided.set(name, value) },
+      on: () => {},
+      waterfall: async (_name, _payload, base) => base(),
+      parallel: async () => {},
+      emit: () => {},
+      logger: { warn: () => {} },
+    }
+    apply(ctx, { mode: 'permanent' })
+    await provided.get('sessionDelete').withProcessLock(sessionId, async () => {
+      await appendFile(marker, 'held\\n')
+      process.exit(0)
+    })
+  `
+  const child = spawn(process.execPath, ['--input-type=module', '-e', worker, moduleUrl, store.root, SESSION_ID, marker], {
+    stdio: 'ignore',
+  })
+  try {
+    let ready = false
+    for (let attempt = 0; attempt < 200; attempt++) {
+      try {
+        ready = (await readFile(marker, 'utf8')).includes('held')
+        if (ready) break
+      } catch {}
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    assert.equal(ready, true, 'the child must acquire the lock before it is terminated')
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise((resolve, reject) => {
+        child.once('error', reject)
+        child.once('exit', resolve)
+      })
+      child.kill()
+      await exited
+    }
+  }
+
+  const h = harness({ ...storedTarget(store) })
+  await h.service.withProcessLock(SESSION_ID, async () => {
+    await appendFile(marker, 'reclaimed\n')
+  })
+  assert.deepEqual((await readFile(marker, 'utf8')).trim().split('\n'), ['held', 'reclaimed'])
 })

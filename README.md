@@ -66,6 +66,58 @@ whose source and destination state is ambiguous are preserved and logged
 instead of being deleted or reattached speculatively. A larger backlog is left
 for a later launch.
 
+### Cross-process operation locking
+
+Delete, restore, purge, retention cleanup and startup recovery share an
+atomic filesystem lock per session. Lock directories are stored beside the
+session-store root, not inside the project tree. The exposed session-store
+path is canonicalized before deriving the lock directory, so processes that
+reach the same store through symlink aliases use the same lock location. Each
+lock records its host, PID and a random ownership token; a contender waits for
+a live owner and only reclaims a lock after the same-host PID is confirmed
+absent and the lock directory is atomically moved aside. Unknown, malformed,
+foreign-host or permission-denied lock state fails closed. A crash or
+owner-metadata write failure after creating the lock directory can therefore
+require manual removal of that orphan lock directory after verifying that no
+operation is running.
+
+This coordinates cooperating instances of this plugin on the same host
+and a local filesystem. It does **not** make the Host's session store or
+workspace registry participate in the lock protocol. In particular, it cannot
+stop a different Harness process from appending to the same session, nor
+serialize that process's native archive, pin, unpin or workspace-membership
+writes. The activity check and stop request are scoped to the current Host
+instance; they are not a cross-process session-stop protocol. Do not treat
+this lock as protection against another Harness process actively writing the
+same session.
+
+### Host-native session write leases (not yet integrated)
+
+The current Harness persistence seam exposes
+`ctx.sessionPersistence.open(sessionId, 'write')`. The shipped JSONL provider
+uses a kernel-backed cross-process lease for that write handle; a competing
+writer is rejected with `SessionAlreadyOwnedError`. Other persistence providers
+must document their own cross-process guarantee. This plugin currently does
+**not** acquire that Host-native lease, so PR #12 must not be interpreted as
+coordinating with Host session writers.
+
+Lease integration needs a separate transaction design. In particular, the
+JSONL provider keeps a POSIX `session.lock` inode for the lifetime of the write
+handle and explicitly warns that unlinking it while held forfeits exclusion.
+Moving the complete session directory while holding the lease can preserve
+that inode; recursively deleting the directory while the lease is held cannot
+be treated as safe. Permanent deletion and trash purge therefore need a
+quarantine-then-cleanup protocol, while restore needs to handle a competing
+writer that opens the artifact after it returns to the store but before the
+restorer can acquire its lease. Until those cases have crash-recovery tests
+against two real Harness processes, this plugin's own lock remains a
+cooperating-plugin-instance lock only.
+
+It is not a distributed lock: shared network filesystems, multiple hosts,
+PID-namespace mismatches and non-cooperating session writers are outside the
+guarantee. A live but hung process is not force-unlocked; the operation times
+out without changing the session artifact.
+
 Setting `mode: permanent` in the plugin config removes the intermediate step
 and deletes outright — the dialog then requires the conversation title to be
 typed before the destructive action unlocks.
