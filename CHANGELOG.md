@@ -6,6 +6,28 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## Unreleased
 
+## [0.5.0] — 2026-11-21
+
+### Added
+
+- Add a dependency-free per-session filesystem lock shared by cooperating plugin processes on the same host and local filesystem.
+- Reconcile interrupted delete and restore transactions after the Host becomes ready, replaying idempotent workspace accounting and preserving ambiguous filesystem states for manual inspection.
+
+### Changed
+
+- Serialize delete, restore, purge, retention cleanup, startup recovery, and trash-move recovery under the same per-session lock; refresh trash state after acquiring the lock to avoid stale in-memory decisions.
+- Harden cross-device trash and restore recovery with durable markers, staging paths, atomic promotion, tombstone cleanup, and content-identity checks.
+- Replay delete-side workspace accounting and projection-cache cleanup when an interrupted trash operation is retried.
+
+### Security
+
+- Fail closed on malformed, ownerless, foreign-host, or unverifiable lock state; never reclaim a lock without confirming its same-host process is absent.
+- Preserve files and surface conflicts when recovery cannot prove that source and destination artifacts are identical.
+
+### Scope and limitations
+
+- Cross-process exclusion applies to cooperating instances on one host and a local filesystem. It is not a distributed lock and does not protect against non-cooperating Harness-native session writers or arbitrary network filesystems.
+
 ## [0.4.1] — 2026-11-18
 
 ### Security
