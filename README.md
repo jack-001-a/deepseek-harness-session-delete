@@ -92,7 +92,7 @@ On Hosts that expose the handle-based
 `ctx.sessionPersistence.open(sessionId, 'write')` API, deletion now obtains
 the provider's native write handle after stopping and detaching a live session.
 For a live writer that is still closing, acquisition is retried briefly. The
-handle is held until the artifact has left its original store path; a
+handle is held until the session log has been removed from its original store path; a
 competing Harness writer is refused with `session-delete/locked` and the
 artifact is left untouched. The shipped JSONL provider's POSIX
 `session.lock` inode is kept in the now-empty session directory during
@@ -371,7 +371,7 @@ DeepSeek Harness 只能归档会话、无法真正删除，日志会一直堆积
 
 **不会删的**：附件目录（按内容寻址、被多个会话共享）、临时 spill 文件、由该对话分叉出的子会话（确认框会提示数量）。
 
-**错误码**：`active`（仍有运行中的工作）、`not-found`（已删除或不存在）、`io`（文件无法移动，未做任何改动）、`unsupported-store`（当前版本无法定位文件）、`unreadable`（日志无法读取）、`unsafe-path`（目标不在会话存储根目录内）、`trash-unavailable`、`conflict`、`invalid-request`（请求非法）。
+**错误码**：`active`（仍有运行中的工作）、`locked`（另一个 Harness 写入者仍持有租约）、`not-found`（已删除或不存在）、`io`（文件无法移动，未做任何改动）、`unsupported-store`（当前版本无法定位文件）、`unreadable`（日志无法读取）、`unsafe-path`（目标不在会话存储根目录内）、`trash-unavailable`、`conflict`、`invalid-request`（请求非法）。
 
 **路径安全**：只会删除存储定位器明确给出的 `dir` 或 `file`；既检查归一化后的路径，也解析现存路径组件中的符号链接。任何最终指向会话存储根目录之外的路径都会被拒绝，不做任何改动。
 

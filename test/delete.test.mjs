@@ -606,6 +606,40 @@ test('live deletion acquires the Host lease only after stopping and detaching th
   assert.equal(outcome.removed, true)
 })
 
+test('live deletion retries briefly while the prior Host writer is closing', async () => {
+  const store = await makeStore()
+  await writeFile(join(store.dir, 'session.lock'), '')
+  const live = { id: SESSION_ID, header: { id: SESSION_ID, cwd: store.dir } }
+  let attempts = 0
+  const h = harness({
+    ...storedTarget(store),
+    live,
+    open: async (id, access) => {
+      attempts += 1
+      if (attempts === 1) {
+        const error = new Error('the previous live writer is still closing')
+        error.name = 'SessionAlreadyOwnedError'
+        throw error
+      }
+      assert.equal(id, SESSION_ID)
+      assert.equal(access, 'write')
+      return {
+        access,
+        header: live.header,
+        close: async () => {
+          await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
+        },
+      }
+    },
+  })
+  h.ctx.sessions.store.set(SESSION_ID, { id: SESSION_ID })
+
+  const outcome = await h.service.delete(SESSION_ID)
+
+  assert.equal(outcome.removed, true)
+  assert.equal(attempts, 2)
+})
+
 test('permanent deletion preserves the POSIX Host lease inode but removes the session log', async () => {
   const store = await makeStore()
   if (process.platform !== 'win32') await writeFile(join(store.dir, 'session.lock'), '')
