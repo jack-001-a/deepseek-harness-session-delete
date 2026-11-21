@@ -78,6 +78,10 @@ const AUDIT_FILE_NAME = 'audit.jsonl'
 const MANIFEST_FILE_NAME = 'meta.json'
 /** Name of the subdirectory that holds the moved artifact in a trash entry. */
 const ARTIFACT_DIR_NAME = 'artifact'
+/** Marker for a trash move that may need crash recovery. */
+const COPYING_MARKER_FILE_NAME = '.copying'
+/** Suffix for an incomplete cross-device copy, never exposed as the artifact. */
+const COPY_STAGE_SUFFIX = '.partial'
 /** Most child ids one deletion reports; the true count is reported apart. */
 const CHILD_LIMIT = 100
 /** Most trash entries one sweep examines, so a sweep stays bounded. */
@@ -1095,10 +1099,42 @@ class SessionDeleteService {
         { sessionId, path: entryPath },
       )
     }
+    const markerPath = join(entryPath, COPYING_MARKER_FILE_NAME)
     try {
-      await this.moveArtifact(artifact.target, join(entryPath, ARTIFACT_DIR_NAME))
+      const sourceStat = await stat(artifact.target)
+      await writeFile(
+        markerPath,
+        JSON.stringify({
+          dev: sourceStat.dev,
+          ino: sourceStat.ino,
+          size: sourceStat.size,
+          mtimeMs: sourceStat.mtimeMs,
+        }),
+        { encoding: 'utf8', flag: 'wx' },
+      )
+      const tombstone = join(dirname(artifact.target), `.session-delete-${trashId}.moving`)
+      await this.moveArtifact(artifact.target, join(entryPath, ARTIFACT_DIR_NAME), {
+        afterPromote: async (source) => {
+          // Rename on the source volume is atomic. If removal is interrupted,
+          // recovery can safely finish deleting this private tombstone.
+          await rename(source, tombstone)
+          await this.removeWithRetries(tombstone, sessionId)
+        },
+      })
+      await this.recoverTrashMove(entryPath, manifest)
     } catch (error) {
-      await this.discardTrashEntry(entryPath)
+      const copiedArtifact = await this.pathExists(join(entryPath, ARTIFACT_DIR_NAME))
+      if (copiedArtifact) {
+        // The destination was atomically promoted before a later step failed.
+        // Keep the marker and both paths so the next refresh can finish safely.
+        this.ctx.logger?.warn(
+          `sessionDelete: the trash move of "${sessionId}" needs recovery; its source and destination were preserved`,
+        )
+      } else {
+        // No complete artifact was promoted, so the original is still the
+        // only authoritative copy. Removing the entry also drops any partial.
+        await this.discardTrashEntry(entryPath)
+      }
       throw new SessionDeleteError(
         'session-delete/io',
         `sessionDelete: moving the log of session "${sessionId}" into the trash failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -1186,15 +1222,25 @@ class SessionDeleteService {
    * @param source - the absolute path to move.
    * @param destination - the absolute path to move it to.
    */
-  async moveArtifact(source, destination) {
+  async moveArtifact(source, destination, options = {}) {
     try {
       await rename(source, destination)
       return
     } catch (error) {
       if (error?.code !== 'EXDEV') throw error
     }
-    await cp(source, destination, { recursive: true, force: false, errorOnExist: true })
-    await rm(source, { recursive: true, force: true })
+    // Never copy directly to the visible destination. A crash during cp would
+    // otherwise leave a partial artifact that looks like a completed move.
+    const staging = `${destination}${COPY_STAGE_SUFFIX}`
+    await cp(source, staging, { recursive: true, force: false, errorOnExist: true })
+    // Promotion is atomic because staging and destination share the trash
+    // volume. Recovery can distinguish a partial stage from a complete copy.
+    await rename(staging, destination)
+    if (typeof options.afterPromote === 'function') {
+      await options.afterPromote(source)
+    } else {
+      await rm(source, { recursive: true, force: true })
+    }
   }
 
   /**
@@ -1644,6 +1690,106 @@ class SessionDeleteService {
   }
 
   /**
+   * Recover a trash move interrupted after its transaction marker was written.
+   *
+   * The copy is first built at a private staging path and atomically renamed
+   * into place. A visible artifact therefore means the copy completed. Before
+   * deleting a surviving source, compare its identity with the snapshot stored
+   * in the marker; if another writer replaced it, preserve both paths.
+   * @param path - the trash entry directory.
+   * @param manifest - the entry manifest.
+   * @returns whether the entry is safe to expose in the trash index.
+   */
+  async recoverTrashMove(path, manifest) {
+    const markerPath = join(path, COPYING_MARKER_FILE_NAME)
+    if (!(await this.pathExists(markerPath))) return true
+
+    let identity
+    try {
+      identity = JSON.parse(await readFile(markerPath, 'utf8'))
+    } catch {
+      this.ctx.logger?.warn(`sessionDelete: the recovery marker in "${path}" is unreadable; both copies were preserved`)
+      return false
+    }
+
+    const source = manifest.originalPath
+    const artifact = join(path, ARTIFACT_DIR_NAME)
+    const staging = `${artifact}${COPY_STAGE_SUFFIX}`
+    const sourceExists = typeof source === 'string' && (await this.pathExists(source))
+    const artifactExists = await this.pathExists(artifact)
+
+    if (!artifactExists) {
+      if (sourceExists) {
+        // The copy was never atomically promoted. The source is untouched and
+        // remains authoritative, so discard only the incomplete trash entry.
+        await this.discardTrashEntry(path)
+        return false
+      }
+      this.ctx.logger?.warn(`sessionDelete: the interrupted move in "${path}" has no surviving source or artifact`)
+      return false
+    }
+
+    if (sourceExists) {
+      const root = this.storeRoot()
+      if (root === undefined) {
+        this.ctx.logger?.warn(`sessionDelete: cannot recover "${path}" without a verifiable session-store root`)
+        return false
+      }
+      let canonicalRoot
+      let canonicalSource
+      let current
+      try {
+        canonicalRoot = await realpath(root)
+        canonicalSource = await resolveThroughExistingAncestors(source)
+        current = await stat(source)
+      } catch (error) {
+        this.ctx.logger?.warn(`sessionDelete: cannot verify the source of interrupted move "${path}": ${String(error)}`)
+        return false
+      }
+      if (
+        !isInside(canonicalRoot, canonicalSource) ||
+        samePath(dirname(canonicalSource), canonicalRoot) ||
+        current.dev !== identity.dev ||
+        current.ino !== identity.ino ||
+        current.size !== identity.size ||
+        current.mtimeMs !== identity.mtimeMs
+      ) {
+        this.ctx.logger?.warn(
+          `sessionDelete: the source of interrupted move "${path}" changed; both copies were preserved for manual recovery`,
+        )
+        return false
+      }
+    }
+
+    // Once the complete copy is visible, move the original to a deterministic
+    // tombstone on its own volume before recursively removing it. A crash
+    // during rm then cannot leave a partial directory at the live session path.
+    if (typeof source !== 'string' || source.length === 0) return false
+    const tombstone = join(dirname(source), `.session-delete-${basename(path)}.moving`)
+    const tombstoneExists = await this.pathExists(tombstone)
+    if (sourceExists && tombstoneExists) {
+      this.ctx.logger?.warn(`sessionDelete: both source and tombstone exist for interrupted move "${path}"`)
+      return false
+    }
+    if (sourceExists) {
+      try {
+        await rename(source, tombstone)
+      } catch (error) {
+        // Another recovery pass may already have completed the atomic rename
+        // and removed the tombstone. Treat ENOENT as complete only after
+        // confirming the source is absent; other failures remain actionable.
+        if (error?.code !== 'ENOENT' || (await this.pathExists(source))) throw error
+      }
+    }
+    if (await this.pathExists(tombstone)) {
+      await this.removeWithRetries(tombstone, manifest.sessionId)
+    }
+
+    await rm(markerPath, { force: true })
+    await rm(staging, { recursive: true, force: true })
+    return true
+  }
+  /**
    * Read every trash entry from the disk.
    *
    * The listing is bounded so a huge trash cannot stall one request, and an
@@ -1672,6 +1818,7 @@ class SessionDeleteService {
       const path = join(root, item.name)
       const manifest = await this.readManifest(path)
       if (manifest === undefined) continue
+      if (!(await this.recoverTrashMove(path, manifest))) continue
       entries.push({
         trashId: item.name,
         sessionId: typeof manifest.sessionId === 'string' ? manifest.sessionId : '',

@@ -688,6 +688,69 @@ test('the trash entry holds the artifact and a manifest of the identifying field
   await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT', 'the original location must be empty')
 })
 
+test('trash refresh completes a promoted cross-device copy after a simulated crash', async () => {
+  const store = await makeStore()
+  const entryPath = join(store.trashRoot, 'interrupted-copy')
+  const artifactPath = join(entryPath, 'artifact')
+  await mkdir(artifactPath, { recursive: true })
+  const original = await readFile(store.log, 'utf8')
+  await writeFile(join(artifactPath, 'session.4.jsonl'), original)
+  const sourceStat = await stat(store.dir)
+  await writeFile(join(entryPath, 'meta.json'), JSON.stringify({
+    sessionId: SESSION_ID,
+    originalPath: store.dir,
+    deletedAt: new Date().toISOString(),
+    header: { id: SESSION_ID, cwd: store.dir },
+    children: [],
+    childrenCount: 0,
+    mode: 'trash',
+  }))
+  await writeFile(join(entryPath, '.copying'), JSON.stringify({
+    dev: sourceStat.dev,
+    ino: sourceStat.ino,
+    size: sourceStat.size,
+    mtimeMs: sourceStat.mtimeMs,
+  }))
+
+  const h = harness({ ...storedTarget(store) })
+  const entries = await h.service.refreshTrash()
+
+  assert.equal(entries.length, 1)
+  assert.equal(entries[0].trashId, 'interrupted-copy')
+  await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
+  assert.equal(await readFile(join(artifactPath, 'session.4.jsonl'), 'utf8'), original)
+  await assert.rejects(stat(join(entryPath, '.copying')), (error) => error.code === 'ENOENT')
+})
+
+test('trash refresh discards an unpromoted partial copy and preserves its source', async () => {
+  const store = await makeStore()
+  const entryPath = join(store.trashRoot, 'interrupted-partial')
+  await mkdir(join(entryPath, 'artifact.partial'), { recursive: true })
+  const sourceStat = await stat(store.dir)
+  await writeFile(join(entryPath, 'meta.json'), JSON.stringify({
+    sessionId: SESSION_ID,
+    originalPath: store.dir,
+    deletedAt: new Date().toISOString(),
+    header: { id: SESSION_ID, cwd: store.dir },
+    children: [],
+    childrenCount: 0,
+    mode: 'trash',
+  }))
+  await writeFile(join(entryPath, '.copying'), JSON.stringify({
+    dev: sourceStat.dev,
+    ino: sourceStat.ino,
+    size: sourceStat.size,
+    mtimeMs: sourceStat.mtimeMs,
+  }))
+
+  const h = harness({ ...storedTarget(store) })
+  const entries = await h.service.refreshTrash()
+
+  assert.deepEqual(entries, [])
+  assert.ok((await stat(store.log)).isFile(), 'the original must remain the authoritative copy')
+  await assert.rejects(stat(entryPath), (error) => error.code === 'ENOENT')
+})
+
 test('restore puts the artifact back and empties the trash', async () => {
   const store = await makeStore()
   const h = harness({ ...storedTarget(store) })
