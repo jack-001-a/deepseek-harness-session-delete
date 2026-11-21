@@ -90,6 +90,8 @@ const CHILD_LIMIT = 100
 const SWEEP_ENTRY_LIMIT = 500
 /** Most trash entries one sweep purges, so a sweep stays bounded. */
 const SWEEP_PURGE_LIMIT = 50
+/** Most startup recovery operations, so plugin readiness stays bounded. */
+const STARTUP_RECOVERY_LIMIT = 50
 /** Most audit records the trail file keeps before it is trimmed. */
 const AUDIT_MAX_RECORDS = 1000
 /** Minimum gap between two retention sweeps. */
@@ -312,6 +314,8 @@ class SessionDeleteService {
     this.trashBySession = new Map()
     /** Whether the trash index has been read at least once. */
     this.trashLoaded = false
+    /** One in-process disk refresh shared by overlapping callers. */
+    this.trashRefreshPromise = undefined
     /** Counts the index changes, so an overlapping refresh can merge. */
     this.trashRevision = 0
     /** When the last retention sweep ran. */
@@ -551,21 +555,29 @@ class SessionDeleteService {
   async releaseWorkspaceAccounting(sessionId) {
     const ctx = this.ctx
     const registry = optionalService(ctx, 'workspaceRegistry')
-    if (!registry) return
+    if (!registry) return true
+    let complete = true
     const attempt = async (label, run) => {
       try {
         await run()
       } catch (error) {
+        complete = false
         ctx.logger?.warn(`sessionDelete: releasing ${label} for "${sessionId}" failed: ${String(error)}`)
       }
     }
-    for (const workspace of registry.list()) {
-      if (workspace.record?.sessionIds?.includes(sessionId)) {
-        await attempt('workspace membership', () => workspace.detachSession(sessionId))
+    try {
+      for (const workspace of registry.list()) {
+        if (workspace.record?.sessionIds?.includes(sessionId)) {
+          await attempt('workspace membership', () => workspace.detachSession(sessionId))
+        }
       }
+    } catch (error) {
+      complete = false
+      ctx.logger?.warn(`sessionDelete: listing workspace membership for "${sessionId}" failed: ${String(error)}`)
     }
     await attempt('pin', () => registry.unpinSession(sessionId))
     await attempt('archive mark', () => registry.unarchiveSession(sessionId))
+    return complete
   }
 
   /**
@@ -1331,24 +1343,27 @@ class SessionDeleteService {
    */
   async removeProjectionCache(sessionId) {
     const storageDomain = optionalService(this.ctx, 'storageDomain')
-    if (!storageDomain || typeof storageDomain.get !== 'function') return
+    if (!storageDomain || typeof storageDomain.get !== 'function') return true
     let table
     try {
       const domain = storageDomain.get('session_projcache')
-      if (!domain || typeof domain.table !== 'function') return
+      if (!domain || typeof domain.table !== 'function') return true
       table = domain.table('sessions')
-    } catch {
-      return
+    } catch (error) {
+      this.ctx.logger?.warn(
+        `sessionDelete: opening the projection cache for "${sessionId}" failed: ${String(error)}`,
+      )
+      return false
     }
     for (let attempt = 0; attempt < CACHE_ATTEMPTS; attempt++) {
       try {
-        if (table.get(sessionId) === undefined) return
+        if (table.get(sessionId) === undefined) return true
         await table.delete(sessionId)
       } catch (error) {
         this.ctx.logger?.warn(
           `sessionDelete: dropping the projection cache of "${sessionId}" failed: ${String(error)}`,
         )
-        return
+        return false
       }
       if (attempt < CACHE_ATTEMPTS - 1) await delay(CACHE_RETRY_MS)
     }
@@ -1357,10 +1372,12 @@ class SessionDeleteService {
         this.ctx.logger?.warn(
           `sessionDelete: projection cache row for "${sessionId}" survived deletion; it is re-validated on the next read`,
         )
+        return false
       }
     } catch {
       // A closed domain cannot hold a stale row for the browser either.
     }
+    return true
   }
 
   /**
@@ -1724,10 +1741,12 @@ class SessionDeleteService {
     try {
       await writeFile(join(entry.path, MANIFEST_FILE_NAME), `${JSON.stringify(next, null, 2)}\n`, 'utf8')
       entry.restoreState = RESTORE_PENDING
+      return true
     } catch (error) {
       this.ctx.logger?.warn(
         `sessionDelete: marking the trash entry of session "${entry.sessionId}" as pending failed: ${String(error)}`,
       )
+      return false
     }
   }
 
@@ -2006,12 +2025,107 @@ class SessionDeleteService {
    * @returns the trash entries, newest first.
    */
   async refreshTrash() {
+    if (this.trashRefreshPromise !== undefined) return this.trashRefreshPromise
     const revision = this.trashRevision
-    const entries = await this.readTrashEntries()
-    // A mutation that landed while the disk was read would be lost by a
-    // plain replacement, so the fresh entries are merged into the index.
-    this.setTrashIndex(entries, revision !== this.trashRevision)
-    return entries
+    const task = this.readTrashEntries().then((entries) => {
+      // A mutation that landed while the disk was read would be lost by a
+      // plain replacement, so the fresh entries are merged into the index.
+      this.setTrashIndex(entries, revision !== this.trashRevision)
+      return entries
+    }).finally(() => {
+      if (this.trashRefreshPromise === task) this.trashRefreshPromise = undefined
+    })
+    this.trashRefreshPromise = task
+    return task
+  }
+
+  /**
+   * Reconcile durable trash transactions once the host has finished starting.
+   *
+   * A trash artifact with no live source is a committed delete: replay its
+   * idempotent workspace/cache cleanup. A restore marker, an accounting-pending
+   * manifest, or a live target with no trash artifact is instead a committed
+   * restore: resume the restore path so workspace accounting is reattached.
+   * Ambiguous pairs are preserved for an explicit recovery rather than guessed.
+   *
+   * @returns counts of recovered deletes, restores and preserved entries.
+   */
+  async reconcileStartup() {
+    if (this.mode !== 'trash') return { deleted: 0, restored: 0, preserved: 0 }
+    const entries = await this.refreshTrash()
+    let deleted = 0
+    let restored = 0
+    let preserved = 0
+    let examined = 0
+
+    for (const snapshot of entries) {
+      if (examined >= STARTUP_RECOVERY_LIMIT) break
+      if (typeof snapshot.sessionId !== 'string' || snapshot.sessionId.length === 0) continue
+      examined += 1
+      try {
+        const outcome = await this.runTrashOperation('startup-recovery', snapshot.sessionId, async () => {
+          // Re-read under the same per-session lock as delete/restore/purge.
+          await this.refreshTrash()
+          const current = await this.trashEntryFor(snapshot.sessionId)
+          if (current === undefined || current.trashId !== snapshot.trashId) return 'stale'
+
+          const artifact = join(current.path, ARTIFACT_DIR_NAME)
+          const artifactExists = await this.pathExists(artifact)
+          const targetExists = typeof current.originalPath === 'string' && current.originalPath.length > 0
+            ? await this.pathExists(current.originalPath)
+            : false
+          const restoreMarkerExists = await this.pathExists(join(current.path, RESTORING_MARKER_FILE_NAME))
+          const restorePending = current.restoreState === RESTORE_PENDING
+
+          if (restorePending || restoreMarkerExists || (!artifactExists && targetExists)) {
+            if (!targetExists) {
+              this.ctx.logger?.warn(
+                `sessionDelete: startup recovery preserved "${current.trashId}": the restore target is missing`,
+              )
+              return 'preserved'
+            }
+            // A crash can happen after the restore move and before the manifest
+            // is marked pending. Persist that state before replaying accounting.
+            if (!restorePending && !restoreMarkerExists) {
+              const marked = await this.markRestorePending(current)
+              if (!marked) return 'preserved'
+            }
+            const result = await this.runRestore(current.sessionId)
+            return result.restored === true ? 'restored' : 'preserved'
+          }
+
+          if (artifactExists && !targetExists && !restoreMarkerExists && !restorePending) {
+            // The artifact is safely in trash. These operations are
+            // idempotent, so replaying them closes the crash window between
+            // moving the artifact and releasing the host-side records.
+            const accountingComplete = await this.releaseWorkspaceAccounting(current.sessionId)
+            const cacheComplete = await this.removeProjectionCache(current.sessionId)
+            return accountingComplete && cacheComplete ? 'deleted' : 'preserved'
+          }
+
+          this.ctx.logger?.warn(
+            `sessionDelete: startup recovery preserved "${current.trashId}": artifact and original path are in an ambiguous state`,
+          )
+          return 'preserved'
+        })
+
+        if (outcome === 'deleted') deleted += 1
+        else if (outcome === 'restored') restored += 1
+        else if (outcome === 'preserved') preserved += 1
+      } catch (error) {
+        preserved += 1
+        this.ctx.logger?.warn(
+          `sessionDelete: startup recovery of "${snapshot.trashId}" failed; the entry was preserved: ${String(error)}`,
+        )
+      }
+    }
+
+    if (entries.length > examined) {
+      this.ctx.logger?.warn(
+        `sessionDelete: startup recovery processed ${examined} entries; ${entries.length - examined} remain for a later launch`,
+      )
+    }
+    return { deleted, restored, preserved }
   }
 
   /**
@@ -2233,9 +2347,16 @@ export function apply(ctx, config = {}) {
     value: { associate: SERVICE_KEY, property: 'ctx' },
   })
   ctx.reflect.provide(SERVICE_KEY, service, undefined)
-  // Read the trash once the service exists, so the first request already
-  // knows what an earlier run left behind. The read never blocks the caller.
+  // Prime the trash index immediately; the host's ready hook performs
+  // reconciliation only after workspace and storage services are available.
   service.refreshTrash().catch((error) => {
     ctx.logger?.warn(`sessionDelete: reading the trash failed: ${String(error)}`)
   })
+  if (typeof ctx.on === 'function') {
+    ctx.on('ready', () =>
+      service.reconcileStartup().catch((error) => {
+        ctx.logger?.warn(`sessionDelete: startup recovery failed: ${String(error)}`)
+      }),
+    )
+  }
 }
