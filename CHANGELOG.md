@@ -6,6 +6,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## Unreleased
 
+### Added
+
+- Add a two-process integration job using real Cordis and JSONL persistence
+  against pinned Harness 0.2.2-rc.4 and 0.2.2-rc.5 (Linux / Node 24). It
+  verifies peer-held write-lease refusal, deletion after lease release with
+  the native lock file moved alongside the artifact, and Restore/create
+  destination-collision preservation of both copies. This is persistence-layer
+  integration coverage, not a full Desktop/Web startup test.
+
 ### Changed
 
 - On handle-based Hosts, acquire and hold the native JSONL write lease while removing or moving an existing session artifact; refuse with `session-delete/locked` when another Harness writer owns it. Older Hosts without `sessionPersistence.open()` retain the plugin-only lock.
@@ -17,7 +26,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Known limitation
 
-- Restore cannot reserve a missing destination through the current persistence API; exclusion against a concurrent cross-process create of the same session id remains outside the guarantee.
+- Restore cannot reserve a missing destination through the current persistence API; exclusion against a concurrent cross-process create of the same session id remains outside the guarantee. The two-process test now verifies that if the peer has already materialized the destination before atomic promotion, Restore fails safely and preserves both the trashed original and the peer-created session; it does not prevent or automatically resolve that id conflict.
 
 
 ## [0.5.0] — 2026-11-21
