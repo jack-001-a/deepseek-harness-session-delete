@@ -85,7 +85,8 @@ async function stopWorker() {
   if (!worker || worker.exitCode !== null || worker.signalCode !== null) return
   send('shutdown')
   await waitForLine('bye', 10_000)
-  await workerExit
+  worker.stdin.end()
+  await withTimeout(workerExit, 'peer process exit', 10_000)
 }
 
 try {
