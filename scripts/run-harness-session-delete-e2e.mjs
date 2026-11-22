@@ -29,6 +29,15 @@ function deferred() {
   const promise = new Promise((yes) => { resolve = yes })
   return { promise, resolve }
 }
+function withTimeout(promise, label, timeoutMs = 45_000) {
+  let timer
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Timed out: ' + label)), timeoutMs)
+    }),
+  ]).finally(() => clearTimeout(timer))
+}
 
 const root = await mkdtemp(join(tmpdir(), 'dsh-session-delete-two-process-'))
 const workerPath = fileURLToPath(new URL('./fixtures/harness-session-holder.mjs', import.meta.url))
@@ -126,7 +135,7 @@ try {
 
   send('release ' + heldId)
   await waitForLine('released ' + heldId)
-  const deletion = await service.delete(heldId)
+  const deletion = await withTimeout(service.delete(heldId), 'delete after peer release')
   assert.equal(deletion.trashed, true)
   assert.equal(await persistence.stat(heldId), undefined)
   const trashed = await service.trashEntryFor(heldId)
@@ -160,23 +169,36 @@ try {
 
   const moveReached = deferred()
   const allowMove = deferred()
-  const moveArtifact = service.moveArtifact.bind(service)
   let paused = false
-  service.moveArtifact = async (source, destination, options) => {
+  const servicePrototype = Object.getPrototypeOf(service)
+  const originalPrototypeMoveArtifact = servicePrototype.moveArtifact
+  assert.equal(typeof originalPrototypeMoveArtifact, 'function')
+  servicePrototype.moveArtifact = async function (source, destination, options) {
     if (!paused && source === artifactPath && destination === targetPath) {
       paused = true
       moveReached.resolve()
       await allowMove.promise
     }
-    return moveArtifact(source, destination, options)
+    return originalPrototypeMoveArtifact.call(this, source, destination, options)
+  }
+
+  const servicePrototype = Object.getPrototypeOf(service)
+  const originalPrototypeMoveArtifact = servicePrototype.moveArtifact
+  servicePrototype.moveArtifact = async function (source, destination, options) {
+    if (!paused && source === artifactPath && destination === targetPath) {
+      paused = true
+      moveReached.resolve()
+      await allowMove.promise
+    }
+    return originalPrototypeMoveArtifact.call(this, source, destination, options)
   }
 
   const restoring = service.restore(raceId)
-  await moveReached.promise
+  await withTimeout(moveReached.promise, 'Restore moveArtifact interception')
   send('hold ' + raceId)
   await waitForLine('held ' + raceId)
   allowMove.resolve()
-  await assert.rejects(restoring, (error) => {
+  await assert.rejects(withTimeout(restoring, 'Restore rejects occupied destination'), (error) => {
     assert.equal(error.code, 'session-delete/io')
     return true
   })
@@ -192,6 +214,7 @@ try {
 
   send('release ' + raceId)
   await waitForLine('released ' + raceId)
+  servicePrototype.moveArtifact = originalPrototypeMoveArtifact
   manifest.status = 'PASS'
 } catch (error) {
   manifest.failure = error instanceof Error ? error.stack ?? error.message : String(error)
