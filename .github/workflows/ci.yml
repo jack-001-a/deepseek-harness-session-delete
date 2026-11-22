@@ -44,3 +44,68 @@ jobs:
 
       - name: Inspect the tarball contents
         run: npm pack --dry-run
+
+  harness-session-delete-e2e:
+    name: Harness \${{ matrix.harness.version }} / Linux / Node 24 / Two processes
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        harness:
+          - version: "0.2.2-rc.4"
+            ref: "3f321d32bfe382212a8ed8785c1d47a5a300aa23"
+          - version: "0.2.2-rc.5"
+            ref: "9c2670d3bce5275e0d1610272958121af87787bb"
+    steps:
+      - name: Check out Session Delete
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check out pinned DeepSeek Harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: \${{ matrix.harness.ref }}
+          path: deepseek-harness
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.9.0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v5.0.0
+        with:
+          version: 11.28.5
+          package_json_file: deepseek-harness/package.json
+
+      - name: Install the upstream workspace dependency graph
+        working-directory: deepseek-harness
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the upstream native system addon
+        working-directory: deepseek-harness
+        run: pnpm run build:native-system
+
+      - name: Build the upstream Host libraries
+        working-directory: deepseek-harness
+        run: pnpm exec tsx scripts/compile-referenced-projects.ts host-libraries
+
+      - name: Exercise session leases with two real Harness processes
+        env:
+          DSH_HARNESS_ROOT: \${{ github.workspace }}/deepseek-harness
+          DSH_HARNESS_VERSION: \${{ matrix.harness.version }}
+          DSH_E2E_MANIFEST: \${{ github.workspace }}/artifacts/session-delete-harness-e2e.json
+        run: node scripts/run-harness-session-delete-e2e.mjs
+
+      - name: Upload two-process compatibility evidence
+        if: always() && hashFiles('artifacts/session-delete-harness-e2e.json') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: session-delete-harness-e2e-\${{ matrix.harness.version }}
+          path: artifacts/session-delete-harness-e2e.json
+          if-no-files-found: error
+          retention-days: 30
+
