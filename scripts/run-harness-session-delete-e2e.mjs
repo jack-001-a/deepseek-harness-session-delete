@@ -179,8 +179,8 @@ try {
   }
   const seed = await persistence.create(raceHeader)
   await seed.append([
-    { type: 'turn/start', seq: 0, time: 11, data: { turn: 2 } },
-    { type: 'turn/end', seq: 1, time: 12, data: { turn: 2, reason: { kind: 'completed' } } },
+    { type: 'turn/start', seq: 0, time: 11, data: { turn: 1 } },
+    { type: 'turn/end', seq: 1, time: 12, data: { turn: 1, reason: { kind: 'completed' } } },
   ])
   await seed.close()
   const originalPath = persistence.locate(raceHeader).path
