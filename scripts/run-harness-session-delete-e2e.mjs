@@ -97,7 +97,11 @@ try {
   // persistence provider, with only the optional live-session lookup empty.
   Object.defineProperty(context, 'sessions', { configurable: true, value: { get: () => undefined } })
   await context.plugin({ name: jsonl.name, apply: jsonl.apply }, { root, compression: 'none' })
-  await context.plugin({ name: 'session-delete-native-lease-e2e', apply: applySessionDelete }, {})
+  await context.plugin({
+    name: 'session-delete-native-lease-e2e',
+    inject: ['sessionPersistence'],
+    apply: applySessionDelete,
+  }, {})
   trace('parent Cordis context and JSONL provider ready')
   const service = context.get('sessionDelete')
   const persistence = context.sessionPersistence
