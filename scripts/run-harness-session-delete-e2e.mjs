@@ -182,17 +182,6 @@ try {
     return originalPrototypeMoveArtifact.call(this, source, destination, options)
   }
 
-  const servicePrototype = Object.getPrototypeOf(service)
-  const originalPrototypeMoveArtifact = servicePrototype.moveArtifact
-  servicePrototype.moveArtifact = async function (source, destination, options) {
-    if (!paused && source === artifactPath && destination === targetPath) {
-      paused = true
-      moveReached.resolve()
-      await allowMove.promise
-    }
-    return originalPrototypeMoveArtifact.call(this, source, destination, options)
-  }
-
   const restoring = service.restore(raceId)
   await withTimeout(moveReached.promise, 'Restore moveArtifact interception')
   send('hold ' + raceId)
