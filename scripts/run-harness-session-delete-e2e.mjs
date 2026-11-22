@@ -135,6 +135,15 @@ try {
 
   trace('attempting delete while peer owns write lease')
   await assert.rejects(withTimeout(service.delete(heldId), 'delete refusal while peer owns native lease', 15_000), (error) => {
+    trace('peer-held delete rejection: ' + JSON.stringify({
+      constructor: error?.constructor?.name,
+      name: error?.name,
+      code: error?.code,
+      message: error?.message,
+      details: error?.details,
+      keys: error && typeof error === 'object' ? Object.keys(error) : [],
+      stack: error?.stack,
+    }))
     assert.equal(error.code, 'session-delete/locked')
     assert.equal(error.details.reason, 'write-owned')
     return true
