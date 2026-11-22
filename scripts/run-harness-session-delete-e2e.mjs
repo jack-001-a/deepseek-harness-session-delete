@@ -54,6 +54,10 @@ let workerLines
 let workerExit
 let backlog = []
 let waiters = []
+const startedAt = Date.now()
+function trace(label) {
+  process.stdout.write(`[e2e +${Date.now() - startedAt}ms] ${label}\n`)
+}
 
 function waitForLine(expected, timeoutMs = 30_000) {
   const queued = backlog.indexOf(expected)
@@ -86,12 +90,14 @@ async function stopWorker() {
 
 try {
   const [{ Context }, session, jsonl] = await Promise.all([load('cordis'), load('session'), load('jsonl')])
+  trace('loaded pinned Harness modules')
   context = new Context()
   // The test targets cold stored sessions; use the real Cordis context and
   // persistence provider, with only the optional live-session lookup empty.
   Object.defineProperty(context, 'sessions', { configurable: true, value: { get: () => undefined } })
   await context.plugin({ name: jsonl.name, apply: jsonl.apply }, { root, compression: 'none' })
   await context.plugin({ name: 'session-delete-native-lease-e2e', apply: applySessionDelete }, {})
+  trace('parent Cordis context and JSONL provider ready')
   const service = context.get('sessionDelete')
   const persistence = context.sessionPersistence
   assert.ok(service)
@@ -114,17 +120,20 @@ try {
     for (const waiter of waiters.splice(0)) waiter.reject(error)
   })
   await waitForLine('ready')
+  trace('peer process ready')
 
   const heldId = 'native-lock-held-by-peer'
   send('hold ' + heldId)
   await waitForLine('held ' + heldId)
+  trace('peer holds native write lease')
   assert.ok((await persistence.stat(heldId))?.header)
   const reader = await persistence.open(heldId, 'read')
   const observed = await reader.read()
   await reader.close()
   assert.deepEqual(observed.events.map((event) => event.seq), [0, 1])
 
-  await assert.rejects(service.delete(heldId), (error) => {
+  trace('attempting delete while peer owns write lease')
+  await assert.rejects(withTimeout(service.delete(heldId), 'delete refusal while peer owns native lease', 15_000), (error) => {
     assert.equal(error.code, 'session-delete/locked')
     assert.equal(error.details.reason, 'write-owned')
     return true
@@ -132,11 +141,14 @@ try {
   assert.ok((await persistence.stat(heldId))?.header, 'foreign writer refusal must leave the live artifact intact')
   assert.equal(await service.trashEntryFor(heldId), undefined)
   manifest.cases.push('peer-writer-blocks-delete-and-live-log-remains-readable')
+  trace('foreign writer correctly blocked deletion')
 
   send('release ' + heldId)
   await waitForLine('released ' + heldId)
+  trace('peer released first native write lease')
   const deletion = await withTimeout(service.delete(heldId), 'delete after peer release')
   assert.equal(deletion.trashed, true)
+  trace('delete succeeded after peer release')
   assert.equal(await persistence.stat(heldId), undefined)
   const trashed = await service.trashEntryFor(heldId)
   assert.ok(trashed)
@@ -182,10 +194,13 @@ try {
     return originalPrototypeMoveArtifact.call(this, source, destination, options)
   }
 
+  trace('starting restore/create race and pausing before promotion')
   const restoring = service.restore(raceId)
   await withTimeout(moveReached.promise, 'Restore moveArtifact interception')
+  trace('restore paused before atomic destination promotion')
   send('hold ' + raceId)
   await waitForLine('held ' + raceId)
+  trace('peer created competing session and holds its lease')
   allowMove.resolve()
   await assert.rejects(withTimeout(restoring, 'Restore rejects occupied destination'), (error) => {
     assert.equal(error.code, 'session-delete/io')
@@ -200,13 +215,16 @@ try {
   assert.ok(await persistence.stat(raceId), 'the peer-created session must remain at the destination')
   assert.ok(await service.trashEntryFor(raceId), 'the original Trash entry must remain recoverable')
   manifest.cases.push('restore-create-race-refuses-atomic-promotion-and-preserves-both-copies')
+  trace('restore race preserved both artifacts')
 
   send('release ' + raceId)
   await waitForLine('released ' + raceId)
+  trace('peer released competing session lease')
   servicePrototype.moveArtifact = originalPrototypeMoveArtifact
   manifest.status = 'PASS'
 } catch (error) {
   manifest.failure = error instanceof Error ? error.stack ?? error.message : String(error)
+  trace('test failed: ' + (error instanceof Error ? error.message : String(error)))
 } finally {
   try {
     await stopWorker()
@@ -216,7 +234,7 @@ try {
     if (worker && worker.exitCode === null && worker.signalCode === null) worker.kill('SIGKILL')
   }
   try { workerLines?.close() } catch {}
-  try { await context?.fiber?.dispose() } catch (error) {
+  try { await withTimeout(context?.fiber?.dispose() ?? Promise.resolve(), 'parent Cordis disposal', 15_000) } catch (error) {
     manifest.failure ??= error instanceof Error ? error.stack ?? error.message : String(error)
     manifest.status = 'FAIL'
   }
