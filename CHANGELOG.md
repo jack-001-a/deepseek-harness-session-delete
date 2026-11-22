@@ -6,6 +6,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## Unreleased
 
+## [0.6.0] — 2026-11-22
+
 ### Added
 
 - Add a two-process integration job using real Cordis and JSONL persistence
@@ -26,7 +28,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Known limitation
 
-- Restore cannot reserve a missing destination through the current persistence API; exclusion against a concurrent cross-process create of the same session id remains outside the guarantee. The two-process test now verifies that if the peer has already materialized the destination before atomic promotion, Restore fails safely and preserves both the trashed original and the peer-created session; it does not prevent or automatically resolve that id conflict.
+- Restore cannot reserve a missing destination through the current persistence API; exclusion against a concurrent cross-process create of the same session id remains outside the guarantee. The two-process test verifies that if the peer has already materialized the destination before atomic promotion, Restore fails safely and preserves both the trashed original and the peer-created session; it does not prevent or automatically resolve that id conflict.
 
 
 ## [0.5.0] — 2026-11-21
@@ -80,9 +82,10 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   host's own session summary so the catalog row returns as well.
 - **A partial restore is reported, never silent.** A reattachment that fails
   after the files are back resolves with `restored: true` and `reattached:
-  false` (failed steps in `reattachFailures`, `needsRestart: true`), keeps the
-  files in place and records the restore in the audit trail with a `partial`
-  marker. It is never thrown as a failure and never reported as a full success.
+  false` (failed steps in `reattachFailures`, `needsRestart: true`), keeps
+  the files in place and records the restore in the audit trail with a
+  `partial` marker. It is never thrown as a failure and never reported as a
+  full success.
 - **A half-finished restore is recoverable.** An entry whose artifact has
   already moved back (a failed reattachment, or a process that stopped between
   the move and the accounting replay) is completed by the next Restore call
@@ -90,8 +93,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   `restoreState: "accounting-pending"`, holds no artifact, is reported by
   `listTrash`, and is superseded by a fresh delete.
 - **A trash entry written by 0.3.0 or earlier restores with a best-effort
-  workspace reattachment.** Such manifests carry no accounting record, so the
-  owning workspace is inferred from the stored `cwd` — the same rule the
+  workspace reattachment.** Such manifests carry no accounting record, so
+  the owning workspace is inferred from the stored `cwd` — the same rule the
   startup bootstrap uses — and the restore still works when the host cannot
   resolve one.
 
@@ -100,8 +103,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - `sessionDelete/restore` answers with backwards-compatible extra fields when
   a reattachment was attempted: `reattached`, `reattachFailures`,
   `needsRestart`, `reordered`, `inferred`, `announced`. A client that only
-  knows `{ sessionId, restored, mode }` keeps working; a missing `reattached`
-  means the host did its whole job.
+  knows `{ sessionId, restored, mode }` keeps working; a missing
+  `reattached` means the host did its whole job.
 - `sessionDelete/listTrash` reports `restoreState` for a pending-accounting
   entry (there is no wire change for older entries).
 - The browser half asks the session catalog for a refresh after a restore when
@@ -122,9 +125,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   to permanent removal.
 - **Restore, purge and trash listing.** New Remote endpoints
   `sessionDelete/restore`, `sessionDelete/purge` and `sessionDelete/listTrash`.
-- **Capability discovery.** A new `sessionDelete/describe` endpoint reports the
-  active mode, the retention window and whether the store can locate artifacts
-  at all, so the browser can offer the right confirmation.
+- **Capability discovery.** A new `sessionDelete/describe` endpoint reports
+  the active mode, the retention window and whether the store can locate
+  artifacts at all, so the browser can offer the right confirmation.
 - **Audit trail.** Every mutation appends one JSONL record — action, session
   id, outcome, timestamp — with no conversation content.
 - **True child count.** The deletion outcome now reports `childrenCount`
@@ -138,9 +141,6 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - The confirmation dialog is mode-aware: trash mode explains the recovery
   window, permanent mode requires the conversation title to be typed before the
   destructive action unlocks.
-- The dialog is now a proper alert dialog: focus moves to it on open, returns
-  to the invoking control on close, `Escape` cancels, and the pending, error
-  and outcome states are announced.
 - The UI primitives are loaded defensively, so a host build that no longer
   ships `@deepseek-ai/dsh-client-ui-primitives` degrades to plain elements
   instead of breaking the sidebar.
