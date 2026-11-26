@@ -60,7 +60,10 @@
     "icon.svg",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "docs/**"
   ],
   "publishConfig": {
     "access": "public"
