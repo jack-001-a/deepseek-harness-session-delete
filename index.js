@@ -100,6 +100,8 @@ const PROCESS_LOCK_WAIT_MS = 15000
 const PROCESS_LOCK_POLL_MS = 50
 /** Lock owner metadata stored inside each atomically-created lock directory. */
 const PROCESS_LOCK_OWNER_FILE = '.owner.json'
+/** Exclusive sentinel that serializes stale-lock reclamation attempts. */
+const PROCESS_LOCK_RECLAIM_FILE = '.reclaim'
 /** POSIX JSONL write-lease inode; keep it stable while a write handle is held. */
 const HOST_WRITE_LOCK_FILE_NAME = 'session.lock'
 /** Most audit records the trail file keeps before it is trimmed. */
@@ -520,32 +522,80 @@ class SessionDeleteService {
 
       const owner = await this.readProcessLockOwner(lockPath)
       if (owner !== undefined && owner.host === hostname() && !this.isProcessAlive(owner.pid)) {
-        // Rename is the atomic claim on a dead lock. Immediately create our
-        // replacement at the canonical path before yielding again; otherwise
-        // a second stale-lock observer could rename the replacement and split
-        // ownership between two live processes.
-        const quarantine = `${lockPath}.stale-${randomUUID()}`
+        // Claim a sentinel inside the observed lock directory before renaming
+        // it. A second process may have read the same stale owner already; the
+        // sentinel makes it impossible for that delayed observer to rename a
+        // replacement lock after the first process has reclaimed the path.
+        const reclaimPath = join(lockPath, PROCESS_LOCK_RECLAIM_FILE)
+        const reclaimOwner = {
+          pid: process.pid,
+          host: hostname(),
+          token: randomUUID(),
+          createdAt: Date.now(),
+        }
+        const reclaimContents = `${JSON.stringify(reclaimOwner)}\\n`
+        let reclaimDirectory = lockPath
+        let reclaimAcquired = false
         try {
-          await rename(lockPath, quarantine)
-          const movedOwner = await this.readProcessLockOwner(quarantine)
-          if (movedOwner?.token === owner.token && movedOwner.pid === owner.pid && !this.isProcessAlive(owner.pid)) {
-            try {
-              const release = await claim()
-              await rm(quarantine, { recursive: true, force: true }).catch((error) => {
-                this.ctx.logger?.warn(`sessionDelete: removing stale lock quarantine "${quarantine}" failed: ${String(error)}`)
-              })
-              return release
-            } catch (error) {
-              // Another contender may have won the canonical path between
-              // rename and mkdir. Keep the quarantined directory for review.
-              if (error?.code !== 'EEXIST') throw error
-            }
-          } else {
-            this.ctx.logger?.warn(`sessionDelete: stale lock metadata changed for "${sessionId}"; preserved "${quarantine}"`)
-          }
+          await writeFile(reclaimPath, reclaimContents, { flag: 'wx', mode: 0o600 })
+          reclaimAcquired = true
         } catch (error) {
-          if (error?.code !== 'ENOENT' && error?.code !== 'EEXIST') {
-            this.ctx.logger?.warn(`sessionDelete: reclaiming a dead lock for "${sessionId}" failed: ${String(error)}`)
+          // Another reclaimer owns the sentinel, or the observed lock has
+          // already moved. Both cases are retried through the normal loop.
+          if (error?.code !== 'EEXIST' && error?.code !== 'ENOENT') throw error
+        }
+
+        if (reclaimAcquired) {
+          try {
+            // The lock may have changed between the first read and the
+            // exclusive marker creation (for example, a contender may have
+            // replaced it after a previous reclaim). Never trust that snapshot.
+            const currentOwner = await this.readProcessLockOwner(lockPath)
+            if (
+              currentOwner?.token === owner.token &&
+              currentOwner.pid === owner.pid &&
+              currentOwner.host === owner.host &&
+              !this.isProcessAlive(currentOwner.pid)
+            ) {
+              const quarantine = `${lockPath}.stale-${randomUUID()}`
+              await rename(lockPath, quarantine)
+              reclaimDirectory = quarantine
+              const movedOwner = await this.readProcessLockOwner(quarantine)
+              if (
+                movedOwner?.token === owner.token &&
+                movedOwner.pid === owner.pid &&
+                movedOwner.host === owner.host &&
+                !this.isProcessAlive(movedOwner.pid)
+              ) {
+                try {
+                  const release = await claim()
+                  await rm(quarantine, { recursive: true, force: true }).catch((error) => {
+                    this.ctx.logger?.warn(`sessionDelete: removing stale lock quarantine "${quarantine}" failed: ${String(error)}`)
+                  })
+                  return release
+                } catch (error) {
+                  // Another contender may have won the canonical path between
+                  // rename and mkdir. Keep the quarantined directory for review.
+                  if (error?.code !== 'EEXIST') throw error
+                }
+              } else {
+                this.ctx.logger?.warn(`sessionDelete: stale lock metadata changed for "${sessionId}"; preserved "${quarantine}"`)
+              }
+            }
+          } catch (error) {
+            if (error?.code !== 'ENOENT' && error?.code !== 'EEXIST') {
+              this.ctx.logger?.warn(`sessionDelete: reclaiming a dead lock for "${sessionId}" failed: ${String(error)}`)
+            }
+          } finally {
+            // The directory moves with the sentinel when it is quarantined.
+            // Remove only the marker whose contents still match our token.
+            const markerPath = join(reclaimDirectory, PROCESS_LOCK_RECLAIM_FILE)
+            const markerContents = await readFile(markerPath, 'utf8').catch(() => undefined)
+            if (markerContents === reclaimContents) {
+              await rm(markerPath, { force: true }).catch((error) => {
+                this.ctx.logger?.warn(`sessionDelete: removing stale-lock reclaim marker "${markerPath}" failed: ${String(error)}`)
+              })
+            }
           }
         }
       }
