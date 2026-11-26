@@ -1527,6 +1527,64 @@ test('the audit trail stays bounded', async () => {
   assert.ok(lines.length > 0)
 })
 
+test('audit append and retention trimming are serialized across Harness processes', async () => {
+  const store = await makeStore()
+  await mkdir(store.trashRoot, { recursive: true })
+  const file = join(store.trashRoot, 'audit.jsonl')
+  const initial = Array.from({ length: 990 }, (_, index) =>
+    JSON.stringify({ at: new Date(0).toISOString(), action: 'old', sessionId: 'old-' + index, ok: true }),
+  )
+  await writeFile(file, initial.join('\n') + '\n')
+
+  const moduleUrl = new URL('../index.js', import.meta.url).href
+  const worker = `
+    const [moduleUrl, root, prefix, count] = process.argv.slice(1)
+    const { apply } = await import(moduleUrl)
+    const provided = new Map()
+    const sessions = { get: () => undefined, store: new Map() }
+    const persistence = { root, stat: async () => undefined, list: async () => [] }
+    const ctx = {
+      sessions,
+      sessionPersistence: persistence,
+      get: (name) => name === 'sessions' ? sessions : name === 'sessionPersistence' ? persistence : undefined,
+      reflect: { provide: (name, value) => provided.set(name, value) },
+      on: () => {},
+      waterfall: async (_name, _payload, base) => base(),
+      parallel: async () => {},
+      emit: () => {},
+      logger: { warn: () => {} },
+    }
+    apply(ctx)
+    const service = provided.get('sessionDelete')
+    await Promise.all(Array.from({ length: Number(count) }, (_, index) =>
+      service.audit('worker-audit', prefix + '-' + index, true, { mode: 'trash' }),
+    ))
+  `
+  const launch = (prefix) => new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      ['--input-type=module', '-e', worker, moduleUrl, store.root, prefix, '15'],
+      { stdio: 'ignore' },
+    )
+    child.once('error', reject)
+    child.once('exit', (code) => code === 0 ? resolve() : reject(new Error('audit worker exited with ' + code)))
+  })
+
+  await Promise.all([launch('worker-a'), launch('worker-b')])
+
+  const lines = (await readFile(file, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
+  const workerIds = new Set(lines
+    .filter((line) => line.action === 'worker-audit')
+    .map((line) => line.sessionId))
+  assert.ok(lines.length <= 1000, 'cross-process trimming must keep the audit trail bounded')
+  assert.equal(workerIds.size, 30, 'no concurrent audit record may be lost during trimming')
+  for (const prefix of ['worker-a-', 'worker-b-']) {
+    for (let index = 0; index < 15; index += 1) {
+      assert.ok(workerIds.has(prefix + index), 'missing audit record: ' + prefix + index)
+    }
+  }
+})
+
 test('the audit trail is read once when a fresh trail needs trimming', async () => {
   const store = await makeStore()
   const h = harness({ ...storedTarget(store) })
@@ -1714,6 +1772,33 @@ test('different trash mutations for one session are serialized', async () => {
   assert.equal(await first, 'restored')
   assert.equal(await second, 'purged')
   assert.deepEqual(events, ['restore:start', 'restore:end', 'purge:start'])
+})
+
+test('a queued trash mutation proceeds after the previous mutation rejects', async () => {
+  const h = harness()
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  let started
+  const startedGate = new Promise((resolve) => { started = resolve })
+  const events = []
+  const first = h.service.runTrashOperation('purge', SESSION_ID, async () => {
+    events.push('purge:start')
+    started()
+    await gate
+    events.push('purge:failed')
+    throw new Error('simulated purge failure')
+  })
+  const second = h.service.runTrashOperation('restore', SESSION_ID, async () => {
+    events.push('restore:start')
+    return 'restored'
+  })
+
+  await startedGate
+  assert.deepEqual(events, ['purge:start'])
+  release()
+  await assert.rejects(first, /simulated purge failure/)
+  assert.equal(await second, 'restored')
+  assert.deepEqual(events, ['purge:start', 'purge:failed', 'restore:start'])
 })
 
 test('same trash mutation joins the in-flight operation', async () => {
