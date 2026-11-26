@@ -8,6 +8,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
+- Add a reference-aware attachment GC RFC documenting the Host/provider capability gap, staged-upload ownership, cross-process coordination, hard-link handling and phased delivery plan.
+- Add regression tests proving Trash, purge and permanent session deletion leave provider-owned image objects, generic-file objects and file aliases untouched.
+
 - Add a sidebar Trash manager with live item count, session-ID search, restore
   and finish-restore actions, and exact-ID confirmation before permanent purge.
 
