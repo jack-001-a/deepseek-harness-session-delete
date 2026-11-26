@@ -6,6 +6,27 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## Unreleased
 
+### Added
+
+- Document the session/attachment lifecycle, contributor workflow, security
+  reporting path and issue templates; add a pinned two-process CI target for
+  DeepSeek Harness 0.2.3-alpha.2.
+
+### Changed
+
+- Explain in the confirmation dialog that uploaded attachments and workspace
+  files are retained; validate and publish the declared `engines.dsh` range.
+
+### Fixed
+
+- The plain-element dialog now dismisses only when the backdrop itself is
+  clicked; clicks on controls and content no longer bubble into a close action.
+
+### Security
+
+- Keep attachment deletion unavailable until the Host can prove an object is
+  unreferenced across sessions, forks, restores and in-flight uploads.
+
 ## [0.6.0] — 2026-11-22
 
 ### Added
