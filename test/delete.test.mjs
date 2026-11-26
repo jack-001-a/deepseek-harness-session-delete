@@ -2000,6 +2000,27 @@ test('startup recovery retries workspace accounting when a host write fails', as
   ])
 })
 
+test('a symlinked process-lock root is rejected before creating session locks', async (t) => {
+  const store = await makeStore()
+  const h = harness({ root: store.root })
+  const lockRoot = join(store.base, '.session-delete-locks')
+  const outside = join(store.base, 'outside-lock-root')
+  await mkdir(outside)
+
+  try {
+    await symlink(outside, lockRoot, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch {
+    t.skip('the runner does not permit creating directory symlinks')
+    return
+  }
+
+  await assert.rejects(
+    h.service.acquireProcessLock(SESSION_ID),
+    (error) => error?.code === 'session-delete/unsafe-path',
+  )
+  assert.deepEqual(await readdir(outside), [])
+})
+
 test('a symlinked process-lock directory is rejected without following its target', async (t) => {
   const store = await makeStore()
   const h = harness({ root: store.root })
