@@ -373,6 +373,74 @@ test('permanent mode: removes the artifact outright', async () => {
   assert.deepEqual(h.calls.emitted, [['api-session/removed', SESSION_ID]])
 })
 
+test('permanent deletion remains successful when attachment-owner notification fails', async () => {
+  const store = await makeStore()
+  const h = harness({
+    ...storedTarget(store),
+    config: { mode: 'permanent' },
+    services: {
+      fileUploads: {
+        onSessionPermanentlyPurged: async () => {
+          await assert.rejects(stat(store.log), (error) => error.code === 'ENOENT')
+          throw new Error('attachment ledger unavailable')
+        },
+      },
+    },
+  })
+
+  const outcome = await h.service.delete(SESSION_ID)
+
+  assert.equal(outcome.purged, true)
+  await assert.rejects(stat(store.log), (error) => error.code === 'ENOENT')
+  assert.ok(
+    h.calls.warnings.some(message => message.includes('attachment-owner release failed') && message.includes('attachment ledger unavailable')),
+    'a stale attachment owner must be reported as a safe leak',
+  )
+})
+
+test('manual Trash purge remains successful when attachment-owner notification fails', async () => {
+  const store = await makeStore()
+  const h = harness({
+    ...storedTarget(store),
+    services: {
+      fileUploads: {
+        onSessionPermanentlyPurged: async () => { throw new Error('provider busy') },
+      },
+    },
+  })
+  const deleted = await h.service.delete(SESSION_ID)
+
+  const outcome = await h.service.purge(SESSION_ID)
+
+  assert.deepEqual(outcome, { sessionId: SESSION_ID, purged: true })
+  await assert.rejects(stat(trashEntry(store, deleted.trashId)), (error) => error.code === 'ENOENT')
+  assert.ok(h.calls.warnings.some(message => message.includes('provider busy')))
+})
+
+test('retention sweep continues after attachment-owner notification fails', async () => {
+  const store = await makeStore()
+  const h = harness({
+    ...storedTarget(store),
+    config: { retentionDays: 1 },
+    services: {
+      fileUploads: {
+        onSessionPermanentlyPurged: async () => { throw new Error('provider unavailable') },
+      },
+    },
+  })
+  await h.service.delete(SESSION_ID)
+  const expired = trashEntry(store, h.service.trashIndex.keys().next().value)
+  const manifest = JSON.parse(await readFile(join(expired, 'meta.json'), 'utf8'))
+  manifest.deletedAt = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()
+  await writeFile(join(expired, 'meta.json'), JSON.stringify(manifest))
+
+  const purged = await h.service.listTrash()
+
+  assert.deepEqual(purged.entries, [])
+  await assert.rejects(stat(expired), (error) => error.code === 'ENOENT')
+  assert.ok(h.calls.warnings.some(message => message.includes('provider unavailable')))
+})
+
 test('Trash and later purge leave provider-owned attachment objects and aliases intact', async () => {
   const store = await makeStore()
   const attachments = await makeAttachmentFixtures(store)
