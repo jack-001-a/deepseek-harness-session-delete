@@ -33,8 +33,8 @@ read contexts; a resolved path alone is not proof that an object is no longer
 referenced.
 
 The pinned Host baseline treats shared immutable objects as retention-neutral.
-The integration branch now calls an optional Host callback only after the
-Session artifact has been irreversibly removed. That callback can release the
+Session Delete now recognizes an optional Host callback and invokes it only
+after the Session artifact has been irreversibly removed. That callback can release the
 Session's durable owner rows; it does not remove any image object, generic-file
 object, alias, or workspace file. The corresponding Harness implementation is
 being proposed in [Harness PR #1](https://github.com/jack-001-a/deepseek-harness/pull/1)
@@ -59,9 +59,8 @@ Harness process. A modification-time rule cannot close either gap.
 
 See [Reference-aware attachment GC RFC](attachment-gc-rfc.md) for the
 source-level findings and [Host Attachment Reference API Proposal](host-attachment-reference-api-proposal.md)
-for the full ledger, reconciliation and cross-process requirements. The
-Session Delete integration branch calls the optional Host callback only after
-successful permanent-mode deletion, explicit Trash purge, or retention sweep.
+for the full ledger, reconciliation and cross-process requirements. Session Delete calls the optional Host callback only after successful
+permanent-mode deletion, explicit Trash purge, or retention sweep.
 Trash and Restore preserve owners. The Host-side SQLite ledger is still an
 open PR and is retention-only: no physical collection operation is enabled.
 ## Current user-facing contract
