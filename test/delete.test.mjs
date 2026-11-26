@@ -1581,6 +1581,40 @@ test('a refused deletion is recorded with its code', async () => {
   assert.equal(lines[0].action, 'delete')
 })
 
+test('the audit trail refuses an oversized existing file without reading or growing it', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const file = join(store.trashRoot, 'audit.jsonl')
+  await mkdir(store.trashRoot, { recursive: true })
+  await writeFile(file, Buffer.alloc(1024 * 1024 + 1, 0x61))
+  const before = await stat(file)
+  const h = harness({ ...storedTarget(store), config: { trashRoot: store.trashRoot } })
+
+  await h.service.audit('delete', SESSION_ID, true, { mode: 'trash' })
+
+  const after = await stat(file)
+  assert.equal(after.size, before.size, 'an oversized trail must never be appended to')
+  assert.equal(await h.service.readAuditTrail(file), undefined, 'oversized input must be refused')
+  assert.ok(
+    h.calls.warnings.some((message) => message.includes('1 MiB storage limit')),
+    'the skipped audit write must be observable',
+  )
+})
+
+test('the audit trail refuses one oversized record before creating its file', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const h = harness({ ...storedTarget(store), config: { trashRoot: store.trashRoot } })
+
+  await h.service.audit('delete', 'x'.repeat(9000), true, { mode: 'trash' })
+
+  await assert.rejects(stat(store.trashRoot), (error) => error.code === 'ENOENT')
+  assert.ok(
+    h.calls.warnings.some((message) => message.includes('8 KiB')),
+    'an oversized record must be rejected with a diagnostic',
+  )
+})
+
 test('the audit trail stays bounded', async () => {
   const store = await makeStore()
   const h = harness({ ...storedTarget(store) })
