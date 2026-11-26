@@ -1041,6 +1041,26 @@ test('restore-pending metadata refuses to replace an unreadable or linked manife
   assert.equal(deleted.trashId, entry.trashId)
 })
 
+test('restore refuses a symlinked restore marker without following it', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const h = harness({ ...storedTarget(store) })
+  const deleted = await h.service.delete(SESSION_ID)
+  const entry = trashEntry(store, deleted.trashId)
+  const outside = join(store.base, 'outside-restore-marker.json')
+  const sentinel = JSON.stringify({ sessionId: SESSION_ID, target: store.dir })
+  await writeFile(outside, sentinel)
+  await symlink(outside, join(entry, '.restoring'))
+
+  await assert.rejects(
+    h.service.restore(SESSION_ID),
+    (error) => error.code === 'session-delete/io',
+  )
+  assert.equal(await readFile(outside, 'utf8'), sentinel)
+  assert.equal((await stat(join(entry, 'artifact'))).isDirectory(), true)
+  await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
+})
+
 test('trash manifests above the byte limit are rejected before parsing', async (t) => {
   const store = await makeStore()
   t.after(() => rm(store.base, { recursive: true, force: true }))
