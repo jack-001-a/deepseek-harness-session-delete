@@ -307,7 +307,7 @@ function renderDialog(registrations, dictionaries, React, locale, options = {}) 
 
 /** Read the body/footer content supplied through the Host Modal's props. */
 function trashManagerText(form) {
-  return text({ children: [form.tree.props?.children, form.tree.props?.footer] })
+  return text({ children: [form.tree.props?.title, form.tree.props?.description, form.tree.props?.children, form.tree.props?.footer] })
 }
 
 /**
