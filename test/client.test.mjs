@@ -445,6 +445,26 @@ test('registers the menu row, hover button and dialog on the shipped slots', asy
   assert.equal(typeof dialog.hooks.trashManagerOpen.subscribe, 'function')
 })
 
+test('publishes the sidebar dependency and the linked project documents', async () => {
+  const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.ok(manifest.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-sidebar'))
+  for (const file of ['CONTRIBUTING.md', 'SECURITY.md', 'docs/**']) {
+    assert.ok(manifest.files.includes(file), 'the npm package must include ' + file)
+  }
+})
+
+test('listTrash calls the Host endpoint through the shared API connection', async () => {
+  const { plugin } = await loadPlugin()
+  const { registrations, services } = applyPlugin(plugin, {
+    'sessionDelete/listTrash': () => ({ ok: true, value: { entries: [] } }),
+  })
+  const injected = registrations['shell.overlay'].spec.inject()
+  const result = await injected.listTrash()
+
+  assert.deepEqual(result, { entries: [] })
+  assert.deepEqual(services.rpcCall, ['/api', 'sessionDelete/listTrash', { args: {} }])
+})
+
 test('registers identical en/zh dictionaries covering every key the code uses', async () => {
   const { plugin } = await loadPlugin()
   const { dictionaries } = applyPlugin(plugin)
