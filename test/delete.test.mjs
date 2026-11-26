@@ -2000,6 +2000,54 @@ test('startup recovery retries workspace accounting when a host write fails', as
   ])
 })
 
+test('a symlinked process-lock directory is rejected without following its target', async (t) => {
+  const store = await makeStore()
+  const h = harness({ root: store.root })
+  const lockPath = await h.service.processLockPath(SESSION_ID)
+  const lockRoot = join(store.base, '.session-delete-locks')
+  const outside = join(store.base, 'outside-lock-target')
+  await mkdir(lockRoot, { recursive: true })
+  await mkdir(outside)
+
+  try {
+    await symlink(outside, lockPath, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch {
+    t.skip('the runner does not permit creating directory symlinks')
+    return
+  }
+
+  await assert.rejects(
+    h.service.acquireProcessLock(SESSION_ID),
+    (error) => error?.code === 'session-delete/unsafe-path',
+  )
+  assert.ok((await stat(outside)).isDirectory())
+  assert.deepEqual(await readdir(outside), [])
+})
+
+test('a symlinked process-lock owner file is rejected without reading its target', async (t) => {
+  const store = await makeStore()
+  const h = harness({ root: store.root })
+  const lockPath = await h.service.processLockPath(SESSION_ID)
+  const lockRoot = join(store.base, '.session-delete-locks')
+  const outside = join(store.base, 'outside-lock-owner.json')
+  await mkdir(lockRoot, { recursive: true })
+  await mkdir(lockPath)
+  await writeFile(outside, 'external-owner-data', 'utf8')
+
+  try {
+    await symlink(outside, join(lockPath, '.owner.json'), 'file')
+  } catch {
+    t.skip('the runner does not permit creating file symlinks')
+    return
+  }
+
+  await assert.rejects(
+    h.service.acquireProcessLock(SESSION_ID),
+    (error) => error?.code === 'session-delete/unsafe-path',
+  )
+  assert.equal(await readFile(outside, 'utf8'), 'external-owner-data')
+})
+
 test('filesystem session locks use one canonical path for symlinked store roots', async () => {
   const store = await makeStore()
   const alias = join(store.base, 'sessions-alias')
