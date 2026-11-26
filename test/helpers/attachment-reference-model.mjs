@@ -64,6 +64,7 @@ function summarize(objects) {
 export class AttachmentReferenceModel {
   #objects = new Map()
   #leases = new Map()
+  #committedLeases = new Map()
   #readLeases = new Map()
   #instances = new Map()
   #trash = new Set()
@@ -143,8 +144,9 @@ export class AttachmentReferenceModel {
     const key = ownerKey(owner)
     const lease = this.#leases.get(leaseId)
     if (!lease) {
-      const committed = [...this.#objects.values()].some((object) => object.owners.has(key))
-      if (committed) return { committed: true, idempotent: true }
+      const committed = this.#committedLeases.get(leaseId)
+      if (committed?.ownerKey === key) return { committed: true, idempotent: true }
+      if (committed) throw new Error('lease already transferred to a different owner')
       throw new Error('unknown or released lease')
     }
     const object = this.#objects.get(lease.objectId)
@@ -157,6 +159,7 @@ export class AttachmentReferenceModel {
     if (object.kind === 'file') object.aliases.get(lease.alias).add(key)
     object.leases.delete(leaseId)
     this.#leases.delete(leaseId)
+    this.#committedLeases.set(leaseId, { objectId: object.objectId, ownerKey: key })
     lease.committedOwner = key
     object.unreferencedAt = undefined
     return { committed: true, idempotent: false }
