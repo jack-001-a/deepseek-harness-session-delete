@@ -4,9 +4,11 @@
 
 Please do not report exploitable vulnerabilities in a public issue.
 
-Use GitHub's private vulnerability reporting flow for this repository:
-open the repository's Security tab and choose Report a vulnerability.
-Include a concise description, affected plugin and Harness versions,
+Use GitHub's private vulnerability reporting flow when it is enabled for this
+repository: open the Security tab and choose Report a vulnerability. If that
+option is unavailable, contact the maintainer through the GitHub profile
+without posting exploit details publicly. Include a concise description,
+affected plugin and Harness versions,
 operating system, Node.js version, reproduction steps, impact and any
 available mitigations.
 
