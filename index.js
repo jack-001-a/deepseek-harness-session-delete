@@ -30,7 +30,7 @@ import { constants as fsConstants } from 'node:fs'
 import { cp, lstat, mkdir, open, readFile, readlink, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 /** Cordis service key of this plugin's service. */
 const SERVICE_KEY = 'sessionDelete'
@@ -218,9 +218,9 @@ async function assertSafeTrashEntryDirectory(root, entry) {
   if (
     !child ||
     child === '..' ||
-    child.startsWith('..' + path.sep) ||
+    child.startsWith('..' + sep) ||
     isAbsolute(child) ||
-    child.includes(path.sep)
+    child.includes(sep)
   ) {
     throw new Error('Refusing a trash entry outside its configured trash root.')
   }
