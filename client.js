@@ -1,11 +1,10 @@
 /**
  * Browser half of the @ybbmm/dsh-session-delete bundle.
  *
- * Adds a "Delete conversation" entry to the sidebar session list: one row in
- * the Session "..." menu, one hover button, and one confirmation dialog. The
- * deletion itself runs on the Host through the `sessionDelete/*` Remote
- * endpoints; this half collects the request, asks the Host which deletion
- * mode the store supports, and reports the outcome.
+ * Adds a "Delete conversation" action to Session rows and a recoverable
+ * Trash manager at the sidebar footer. Deletion, listing, restore and purge
+ * run on the Host through the sessionDelete Remote endpoints; this half
+ * collects requests, presents explicit confirmation and reports outcomes.
  *
  * The dialog follows the shipped archive action's shape: a thin entry that
  * reads the pending request, and one inner form keyed by the Session id that
@@ -115,6 +114,31 @@ window.__ModuleLoader__.load({
         'This is permanent. The conversation and its messages cannot be recovered.',
       'dialog.trashNotice': 'It stays in the Trash for {days} days.',
       'dialog.filesRetained': 'Uploaded attachments and files created in your workspace are kept. Only this conversation record is removed.',
+      'trash.open': 'Open Trash',
+      'trash.openCount': 'Open Trash ({count})',
+      'trash.title': 'Trash',
+      'trash.description': 'Deleted conversations stay here for up to {days} days. Restore one to return it to your sidebar, or permanently delete it after confirming its session ID.',
+      'trash.refresh': 'Refresh',
+      'trash.close': 'Close',
+      'trash.search': 'Search by session ID',
+      'trash.loading': 'Loading Trash…',
+      'trash.empty': 'Trash is empty.',
+      'trash.noMatches': 'No trashed conversations match this search.',
+      'trash.unknownDate': 'Deletion date unavailable',
+      'trash.deletedAt': 'Deleted {date}',
+      'trash.restore': 'Restore',
+      'trash.finishRestore': 'Finish restore',
+      'trash.purge': 'Delete permanently',
+      'trash.confirmPurgeTitle': 'Confirm permanent deletion',
+      'trash.confirmPurgeHint': 'Type the full session ID to permanently delete this record. This cannot be undone.',
+      'trash.cancel': 'Cancel',
+      'trash.confirm': 'Permanently delete',
+      'trash.purged': 'The conversation was permanently deleted.',
+      'trash.restored': 'The conversation was restored to its workspace.',
+      'trash.restoredPartial': 'The conversation files are restored, but its workspace could not be reattached. Restart the Harness to finish.',
+      'trash.pendingRestore': 'Files are already restored; finish the workspace reattachment.',
+      'trash.loadFailed': 'The Trash could not be loaded. Try refreshing.',
+      'trash.actionFailed': 'The Trash action could not be completed.',
       'dialog.restore': 'Restore',
       'dialog.purge': 'Delete permanently',
       'dialog.restoring': 'Restoring…',
@@ -166,6 +190,31 @@ window.__ModuleLoader__.load({
       'dialog.permanentWarning': '此操作不可撤销，该对话及其消息都无法恢复。',
       'dialog.trashNotice': '它会在回收站中保留 {days} 天。',
       'dialog.filesRetained': '上传的附件和工作区中创建的文件都会保留；此操作只处理当前对话记录。',
+      'trash.open': '打开回收站',
+      'trash.openCount': '回收站（{count}）',
+      'trash.title': '回收站',
+      'trash.description': '已删除的对话最多保留 {days} 天。恢复后会重新出现在侧栏；永久删除前必须确认完整会话 ID。',
+      'trash.refresh': '刷新',
+      'trash.close': '关闭',
+      'trash.search': '按会话 ID 搜索',
+      'trash.loading': '正在加载回收站…',
+      'trash.empty': '回收站为空。',
+      'trash.noMatches': '没有匹配的回收站记录。',
+      'trash.unknownDate': '删除时间不可用',
+      'trash.deletedAt': '删除时间：{date}',
+      'trash.restore': '恢复',
+      'trash.finishRestore': '完成恢复',
+      'trash.purge': '永久删除',
+      'trash.confirmPurgeTitle': '确认永久删除',
+      'trash.confirmPurgeHint': '输入完整会话 ID 以永久删除此记录。此操作无法撤销。',
+      'trash.cancel': '取消',
+      'trash.confirm': '确认永久删除',
+      'trash.purged': '该对话已永久删除。',
+      'trash.restored': '该对话已恢复到原工作区。',
+      'trash.restoredPartial': '对话文件已恢复，但未能重新挂接工作区。请重启 Harness 完成恢复。',
+      'trash.pendingRestore': '文件已恢复；请再次执行恢复以完成工作区挂接。',
+      'trash.loadFailed': '无法加载回收站，请重试刷新。',
+      'trash.actionFailed': '回收站操作未能完成。',
       'dialog.restore': '恢复',
       'dialog.purge': '永久删除',
       'dialog.restoring': '正在恢复…',
@@ -237,6 +286,136 @@ window.__ModuleLoader__.load({
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-label-secondary);
+}
+.dshSessionDelete_footerButton {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family);
+  font-size: 13px;
+  line-height: 20px;
+  text-align: left;
+  cursor: pointer;
+}
+.dshSessionDelete_footerButton:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.dshSessionDelete_footerButton:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color);
+  outline-offset: -2px;
+}
+.dshSessionDelete_footerButton--compact {
+  justify-content: center;
+  width: 40px;
+  margin-inline: auto;
+  padding-inline: 0;
+}
+.dshSessionDelete_footerCount {
+  margin-left: auto;
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+.dshSessionDelete_trashToolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.dshSessionDelete_trashSearch {
+  box-sizing: border-box;
+  min-width: 0;
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+}
+.dshSessionDelete_trashList {
+  display: grid;
+  gap: 8px;
+  max-height: 42vh;
+  overflow: auto;
+  padding-right: 2px;
+}
+.dshSessionDelete_trashItem {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-1);
+}
+.dshSessionDelete_trashItemHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 10px;
+}
+.dshSessionDelete_trashId {
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family-mono, monospace);
+  font-size: 12px;
+}
+.dshSessionDelete_trashDate {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+}
+.dshSessionDelete_trashState {
+  margin-top: 7px;
+  color: var(--dsw-alias-state-warn-primary);
+  font-size: 12px;
+  line-height: 18px;
+}
+.dshSessionDelete_trashActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.dshSessionDelete_trashConfirm {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-2);
+}
+.dshSessionDelete_trashConfirmInput {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family-mono, monospace);
+  font-size: 12px;
+}
+.dshSessionDelete_trashConfirmInput:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color);
+  outline-offset: -1px;
+}
+.dshSessionDelete_trashManagerStatus {
+  margin: 8px 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
 }
 .dshSessionDelete_fileNote {
   margin: 12px 0 0;
@@ -1310,6 +1489,315 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Format one deletion timestamp without trusting it as display text.
+     * Invalid or absent dates fall back to a localized placeholder; filesystem
+     * paths from the manifest are never shown.
+     */
+    function formatTrashDate(value, t) {
+      if (typeof value !== 'string' || value.length === 0) return t('trash.unknownDate')
+      const date = new Date(value)
+      return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+    }
+
+    /**
+     * Sidebar-footer entry point for the recoverable Trash.
+     *
+     * The capability is queried once on mount. Permanent-only stores and
+     * unsupported persistence backends do not render a dead control.
+     */
+    function TrashManagerButton({ wide, openTrashManager, describeDeletion, updateTrashCount, useTrashCount, t }) {
+      const [available, setAvailable] = React.useState(false)
+      const countValue = useTrashCount((count) => count)
+      React.useEffect(() => {
+        let active = true
+        Promise.resolve()
+          .then(() => describeDeletion())
+          .then((value) => {
+            if (active) {
+              setAvailable(value?.canListTrash === true)
+              updateTrashCount(Number.isSafeInteger(value?.trashCount) ? value.trashCount : 0)
+            }
+          })
+          .catch(() => {
+            if (active) setAvailable(false)
+          })
+        return () => { active = false }
+      }, [])
+
+      if (!available) return null
+      const count = Number.isSafeInteger(countValue) && countValue > 0 ? countValue : 0
+      const label = count > 0 ? t('trash.openCount', { count }) : t('trash.open')
+      return h(
+        adapter.Tooltip,
+        {
+          label,
+          side: 'top',
+          children: h(
+            'button',
+            {
+              type: 'button',
+              className: 'dshSessionDelete_footerButton' + (wide ? '' : ' dshSessionDelete_footerButton--compact'),
+              'aria-label': label,
+              onClick: openTrashManager,
+            },
+            h(PlainTrashIcon, { size: 16 }),
+            wide ? h('span', null, t('trash.open')) : null,
+            count > 0 ? h('span', { className: 'dshSessionDelete_footerCount', 'aria-hidden': 'true' }, count > 99 ? '99+' : count) : null,
+          ),
+        },
+      )
+    }
+
+    /**
+     * Manage trashed conversations after the original delete dialog is gone.
+     * Entries deliberately show only the session id and timestamp: the Host's
+     * Trash manifest stores no display title and the plugin does not persist
+     * conversation content just to make this list friendlier.
+     */
+    function TrashManagerDialog({ settleTrashManager, listTrash, restoreSession, purgeSession, describeDeletion, updateTrashCount, t }) {
+      const [entries, setEntries] = React.useState([])
+      const [loading, setLoading] = React.useState(true)
+      const [loadError, setLoadError] = React.useState(undefined)
+      const [actionError, setActionError] = React.useState(undefined)
+      const [notice, setNotice] = React.useState(undefined)
+      const [query, setQuery] = React.useState('')
+      const [busySessionId, setBusySessionId] = React.useState(undefined)
+      const [confirmSessionId, setConfirmSessionId] = React.useState(undefined)
+      const [typedSessionId, setTypedSessionId] = React.useState('')
+
+      const refresh = () => {
+        setLoading(true)
+        setLoadError(undefined)
+        return Promise.resolve()
+          .then(() => listTrash())
+          .then((result) => {
+            if (!Array.isArray(result?.entries)) {
+              throw new Error('sessionDelete/listTrash returned an invalid entry list')
+            }
+            setEntries(result.entries)
+            updateTrashCount(result.entries.length)
+          })
+          .catch((failure) => {
+            setLoadError(describeActionFailure(t, failure, 'trash.loadFailed'))
+          })
+          .finally(() => setLoading(false))
+      }
+
+      const [retentionDays, setRetentionDays] = React.useState(7)
+      React.useEffect(() => {
+        refresh()
+        Promise.resolve()
+          .then(() => describeDeletion())
+          .then((info) => {
+            if (Number.isSafeInteger(info?.retentionDays) && info.retentionDays >= 0) {
+              setRetentionDays(info.retentionDays)
+            }
+          })
+          .catch(() => {})
+      }, [])
+
+      const close = () => {
+        if (busySessionId === undefined) settleTrashManager()
+      }
+      const runRestore = (entry) => {
+        setBusySessionId(entry.sessionId)
+        setActionError(undefined)
+        setNotice(undefined)
+        Promise.resolve()
+          .then(() => restoreSession(entry.sessionId))
+          .then((outcome) => {
+            setNotice(outcome?.needsRestart === true || outcome?.reattached === false
+              ? t('trash.restoredPartial')
+              : t('trash.restored'))
+            setConfirmSessionId(undefined)
+            setTypedSessionId('')
+            return refresh()
+          })
+          .catch((failure) => {
+            setActionError(describeActionFailure(t, failure, 'trash.actionFailed'))
+          })
+          .finally(() => setBusySessionId(undefined))
+      }
+      const runPurge = (entry) => {
+        if (typedSessionId !== entry.sessionId) return
+        setBusySessionId(entry.sessionId)
+        setActionError(undefined)
+        setNotice(undefined)
+        Promise.resolve()
+          .then(() => purgeSession(entry.sessionId))
+          .then(() => {
+            setNotice(t('trash.purged'))
+            setConfirmSessionId(undefined)
+            setTypedSessionId('')
+            return refresh()
+          })
+          .catch((failure) => {
+            setActionError(describeActionFailure(t, failure, 'trash.actionFailed'))
+          })
+          .finally(() => setBusySessionId(undefined))
+      }
+
+      const normalizedQuery = query.trim().toLocaleLowerCase()
+      const visibleEntries = entries.filter((entry) =>
+        typeof entry.sessionId === 'string' && entry.sessionId.toLocaleLowerCase().includes(normalizedQuery))
+      const busy = loading || busySessionId !== undefined
+      const body = []
+      body.push(
+        h(
+          'div',
+          { className: 'dshSessionDelete_trashToolbar', key: 'toolbar' },
+          h('input', {
+            type: 'search',
+            className: 'dshSessionDelete_trashSearch',
+            placeholder: t('trash.search'),
+            'aria-label': t('trash.search'),
+            value: query,
+            disabled: loading,
+            onChange: (event) => setQuery(event.target.value),
+          }),
+          h(adapter.Button, {
+            type: 'button',
+            variant: 'outline',
+            size: 'small',
+            disabled: busy,
+            onClick: refresh,
+          }, t('trash.refresh')),
+        ),
+      )
+      if (loading) {
+        body.push(h('div', { role: 'status', className: 'dshSessionDelete_trashManagerStatus', key: 'loading' }, t('trash.loading')))
+      } else if (loadError !== undefined) {
+        // The error below replaces an empty-state claim: an unreadable Trash
+        // must never be presented as an empty one.
+      } else if (entries.length === 0) {
+        body.push(h('div', { className: 'dshSessionDelete_trashManagerStatus', key: 'empty' }, t('trash.empty')))
+      } else if (visibleEntries.length === 0) {
+        body.push(h('div', { className: 'dshSessionDelete_trashManagerStatus', key: 'noMatches' }, t('trash.noMatches')))
+      } else {
+        body.push(
+          h(
+            'div',
+            { className: 'dshSessionDelete_trashList', key: 'entries', role: 'list', 'aria-label': t('trash.title') },
+            visibleEntries.map((entry) => {
+              const pendingRestore = entry.restoreState === 'accounting-pending'
+              const confirming = confirmSessionId === entry.sessionId
+              const rowBusy = busySessionId === entry.sessionId
+              const actions = [
+                h(adapter.Button, {
+                  key: 'restore',
+                  type: 'button',
+                  variant: 'outline',
+                  size: 'small',
+                  disabled: busy,
+                  onClick: () => runRestore(entry),
+                }, t(pendingRestore ? 'trash.finishRestore' : 'trash.restore')),
+              ]
+              if (!pendingRestore && !confirming) {
+                actions.push(h(adapter.Button, {
+                  key: 'purge',
+                  type: 'button',
+                  variant: 'outline',
+                  size: 'small',
+                  className: 'dshSessionDelete_deleteAction',
+                  disabled: busy,
+                  onClick: () => {
+                    setConfirmSessionId(entry.sessionId)
+                    setTypedSessionId('')
+                    setActionError(undefined)
+                  },
+                }, t('trash.purge')))
+              }
+              const confirm = confirming
+                ? h(
+                    'div',
+                    { className: 'dshSessionDelete_trashConfirm', key: 'confirm' },
+                    h('div', { className: 'dshSessionDelete_warning' }, t('trash.confirmPurgeHint')),
+                    h('label', { className: 'dshSessionDelete_label' },
+                      t('trash.confirmPurgeTitle'),
+                      h('input', {
+                        type: 'text',
+                        className: 'dshSessionDelete_trashConfirmInput',
+                        value: typedSessionId,
+                        disabled: busy,
+                        autoComplete: 'off',
+                        spellCheck: false,
+                        onChange: (event) => setTypedSessionId(event.target.value),
+                      }),
+                    ),
+                    h('div', { className: 'dshSessionDelete_trashActions' },
+                      h(adapter.Button, {
+                        type: 'button',
+                        variant: 'outline',
+                        size: 'small',
+                        disabled: busy,
+                        onClick: () => {
+                          setConfirmSessionId(undefined)
+                          setTypedSessionId('')
+                        },
+                      }, t('trash.cancel')),
+                      h(adapter.Button, {
+                        type: 'button',
+                        variant: 'outline',
+                        size: 'small',
+                        className: 'dshSessionDelete_deleteAction--permanent',
+                        disabled: busy || typedSessionId !== entry.sessionId,
+                        onClick: () => runPurge(entry),
+                      }, t('trash.confirm')),
+                    ),
+                  )
+                : null
+              return h(
+                'div',
+                { className: 'dshSessionDelete_trashItem', key: entry.trashId, role: 'listitem' },
+                h(
+                  'div',
+                  { className: 'dshSessionDelete_trashItemHeader' },
+                  h('code', { className: 'dshSessionDelete_trashId', title: entry.sessionId }, entry.sessionId),
+                  h('time', {
+                    className: 'dshSessionDelete_trashDate',
+                    dateTime: entry.deletedAt || undefined,
+                    title: entry.deletedAt || undefined,
+                  }, t('trash.deletedAt', { date: formatTrashDate(entry.deletedAt, t) })),
+                ),
+                pendingRestore
+                  ? h('div', { className: 'dshSessionDelete_trashState', role: 'status' }, t('trash.pendingRestore'))
+                  : null,
+                h('div', { className: 'dshSessionDelete_trashActions' }, actions),
+                confirm,
+                rowBusy ? h('div', { className: 'dshSessionDelete_trashManagerStatus', role: 'status' }, t('dialog.pending')) : null,
+              )
+            }),
+          ),
+        )
+      }
+      if (loadError !== undefined) {
+        body.push(h('div', { role: 'alert', className: 'dshSessionDelete_error', key: 'loadError' }, loadError))
+      }
+      if (actionError !== undefined) {
+        body.push(h('div', { role: 'alert', className: 'dshSessionDelete_error', key: 'actionError' }, actionError))
+      }
+      if (notice !== undefined) {
+        body.push(h('div', { role: 'status', className: 'dshSessionDelete_status', key: 'notice' }, notice))
+      }
+
+      const titleId = 'dshSessionDelete-trash-title'
+      const descriptionId = 'dshSessionDelete-trash-description'
+      const dialogProps = {
+        title: t('trash.title'),
+        titleId,
+        description: t('trash.description', { days: retentionDays }),
+        descriptionId,
+        describedBy: descriptionId,
+        busy,
+        closeLabel: t('trash.close'),
+        onClose: close,
+        children: h('div', { className: 'dshSessionDelete_body', 'aria-busy': busy ? 'true' : undefined }, body),
+        footer: h(adapter.Button, { type: 'button', variant: 'outline', onClick: close }, t('trash.close')),
+      }
+      return h(adapter.Modal === undefined ? PlainDialog : HostDialog, dialogProps)
+    }
+
+    /**
      * The `shell.overlay` entry: nothing while no confirmation is pending,
      * otherwise one dialog per request, keyed by the Session it targets.
      * @param props - the request hook, its settlement, and the deletion hop.
@@ -1317,27 +1805,45 @@ window.__ModuleLoader__.load({
      */
     function DeleteSessionDialog({
       useDeleteRequest,
+      useTrashManagerOpen,
       settleDelete,
+      settleTrashManager,
       confirmDelete,
       restoreSession,
       purgeSession,
+      listTrash,
       describeDeletion,
+      updateTrashCount,
       t,
     }) {
       const request = useDeleteRequest((pending) => pending)
-      if (!request) return null
-      // `key` (not a child) so a new request remounts the form: its in-flight,
-      // error and success state belong to exactly one request.
-      return h(DeleteConfirmForm, {
-        key: request.sessionId,
-        request,
-        settleDelete,
-        confirmDelete,
-        restoreSession,
-        purgeSession,
-        describeDeletion,
-        t,
-      })
+      const trashOpen = useTrashManagerOpen((open) => open)
+      if (request) {
+        // `key` (not a child) so a new request remounts the form: its in-flight,
+        // error and success state belong to exactly one request.
+        return h(DeleteConfirmForm, {
+          key: request.sessionId,
+          request,
+          settleDelete,
+          confirmDelete,
+          restoreSession,
+          purgeSession,
+          describeDeletion,
+          t,
+        })
+      }
+      if (trashOpen) {
+        return h(TrashManagerDialog, {
+          settleTrashManager,
+          listTrash,
+          restoreSession,
+          purgeSession,
+          describeDeletion,
+          updateTrashCount,
+          t,
+        })
+      }
+      return null
     }
 
     // The host components are read once, when the bundle is composed, so a
@@ -1351,6 +1857,11 @@ window.__ModuleLoader__.load({
           ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ybbmm.dsh-session-delete: dictionaries')
 
           const pending = createObservable(null)
+          const trashManagerOpen = createObservable(false)
+          const trashCount = createObservable(undefined)
+          const updateTrashCount = (count) => trashCount.set(count)
+          const openTrashManager = () => trashManagerOpen.set(true)
+          const settleTrashManager = () => trashManagerOpen.set(false)
 
           const requestDelete = (sessionId, displayTitle) => {
             pending.set({
@@ -1376,6 +1887,14 @@ window.__ModuleLoader__.load({
            */
           const confirmDelete = async (request) => {
             const outcome = await callRemote(ctx, 'delete', { sessionId: request.sessionId })
+            if (outcome?.trashed === true) {
+              // Keep the sidebar badge accurate without delaying the delete
+              // acknowledgement on a second Host round-trip.
+              Promise.resolve()
+                .then(() => describeDeletion())
+                .then((info) => updateTrashCount(Number.isSafeInteger(info?.trashCount) ? info.trashCount : 0))
+                .catch((failure) => logWarning(ctx, 'could not refresh the Trash count after deletion:', failure))
+            }
             if (currentSessionId(ctx) === request.sessionId) {
               const uiWorkspace = optionalService(ctx, 'uiWorkspace')
               try {
@@ -1397,6 +1916,7 @@ window.__ModuleLoader__.load({
            * @throws the Host failure, for the dialog to fall back on.
            */
           const describeDeletion = async () => callRemote(ctx, 'describe', {})
+          const listTrash = async () => callRemote(ctx, 'listTrash', {})
 
           /**
            * Bring a trashed conversation back.
@@ -1447,13 +1967,22 @@ window.__ModuleLoader__.load({
           }
 
           const actionInjected = () => ({ requestDelete })
+          const trashActionInjected = () => ({
+            openTrashManager,
+            describeDeletion,
+            updateTrashCount,
+            hooks: { trashCount },
+          })
           const dialogInjected = () => ({
-            hooks: { deleteRequest: pending },
+            hooks: { deleteRequest: pending, trashManagerOpen },
             settleDelete,
+            settleTrashManager,
             confirmDelete,
             restoreSession,
             purgeSession,
+            listTrash,
             describeDeletion,
+            updateTrashCount,
           })
 
           ctx.slots.inject('sidebar.workspaces.session.menu.item', function* () {
@@ -1478,6 +2007,17 @@ window.__ModuleLoader__.load({
                 inject: actionInjected,
               },
               DeleteSessionRowButton,
+            )
+          })
+          ctx.slots.inject('sidebar.footer.action', function* () {
+            yield ctx.slots.register(
+              {
+                name: 'sidebar.footer.action',
+                id: 'ybbmm.dsh-session-delete-trash',
+                locale: NS,
+                inject: trashActionInjected,
+              },
+              TrashManagerButton,
             )
           })
           ctx.slots.inject('shell.overlay', function* () {

@@ -26,10 +26,12 @@ also makes clear that shared attachments and workspace files are retained.
 | Session **row hover** | A trash button beside the shipped archive and pin buttons |
 | **Confirmation dialog** | Names the conversation, explains recovery and file-retention behavior, and — in permanent mode — asks for the title before it unlocks |
 | **After deletion** | Reports what happened, and offers **Restore** and **Delete permanently** on the same dialog |
+| Sidebar **Trash manager** | A count badge opens the searchable Trash list; restore entries later or permanently delete one after typing its full session ID |
 
 Deleting the conversation that is currently open reopens a new session in the
 same workspace; the dialog stays open just long enough to acknowledge the
-result.
+result. The Trash manager lives in the sidebar footer above Settings, so the
+confirmation dialog can be closed without losing access to recoverable items.
 
 ## File and attachment handling
 
@@ -73,6 +75,20 @@ Restore is idempotent: an entry whose files are already back (a failed
 reattachment, or a process that stopped mid-restore) is completed by the next
 Restore call instead of being reported as a conflict, and a completed restore
 is gone from the trash, so restoring it again reports `not-found`.
+
+### Manage the Trash from the sidebar
+
+Open **Trash** from the sidebar footer (above Settings). Its count reflects the
+Host's current Trash inventory. Search filters by session ID. Each row shows
+only the session ID and deletion time: the Trash manifest intentionally does
+not persist a display title or transcript content, and the manager does not
+show the original filesystem path. **Restore** returns the conversation to its
+recorded workspace; entries marked `accounting-pending` offer **Finish restore**
+to retry only the workspace reattachment. **Delete permanently** first asks
+you to type the complete session ID exactly. The Trash is available only when
+the active store supports recoverable deletion. Listing also runs the Host's
+retention sweep, so expired entries may disappear when the manager is opened
+or refreshed.
 
 A trash entry written by 0.3.0 or older has no accounting record. Restoring one
 still puts the files back and tries to infer the owning workspace from the
@@ -412,7 +428,7 @@ React stand-in; they need no Harness installation.
 
 DeepSeek Harness 只能归档会话、无法真正删除，日志会一直堆积在磁盘上。这个插件补上了缺失的删除能力，并且按桌面产品的做法来做：**先进回收站，可还原、可彻底删除、有审计记录。**
 
-**新增内容**：会话「…」菜单里的**红色「删除对话」**、会话行悬停时的垃圾桶按钮，以及一个显示对话标题、写明"是否可恢复"的确认框；永久删除模式下还需要手动输入会话标题才会解锁按钮。删除后确认框会原地显示结果，并提供**还原**与**彻底删除**两个后续操作。删除当前正在看的对话后，会在同一工作区重新打开一个新会话。
+**新增内容**：会话「…」菜单里的**红色「删除对话」**、会话行悬停时的垃圾桶按钮，以及一个显示对话标题、写明"是否可恢复"的确认框；永久删除模式下还需要手动输入会话标题才会解锁按钮。删除后确认框会原地显示结果，并提供**还原**与**彻底删除**两个后续操作。删除当前正在看的对话后，会在同一工作区重新打开一个新会话。侧边栏「设置」上方新增**回收站管理入口**，显示回收站数量，可按会话 ID 搜索；随时恢复会话，或输入完整会话 ID 后永久删除。列表只显示会话 ID 与删除时间，不保存也不展示对话标题或原始文件路径。
 
 **删除顺序是事务式的**：解析目标 → 拒绝运行中的工作 → 停并将活跃会话摘除 → 在支持新式持久化接口的 Harness 上取得宿主原生写租约 → **把日志移出存储**（移出前先把工作区记账写入回收站清单：所属工作区、显示位置锚点、置顶/归档标记）→ 释放宿主租约 → 释放工作区记账 → 删除投影缓存 → 广播移除事件。若另一个 Harness 写入者仍持有会话租约，会返回 `session-delete/locked`，本次不移动文件。
 

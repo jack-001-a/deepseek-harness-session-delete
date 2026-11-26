@@ -8,6 +8,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
+- Add a sidebar Trash manager with live item count, session-ID search, restore
+  and finish-restore actions, and exact-ID confirmation before permanent purge.
+
 - Document the session/attachment lifecycle, contributor workflow, security
   reporting path and issue templates; add a pinned two-process CI target for
   DeepSeek Harness 0.2.3-alpha.2.
@@ -16,6 +19,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 - Explain in the confirmation dialog that uploaded attachments and workspace
   files are retained; validate and publish the declared `engines.dsh` range.
+- Include architecture, attachment, contributor and security documentation in
+  the npm package so README links work for registry users.
 
 ### Fixed
 

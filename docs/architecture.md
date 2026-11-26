@@ -10,13 +10,16 @@ reviewable before either side is changed.
 |---|---|---|
 | Session selection | client.js | Adds the sidebar menu action and row action; captures the selected session id and display title |
 | Confirmation | client.js | Asks the Host for capabilities, explains Trash vs. permanent mode, confirms the target, and reports the result |
+| Trash manager | client.js | Lists Host Trash entries from the sidebar footer, searches session IDs, restores entries, and guards permanent purge with exact-ID confirmation |
 | Persistence mutation | index.js | Locates and moves/removes the session artifact; coordinates the Host write lease |
 | Workspace state | index.js | Captures and releases membership, order, pin and archive state; replays it on restore |
 | Recovery | index.js | Reconciles interrupted Trash/restore transactions at startup and on later operations |
 | Audit | index.js | Appends bounded metadata-only JSONL records; conversation content is not copied into the audit trail |
 
-The browser calls sessionDelete/describe, delete, restore and purge through
-the Host API Gateway. The implementation deliberately uses Node built-ins
+The browser calls sessionDelete/describe, delete, restore, purge and
+listTrash through the Host API Gateway. A footer action in the sidebar opens
+the browser-side Trash manager; it does not implement a second persistence
+path. The implementation deliberately uses Node built-ins
 only; do not add runtime dependencies without checking the local bundle
 resolution constraints described in the module header.
 
@@ -113,6 +116,25 @@ Deleting a session artifact does not unlink uploaded attachments or workspace
 files. Harness attachments are content-addressed and may be shared by several
 sessions. See [Attachment lifecycle](attachment-lifecycle.md) before proposing any change to this behavior.
 
+## Trash manager UI
+
+The browser registers one entry in the Host sidebar's sidebar.footer.action
+slot, which renders above Settings. It is hidden unless describe() reports
+canListTrash: true. The count comes from the Host's refreshed Trash index and
+is resynchronized after deletes and manager refreshes.
+
+The manager reads listTrash() and displays only the session ID, deletion
+timestamp and restore state. It does not display originalPath, and it cannot
+show a title because the manifest deliberately stores only the reduced session
+header. Search is client-side over the session ID. Restore reuses the same
+Host endpoint and refreshes the session catalog; an accounting-pending entry
+can retry the workspace attachment without moving its artifact again.
+
+Permanent purge is guarded by exact full-session-ID entry in the browser and
+then uses the Host's existing purge() operation lock. The manager refreshes
+the list after successful mutations. listTrash() runs the Host retention
+sweep, so listing is also the point at which expired items may be removed.
+
 ## Error and UI behavior
 
 The Host returns stable codes for busy sessions, locked writers, missing or
@@ -121,7 +143,10 @@ conflicts. The browser maps these codes to both English and Chinese copy.
 Unknown errors use a fallback message rather than hiding the failure.
 
 The confirmation dialog has distinct checking, pending, error, completed,
-restore and purge states. The permanent mode requires typed confirmation.
+restore and purge states. The permanent mode requires typed confirmation. The
+Trash manager has separate loading, empty, filtered-empty, action-pending,
+partial-restore, and failure states; load failures are never presented as an
+empty Trash.
 The fallback dialog must only dismiss on an actual backdrop click; clicks on
 its content must not bubble into a close action.
 
