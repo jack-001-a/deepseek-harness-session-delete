@@ -297,7 +297,7 @@ function renderDialog(registrations, dictionaries, React, locale, options = {}) 
     purgeSession: options.purgeSession ?? injected.purgeSession,
     describeDeletion: options.describeDeletion ?? (async () => DESCRIBE_TRASH),
     listTrash: options.listTrash ?? injected.listTrash,
-    updateTrashCount: injected.updateTrashCount,
+    updateTrashCount: options.updateTrashCount ?? injected.updateTrashCount,
     t: makeT(dictionaries, locale),
   })
   assert.ok(outer.tree, 'the dialog entry must render the inner form for a pending request')
@@ -627,6 +627,74 @@ test('permanent purge in the Trash manager requires the exact session id', async
 
   assert.deepEqual(purged, ['session-to-purge'])
   assert.match(text(form.tree), /permanently deleted/i)
+})
+
+test('a failed Trash listing is reported instead of shown as empty', async () => {
+  const { plugin, React } = await loadPlugin()
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+    request: null,
+    trashManagerOpen: true,
+    listTrash: async () => { throw new Error('permission denied') },
+  })
+  await settle()
+
+  const managerText = text({ children: [form.tree.props.children] })
+  assert.match(managerText, /could not be loaded/i)
+  assert.doesNotMatch(managerText, /Trash is empty/)
+})
+
+test('accounting-pending Trash entries can be finished but not purged', async () => {
+  const { plugin, React } = await loadPlugin()
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+    request: null,
+    trashManagerOpen: true,
+    listTrash: async () => ({
+      entries: [{
+        trashId: 'trash-pending',
+        sessionId: 'session-pending',
+        deletedAt: '2026-11-25T10:00:00.000Z',
+        restoreState: 'accounting-pending',
+      }],
+    }),
+  })
+  await settle()
+
+  const managerText = text({ children: [form.tree.props.children] })
+  assert.match(managerText, /finish the workspace reattachment/i)
+  assert.match(managerText, /Finish restore/)
+  assert.doesNotMatch(managerText, /Delete permanently/)
+})
+
+test('a restore refresh updates the sidebar Trash count', async () => {
+  const { plugin, React } = await loadPlugin()
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  let count = -1
+  let listed = true
+  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+    request: null,
+    trashManagerOpen: true,
+    updateTrashCount: (next) => { count = next },
+    listTrash: async () => ({
+      entries: listed ? [{ trashId: 'trash-a', sessionId: 'session-a', deletedAt: '2026-11-25T10:00:00.000Z' }] : [],
+    }),
+    restoreSession: async () => {
+      listed = false
+      return { restored: true, reattached: true }
+    },
+  })
+  await settle()
+  assert.equal(count, 1)
+
+  let restoreButton
+  walk(form.tree, (node) => {
+    if (restoreButton === undefined && node.type === 'Button' && text(node) === 'Restore') restoreButton = node
+  })
+  assert.ok(restoreButton)
+  restoreButton.props.onClick()
+  await settle()
+  assert.equal(count, 0)
 })
 
 test('the menu row closes the menu and asks for confirmation', async () => {
