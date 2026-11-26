@@ -2,7 +2,7 @@
   "name": "@ybbmm/dsh-session-delete",
   "version": "0.6.0",
   "type": "module",
-  "description": "Delete a DeepSeek Harness conversation from the sidebar: a recoverable trash with restore and purge, or permanent removal, with a path-safety guard and an audit trail. | 在 DeepSeek Harness 侧边栏删除对话：可恢复的回收站（支持还原与彻底删除），或永久删除，并带有路径安全校验与审计日志。",
+  "description": "Safely delete DeepSeek Harness conversations with a recoverable trash, restore, permanent-delete confirmation, path guards, and an audit trail. | 安全删除 DeepSeek Harness 对话：可恢复回收站、还原、永久删除二次确认、路径保护与审计日志。",
   "license": "MIT",
   "author": "jack-001-a",
   "repository": {
@@ -23,13 +23,23 @@
     "trash",
     "restore",
     "sidebar",
-    "plugin"
+    "plugin",
+    "deepseek-harness-plugin",
+    "harness-plugin",
+    "session-management",
+    "conversation-management",
+    "session-trash",
+    "data-recovery",
+    "safe-delete",
+    "data-retention",
+    "session-restore"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22",
+    "dsh": ">=0.2.1-rc.2 <0.3.0"
   },
   "scripts": {
-    "check": "node --check index.js && node --check client.js && node --check scripts/run-harness-session-delete-e2e.mjs && node --check scripts/fixtures/harness-session-holder.mjs",
+    "check": "node --check index.js && node --check client.js && node --check scripts/run-harness-session-delete-e2e.mjs && node --check scripts/fixtures/harness-session-holder.mjs && node --check test/client.test.mjs && node --check test/delete.test.mjs",
     "test": "node --test"
   },
   "exports": {

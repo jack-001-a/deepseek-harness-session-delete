@@ -114,6 +114,7 @@ window.__ModuleLoader__.load({
       'dialog.permanentWarning':
         'This is permanent. The conversation and its messages cannot be recovered.',
       'dialog.trashNotice': 'It stays in the Trash for {days} days.',
+      'dialog.filesRetained': 'Uploaded attachments and files created in your workspace are kept. Only this conversation record is removed.',
       'dialog.restore': 'Restore',
       'dialog.purge': 'Delete permanently',
       'dialog.restoring': 'Restoring…',
@@ -164,6 +165,7 @@ window.__ModuleLoader__.load({
       'dialog.unsupported': '当前版本无法定位该对话的文件，因此无法在此删除它。',
       'dialog.permanentWarning': '此操作不可撤销，该对话及其消息都无法恢复。',
       'dialog.trashNotice': '它会在回收站中保留 {days} 天。',
+      'dialog.filesRetained': '上传的附件和工作区中创建的文件都会保留；此操作只处理当前对话记录。',
       'dialog.restore': '恢复',
       'dialog.purge': '永久删除',
       'dialog.restoring': '正在恢复…',
@@ -235,6 +237,16 @@ window.__ModuleLoader__.load({
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-label-secondary);
+}
+.dshSessionDelete_fileNote {
+  margin: 12px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
 }
 .dshSessionDelete_description {
   margin: 0;
@@ -648,7 +660,14 @@ window.__ModuleLoader__.load({
 
       return h(
         'div',
-        { className: 'dshSessionDelete_overlay', onMouseDown: onClose },
+        {
+          className: 'dshSessionDelete_overlay',
+          // A click inside the dialog bubbles here too; only the backdrop itself
+          // is a dismissal target.
+          onMouseDown: (event) => {
+            if (event.target === event.currentTarget) onClose()
+          },
+        },
         h(
           'div',
           {
@@ -1142,6 +1161,14 @@ window.__ModuleLoader__.load({
           }),
         )
         body.push(h('p', { id: hintId, className: 'dshSessionDelete_note', key: 'hint' }, t('dialog.confirmHint')))
+      }
+      // Be explicit about what this operation does not remove. Harness attachments
+      // are shared content-addressed objects, so deleting one session must not
+      // unlink files that another session may still reference.
+      if (!loading && !unsupported && outcome === undefined) {
+        body.push(
+          h('p', { role: 'note', className: 'dshSessionDelete_fileNote', key: 'filesRetained' }, t('dialog.filesRetained')),
+        )
       }
       if (deleting) {
         body.push(h('div', { role: 'status', className: 'dshSessionDelete_status', key: 'pending' }, t(pendingKey)))
