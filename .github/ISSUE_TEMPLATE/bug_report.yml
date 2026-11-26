@@ -1,0 +1,78 @@
+name: Bug report
+description: Report a reproducible problem with Session Delete
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please remove conversation content, session identifiers, access tokens,
+        private paths and attachment data from all logs before submitting.
+        For security-sensitive issues, use the private reporting instructions
+        in SECURITY.md instead of this public form.
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Session Delete version
+      placeholder: "0.6.0"
+    validations:
+      required: true
+  - type: input
+    id: harness-version
+    attributes:
+      label: DeepSeek Harness version
+      placeholder: "0.2.3-alpha.2"
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: Node.js version
+      placeholder: "v24.22.3"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and version
+      placeholder: "Windows 11 / macOS / Linux"
+    validations:
+      required: true
+  - type: dropdown
+    id: install-source
+    attributes:
+      label: Installation source
+      options:
+        - Plugin market
+        - npm / dsh plugin add
+        - Local directory
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the smallest sequence that reproduces the issue.
+      placeholder: "1. Open a stored conversation..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Optional. Remove conversation text, session ids, private paths, tokens and file contents.
+      render: text
+    validations:
+      required: false
