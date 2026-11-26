@@ -1550,6 +1550,30 @@ test('deleting a trashed session again reports the same trash entry', async () =
   assert.deepEqual(h.calls.emitted, [['api-session/removed', SESSION_ID]], 'the removal is announced once')
 })
 
+test('trash listing examines at most its bounded number of raw directory entries', { timeout: 15000 }, async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  await mkdir(store.trashRoot, { recursive: true })
+  for (let index = 0; index < 501; index += 1) {
+    const entryName = 'bounded-entry-' + String(index).padStart(4, '0')
+    const entryPath = join(store.trashRoot, entryName)
+    await mkdir(entryPath)
+    await writeFile(
+      join(entryPath, 'meta.json'),
+      JSON.stringify({
+        sessionId: 'bounded-session-' + index,
+        originalPath: store.dir,
+        deletedAt: new Date().toISOString(),
+      }),
+    )
+  }
+
+  const h = harness({ ...storedTarget(store), config: { trashRoot: store.trashRoot } })
+  const entries = await h.service.readTrashEntries({ recoverMoves: false })
+  assert.equal(entries.length, 500, 'the 501st raw entry must not be examined')
+})
+
+
 test('the trash listing reports every entry, newest first', async () => {
   const store = await makeStore()
   const second = await addSecondSession(store)
