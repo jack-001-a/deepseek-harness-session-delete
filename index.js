@@ -533,7 +533,7 @@ class SessionDeleteService {
           token: randomUUID(),
           createdAt: Date.now(),
         }
-        const reclaimContents = `${JSON.stringify(reclaimOwner)}\\n`
+        const reclaimContents = `${JSON.stringify(reclaimOwner)}\n`
         let reclaimDirectory = lockPath
         let reclaimAcquired = false
         try {
