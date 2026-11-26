@@ -561,7 +561,7 @@ test('permanent mode requires the typed title before the destructive action', as
   const dialog = dialogElement(form)
   assert.match(dialog.props.title, /permanently/)
   assert.match(text(dialog.props.description), /cannot be undone/)
-  assert.match(text(findByRole(form, 'note')), /上传的附件和工作区中创建的文件都会保留/)
+  assert.match(text(findByRole(form, 'note')), /Uploaded attachments and files created.*kept/i)
   const confirm = footerButtons(form)[1]
   assert.equal(text(confirm), 'Delete permanently')
   assert.equal(confirm.props.disabled, true, 'the destructive action waits for the typed title')
@@ -573,6 +573,17 @@ test('permanent mode requires the typed title before the destructive action', as
   await settle()
 
   assert.equal(footerButtons(form)[1].props.disabled, false, 'the typed title enables the action')
+})
+
+test('the file retention notice is localized in Chinese', async () => {
+  const { plugin, React } = await loadPlugin()
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  const { form } = renderDialog(registrations, dictionaries, React, 'zh', {
+    describeDeletion: async () => DESCRIBE_TRASH,
+  })
+  await settle()
+
+  assert.match(text(findByRole(form, 'note')), /上传的附件和工作区中创建的文件都会保留/)
 })
 
 test('the typed confirmation forgives surrounding and repeated whitespace', async () => {
