@@ -55,6 +55,13 @@ same bounded, descriptor-based reader. An oversized or replaced owner record
 is treated as unverifiable, so the lock is never reclaimed based on partial or
 untrusted metadata.
 
+Cross-device restore recovery compares the Trash-side and restored artifact
+trees without loading whole files or materializing complete directory listings.
+Regular files are compared in 64 KiB chunks with descriptor/path identity checks;
+one comparison is limited to 10,000 entries and 128 directory levels. If a tree
+exceeds either budget or changes during comparison, recovery fails closed and
+preserves both copies for inspection.
+
 ## Delete transaction
 
 The public delete(sessionId) call is serialized through a per-session
