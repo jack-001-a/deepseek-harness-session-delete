@@ -305,6 +305,11 @@ function renderDialog(registrations, dictionaries, React, locale, options = {}) 
   return { form, pending, injected }
 }
 
+/** Read the body/footer content supplied through the Host Modal's props. */
+function trashManagerText(form) {
+  return text({ children: [form.tree.props?.children, form.tree.props?.footer] })
+}
+
 /**
  * The dialog element the form renders, whatever implementation is in use.
  * @param form - the inner form's mount.
@@ -564,8 +569,8 @@ test('the Trash manager restores an entry and reloads its listing', async () => 
   await settle()
 
   assert.deepEqual(restored, ['session-a'])
-  assert.match(text(form.tree), /The conversation was restored/)
-  assert.match(text(form.tree), /Trash is empty/)
+  assert.match(trashManagerText(form), /The conversation was restored/)
+  assert.match(trashManagerText(form), /Trash is empty/)
 })
 
 test('permanent purge in the Trash manager requires the exact session id', async () => {
@@ -626,7 +631,7 @@ test('permanent purge in the Trash manager requires the exact session id', async
   await settle()
 
   assert.deepEqual(purged, ['session-to-purge'])
-  assert.match(text(form.tree), /permanently deleted/i)
+  assert.match(trashManagerText(form), /permanently deleted/i)
 })
 
 test('a failed Trash listing is reported instead of shown as empty', async () => {
