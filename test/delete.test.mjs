@@ -10,7 +10,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { appendFile, mkdtemp, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { appendFile, link, mkdtemp, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -127,6 +127,37 @@ async function makeStore() {
  * @param store - the paths of the stored session.
  * @returns the harness options for that session.
  */
+/**
+ * Create representative provider-owned attachment paths next to the session
+ * store. The Host attachment provider owns these objects; Session Delete must
+ * never move or remove them during Trash, purge, or permanent session delete.
+ */
+async function makeAttachmentFixtures(store) {
+  const root = join(store.base, 'attachments', 'v1')
+  const imageDigest = 'a'.repeat(64)
+  const fileDigest = 'b'.repeat(64)
+  const imagePath = join(root, 'objects', imageDigest.slice(0, 2), imageDigest)
+  const fileObjectPath = join(root, 'file-objects', fileDigest.slice(0, 2), fileDigest)
+  const aliasPath = join(root, 'files', fileDigest.slice(0, 2), fileDigest, 'report.pdf')
+
+  await mkdir(join(root, 'objects', imageDigest.slice(0, 2)), { recursive: true })
+  await mkdir(join(root, 'file-objects', fileDigest.slice(0, 2)), { recursive: true })
+  await mkdir(join(root, 'files', fileDigest.slice(0, 2), fileDigest), { recursive: true })
+  await writeFile(imagePath, 'normalized image object')
+  await writeFile(fileObjectPath, 'verbatim file object')
+  await link(fileObjectPath, aliasPath)
+
+  return { imagePath, fileObjectPath, aliasPath }
+}
+
+/** Assert that both durable objects and the generic-file hard-link alias survive. */
+async function assertAttachmentFixturesIntact(fixtures) {
+  assert.equal(await readFile(fixtures.imagePath, 'utf8'), 'normalized image object')
+  assert.equal(await readFile(fixtures.fileObjectPath, 'utf8'), 'verbatim file object')
+  assert.equal(await readFile(fixtures.aliasPath, 'utf8'), 'verbatim file object')
+  assert.equal((await stat(fixtures.fileObjectPath)).ino, (await stat(fixtures.aliasPath)).ino)
+}
+
 function storedTarget(store) {
   return {
     root: store.root,
@@ -329,6 +360,33 @@ test('permanent mode: removes the artifact outright', async () => {
   assert.deepEqual(sequence, ['detach', 'unpin', 'unarchive', 'cache'])
   assert.equal(cache.has(SESSION_ID), false)
   assert.deepEqual(h.calls.emitted, [['api-session/removed', SESSION_ID]])
+})
+
+test('Trash and later purge leave provider-owned attachment objects and aliases intact', async () => {
+  const store = await makeStore()
+  const attachments = await makeAttachmentFixtures(store)
+  const h = harness({ ...storedTarget(store) })
+
+  const deleted = await h.service.delete(SESSION_ID)
+  assert.equal(deleted.trashed, true)
+  await assertAttachmentFixturesIntact(attachments)
+
+  const purged = await h.service.purge(SESSION_ID)
+  assert.deepEqual(purged, { sessionId: SESSION_ID, purged: true })
+  await assertAttachmentFixturesIntact(attachments)
+})
+
+test('permanent session deletion leaves provider-owned attachment objects and aliases intact', async () => {
+  const store = await makeStore()
+  const attachments = await makeAttachmentFixtures(store)
+  const h = harness({
+    ...storedTarget(store),
+    config: { mode: 'permanent' },
+  })
+
+  const deleted = await h.service.delete(SESSION_ID)
+  assert.equal(deleted.purged, true)
+  await assertAttachmentFixturesIntact(attachments)
 })
 
 test('unknown session: fails with a stable not-found code and touches nothing', async () => {
