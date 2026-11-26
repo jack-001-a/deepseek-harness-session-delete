@@ -25,6 +25,7 @@
  * a local directory resolves its imports from that directory, so every import
  * would have to be a Node built-in.
  */
+import { Buffer } from 'node:buffer'
 import { constants as fsConstants } from 'node:fs'
 import { appendFile, cp, lstat, mkdir, open, readFile, readlink, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
@@ -107,6 +108,8 @@ const PROCESS_LOCK_RECLAIM_FILE = '.reclaim'
 const HOST_WRITE_LOCK_FILE_NAME = 'session.lock'
 /** Most audit records the trail file keeps before it is trimmed. */
 const AUDIT_MAX_RECORDS = 1000
+const AUDIT_MAX_BYTES = 1024 * 1024
+const AUDIT_MAX_RECORD_BYTES = 8 * 1024
 /** Minimum gap between two retention sweeps. */
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000
 /** Most characters of a session id kept in a trash entry name. */
@@ -2733,8 +2736,13 @@ class SessionDeleteService {
       ...(extra.partial === true ? { partial: true } : {}),
     }
     const file = join(root, AUDIT_FILE_NAME)
+    const line = JSON.stringify(record) + '\n'
+    const recordBytes = Buffer.byteLength(line, 'utf8')
     try {
       await this.withAuditLock(async () => {
+        if (recordBytes > AUDIT_MAX_RECORD_BYTES) {
+          throw new Error('Refusing an audit record larger than 8 KiB.')
+        }
         await mkdir(root, { recursive: true })
         await assertSafeAuditPath(root, file)
         const flags = fsConstants.O_WRONLY | fsConstants.O_APPEND |
@@ -2745,7 +2753,10 @@ class SessionDeleteService {
           if (!fileStat.isFile() || (Number.isFinite(fileStat.nlink) && fileStat.nlink > 1)) {
             throw new Error('Refusing to append to an unsafe audit trail file.')
           }
-          await handle.writeFile(JSON.stringify(record) + '\n', 'utf8')
+          if (fileStat.size + recordBytes > AUDIT_MAX_BYTES) {
+            throw new Error('Audit trail reached its 1 MiB storage limit; preserving existing records.')
+          }
+          await handle.writeFile(line, 'utf8')
         } finally {
           await handle.close()
         }
@@ -2809,7 +2820,20 @@ class SessionDeleteService {
       if (!fileStat.isFile() || (Number.isFinite(fileStat.nlink) && fileStat.nlink > 1)) {
         throw new Error('Refusing to read an unsafe audit trail file.')
       }
-      return await handle.readFile('utf8')
+      if (fileStat.size > AUDIT_MAX_BYTES) {
+        throw new Error(`Audit trail exceeds its ${AUDIT_MAX_BYTES / 1024 / 1024} MiB read limit.`)
+      }
+      const bytes = Buffer.allocUnsafe(AUDIT_MAX_BYTES + 1)
+      let total = 0
+      while (total < bytes.length) {
+        const { bytesRead } = await handle.read(bytes, total, bytes.length - total, null)
+        if (bytesRead === 0) break
+        total += bytesRead
+      }
+      if (total > AUDIT_MAX_BYTES) {
+        throw new Error(`Audit trail grew beyond its ${AUDIT_MAX_BYTES / 1024 / 1024} MiB read limit.`)
+      }
+      return bytes.subarray(0, total).toString('utf8')
     } catch {
       return undefined
     } finally {
