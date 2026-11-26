@@ -45,7 +45,7 @@ another conversation.
 The checkbox in the reference design therefore cannot safely mean “unlink all
 files used by this conversation.” This plugin still does not unlink attachments
 or offer a file-cleanup checkbox. The plugin now recognizes an
-optional Host callback, `fileUploads.onSessionPermanentlyPurged(sessionId)`, and
+optional Host callback, `fileUploads.onSessionPermanentlyPurged(sessionId)`,
 which is invoked only after a Session artifact has been irreversibly removed
 (permanent mode, explicit Trash purge, or retention sweep). Moving an artifact
 to Trash and restoring it do not release attachment owners. A callback failure
