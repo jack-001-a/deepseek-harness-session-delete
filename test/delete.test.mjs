@@ -1716,6 +1716,33 @@ test('different trash mutations for one session are serialized', async () => {
   assert.deepEqual(events, ['restore:start', 'restore:end', 'purge:start'])
 })
 
+test('a queued trash mutation proceeds after the previous mutation rejects', async () => {
+  const h = harness()
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  let started
+  const startedGate = new Promise((resolve) => { started = resolve })
+  const events = []
+  const first = h.service.runTrashOperation('purge', SESSION_ID, async () => {
+    events.push('purge:start')
+    started()
+    await gate
+    events.push('purge:failed')
+    throw new Error('simulated purge failure')
+  })
+  const second = h.service.runTrashOperation('restore', SESSION_ID, async () => {
+    events.push('restore:start')
+    return 'restored'
+  })
+
+  await startedGate
+  assert.deepEqual(events, ['purge:start'])
+  release()
+  await assert.rejects(first, /simulated purge failure/)
+  assert.equal(await second, 'restored')
+  assert.deepEqual(events, ['purge:start', 'purge:failed', 'restore:start'])
+})
+
 test('same trash mutation joins the in-flight operation', async () => {
   const h = harness()
   let release
