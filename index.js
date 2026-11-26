@@ -106,6 +106,8 @@ const PROCESS_LOCK_WAIT_MS = 15000
 const PROCESS_LOCK_POLL_MS = 50
 /** Lock owner metadata stored inside each atomically-created lock directory. */
 const PROCESS_LOCK_OWNER_FILE = '.owner.json'
+/** Small JSON lock metadata is capped before parsing to bound local lock reads. */
+const PROCESS_LOCK_OWNER_MAX_BYTES = 4 * 1024
 /** POSIX JSONL write-lease inode; keep it stable while a write handle is held. */
 const HOST_WRITE_LOCK_FILE_NAME = 'session.lock'
 /** Most audit records the trail file keeps before it is trimmed. */
@@ -599,7 +601,11 @@ class SessionDeleteService {
   /** Read and validate lock metadata without treating malformed state as stale. */
   async readProcessLockOwner(lockPath) {
     try {
-      const owner = JSON.parse(await readFile(join(lockPath, PROCESS_LOCK_OWNER_FILE), 'utf8'))
+      const owner = JSON.parse(await readBoundedTransactionFile(
+        join(lockPath, PROCESS_LOCK_OWNER_FILE),
+        PROCESS_LOCK_OWNER_MAX_BYTES,
+        'process lock owner metadata',
+      ))
       if (
         owner === null ||
         typeof owner !== 'object' ||
