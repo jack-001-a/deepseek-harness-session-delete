@@ -454,7 +454,7 @@ class SessionDeleteService {
       await mkdir(lockPath)
       const owner = { pid: process.pid, host: hostname(), token: randomUUID(), createdAt: Date.now() }
       try {
-        await writeFile(join(lockPath, PROCESS_LOCK_OWNER_FILE), `${JSON.stringify(owner)}\\n`, { flag: 'wx' })
+        await writeFile(join(lockPath, PROCESS_LOCK_OWNER_FILE), `${JSON.stringify(owner)}\n`, { flag: 'wx' })
       } catch (error) {
         // Never remove the canonical path blindly here: if ownership changed
         // between mkdir and this failure, recursive removal could erase a
@@ -2631,7 +2631,7 @@ class SessionDeleteService {
     try {
       await this.withAuditLock(async () => {
         await mkdir(root, { recursive: true })
-        await appendFile(file, `${JSON.stringify(record)}\\n`, 'utf8')
+        await appendFile(file, `${JSON.stringify(record)}\n`, 'utf8')
         // The cached count is process-local. Another Harness process may have
         // appended since this instance last wrote, so refresh it while holding
         // the shared audit lock before applying the bounded-retention policy.
