@@ -527,7 +527,7 @@ class SessionDeleteService {
         throw new SessionDeleteError(
           'session-delete/lock-timeout',
           `sessionDelete: another process holds the operation lock for "${label}", or its ownership cannot be verified; no filesystem changes were made`,
-          { lockPath, ownerPid: owner?.pid, ownerHost: owner?.host },
+          { sessionId: label, lockPath, ownerPid: owner?.pid, ownerHost: owner?.host },
         )
       }
       await delay(PROCESS_LOCK_POLL_MS)
