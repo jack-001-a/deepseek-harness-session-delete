@@ -101,6 +101,8 @@ const PROCESS_LOCK_WAIT_MS = 15000
 const PROCESS_LOCK_POLL_MS = 50
 /** Lock owner metadata stored inside each atomically-created lock directory. */
 const PROCESS_LOCK_OWNER_FILE = '.owner.json'
+/** Exclusive sentinel that serializes stale-lock reclamation attempts. */
+const PROCESS_LOCK_RECLAIM_FILE = '.reclaim'
 /** POSIX JSONL write-lease inode; keep it stable while a write handle is held. */
 const HOST_WRITE_LOCK_FILE_NAME = 'session.lock'
 /** Most audit records the trail file keeps before it is trimmed. */
@@ -560,36 +562,73 @@ class SessionDeleteService {
 
       const owner = await this.readProcessLockOwner(lockPath)
       if (owner !== undefined && owner.host === hostname() && !this.isProcessAlive(owner.pid)) {
-        // Rename is the atomic claim on a dead lock. Immediately create our
-        // replacement at the canonical path before yielding again; otherwise
-        // a second stale-lock observer could rename the replacement and split
-        // ownership between two live processes.
-        const quarantine = `${lockPath}.stale-${randomUUID()}`
+        // Claim a sentinel inside the observed lock directory before renaming
+        // it. Delayed observers of the same dead owner cannot rename a live
+        // replacement after another process has reclaimed the canonical path.
+        const reclaimPath = join(lockPath, PROCESS_LOCK_RECLAIM_FILE)
+        const reclaimOwner = {
+          pid: process.pid,
+          host: hostname(),
+          token: randomUUID(),
+          createdAt: Date.now(),
+        }
+        const reclaimContents = JSON.stringify(reclaimOwner) + '\n'
+        let reclaimDirectory = lockPath
+        let reclaimAcquired = false
         try {
-          await rename(lockPath, quarantine)
-          const movedOwner = await this.readProcessLockOwner(quarantine)
-          if (movedOwner?.token === owner.token && movedOwner.pid === owner.pid && !this.isProcessAlive(owner.pid)) {
-            try {
-              const release = await claim()
-              await rm(quarantine, { recursive: true, force: true }).catch((error) => {
-                this.ctx.logger?.warn(`sessionDelete: removing stale lock quarantine "${quarantine}" failed: ${String(error)}`)
-              })
-              return release
-            } catch (error) {
-              // Another contender may have won the canonical path between
-              // rename and mkdir. Keep the quarantined directory for review.
-              if (error?.code !== 'EEXIST') throw error
-            }
-          } else {
-            this.ctx.logger?.warn(`sessionDelete: stale lock metadata changed for "${label}"; preserved "${quarantine}"`)
-          }
+          await writeFile(reclaimPath, reclaimContents, { flag: 'wx', mode: 0o600 })
+          reclaimAcquired = true
         } catch (error) {
-          if (error?.code !== 'ENOENT' && error?.code !== 'EEXIST') {
-            this.ctx.logger?.warn(`sessionDelete: reclaiming a dead lock for "${label}" failed: ${String(error)}`)
+          if (error?.code !== 'EEXIST' && error?.code !== 'ENOENT') throw error
+        }
+
+        if (reclaimAcquired) {
+          try {
+            const currentOwner = await this.readProcessLockOwner(lockPath)
+            if (
+              currentOwner?.token === owner.token &&
+              currentOwner.pid === owner.pid &&
+              currentOwner.host === owner.host &&
+              !this.isProcessAlive(currentOwner.pid)
+            ) {
+              const quarantine = lockPath + '.stale-' + randomUUID()
+              await rename(lockPath, quarantine)
+              reclaimDirectory = quarantine
+              const movedOwner = await this.readProcessLockOwner(quarantine)
+              if (
+                movedOwner?.token === owner.token &&
+                movedOwner.pid === owner.pid &&
+                movedOwner.host === owner.host &&
+                !this.isProcessAlive(movedOwner.pid)
+              ) {
+                try {
+                  const release = await claim()
+                  await rm(quarantine, { recursive: true, force: true }).catch((error) => {
+                    this.ctx.logger?.warn('sessionDelete: removing stale lock quarantine "' + quarantine + '" failed: ' + String(error))
+                  })
+                  return release
+                } catch (error) {
+                  if (error?.code !== 'EEXIST') throw error
+                }
+              } else {
+                this.ctx.logger?.warn('sessionDelete: stale lock metadata changed for "' + label + '"; preserved "' + quarantine + '"')
+              }
+            }
+          } catch (error) {
+            if (error?.code !== 'ENOENT' && error?.code !== 'EEXIST') {
+              this.ctx.logger?.warn('sessionDelete: reclaiming a dead lock for "' + label + '" failed: ' + String(error))
+            }
+          } finally {
+            const markerPath = join(reclaimDirectory, PROCESS_LOCK_RECLAIM_FILE)
+            const markerContents = await readFile(markerPath, 'utf8').catch(() => undefined)
+            if (markerContents === reclaimContents) {
+              await rm(markerPath, { force: true }).catch((error) => {
+                this.ctx.logger?.warn('sessionDelete: removing stale-lock reclaim marker "' + markerPath + '" failed: ' + String(error))
+              })
+            }
           }
         }
       }
-
       if (Date.now() - startedAt >= PROCESS_LOCK_WAIT_MS) {
         throw new SessionDeleteError(
           'session-delete/lock-timeout',
