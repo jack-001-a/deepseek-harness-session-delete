@@ -27,7 +27,7 @@
  */
 import { Buffer } from 'node:buffer'
 import { constants as fsConstants } from 'node:fs'
-import { appendFile, cp, lstat, mkdir, open, opendir, readFile, readlink, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { appendFile, cp, lstat, mkdir, open, opendir, readFile, readlink, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
