@@ -2646,7 +2646,7 @@ class SessionDeleteService {
     const recordBytes = Buffer.byteLength(line, 'utf8')
     try {
       if (recordBytes > AUDIT_MAX_RECORD_BYTES) {
-        throw new Error(`Refusing an audit record larger than ${AUDIT_MAX_RECORD_BYTES} bytes.`)
+        throw new Error(`Refusing an audit record larger than ${AUDIT_MAX_RECORD_BYTES / 1024} KiB.`)
       }
       await mkdir(root, { recursive: true })
       await assertSafeAuditPath(root, file)
@@ -2661,7 +2661,7 @@ class SessionDeleteService {
           throw new Error('Refusing to append to an unsafe audit trail file.')
         }
         if (fileStat.size + recordBytes > AUDIT_MAX_BYTES) {
-          throw new Error(`Audit trail reached its ${AUDIT_MAX_BYTES}-byte storage limit; preserving existing records.`)
+          throw new Error(`Audit trail reached its ${AUDIT_MAX_BYTES / 1024 / 1024} MiB storage limit; preserving existing records.`)
         }
         await handle.writeFile(line, 'utf8')
       } finally {
@@ -2738,7 +2738,7 @@ class SessionDeleteService {
         throw new Error('Refusing to read an unsafe audit trail file.')
       }
       if (fileStat.size > AUDIT_MAX_BYTES) {
-        throw new Error(`Audit trail exceeds its ${AUDIT_MAX_BYTES}-byte read limit.`)
+        throw new Error(`Audit trail exceeds its ${AUDIT_MAX_BYTES / 1024 / 1024} MiB read limit.`)
       }
 
       // Bound the actual read too: another process may append after fstat.
@@ -2750,7 +2750,7 @@ class SessionDeleteService {
         total += bytesRead
       }
       if (total > AUDIT_MAX_BYTES) {
-        throw new Error(`Audit trail grew beyond its ${AUDIT_MAX_BYTES}-byte read limit.`)
+        throw new Error(`Audit trail grew beyond its ${AUDIT_MAX_BYTES / 1024 / 1024} MiB read limit.`)
       }
       return bytes.subarray(0, total).toString('utf8')
     } catch {
