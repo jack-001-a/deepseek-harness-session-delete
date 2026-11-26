@@ -123,11 +123,6 @@ async function makeStore() {
 }
 
 /**
- * One stored session whose locator points at the session directory's log.
- * @param store - the paths of the stored session.
- * @returns the harness options for that session.
- */
-/**
  * Create representative provider-owned attachment paths next to the session
  * store. The Host attachment provider owns these objects; Session Delete must
  * never move or remove them during Trash, purge, or permanent session delete.
@@ -158,6 +153,11 @@ async function assertAttachmentFixturesIntact(fixtures) {
   assert.equal((await stat(fixtures.fileObjectPath)).ino, (await stat(fixtures.aliasPath)).ino)
 }
 
+/**
+ * One stored session whose locator points at the session directory's log.
+ * @param store - the paths of the stored session.
+ * @returns the harness options for that session.
+ */
 function storedTarget(store) {
   return {
     root: store.root,
