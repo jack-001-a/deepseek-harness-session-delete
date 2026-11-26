@@ -8,6 +8,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
+- Add an optional Host attachment-owner release notification after a Session artifact is permanently removed. Trash and Restore preserve owners; permanent-mode deletion, explicit purge, and retention sweep notify only after artifact removal.
+- Add regression coverage for successful notification ordering and fail-soft behavior when the Host provider cannot release owner rows.
+
 - Add a reference-aware attachment GC RFC and a concrete Host Attachment Reference API proposal covering leased writes, durable Session owners, fork/Trash/purge integration, cross-process coordination, recovery and test gates.
 - Add regression tests proving Trash, purge and permanent session deletion leave provider-owned image objects, generic-file objects and file aliases untouched.
 - Add a test-only attachment reference model and 18 conformance scenarios for leases, Session owners, forks, Trash/Restore/Purge, read leases, index completeness, hard-link safety, mutation barriers and dry-run collection.
@@ -33,6 +36,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Security
 
+- Keep physical attachment GC disabled: owner-release notifications never unlink provider objects, and failed notifications intentionally leave conservative stale references.
 - Keep attachment deletion unavailable until the Host can prove an object is
   unreferenced across sessions, forks, restores and in-flight uploads.
 
