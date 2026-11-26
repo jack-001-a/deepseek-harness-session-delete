@@ -10,6 +10,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 - Add a reference-aware attachment GC RFC and a concrete Host Attachment Reference API proposal covering leased writes, durable Session owners, fork/Trash/purge integration, cross-process coordination, recovery and test gates.
 - Add regression tests proving Trash, purge and permanent session deletion leave provider-owned image objects, generic-file objects and file aliases untouched.
+- Add a test-only attachment reference model and 17 conformance scenarios for leases, Session owners, forks, Trash/Restore/Purge, read leases, index completeness, hard-link safety, mutation barriers and dry-run collection.
 
 - Add a sidebar Trash manager with live item count, session-ID search, restore
   and finish-restore actions, and exact-ID confirmation before permanent purge.
