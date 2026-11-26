@@ -24,6 +24,13 @@ only; do not add runtime dependencies without checking the local bundle
 resolution constraints described in the module header.
 
 ## Audit trail integrity
+The trail is also capped at 1 MiB on disk, and each serialized record
+is limited to 8 KiB. Appends that would exceed either budget are skipped
+without affecting the Session mutation. Reads enforce the same 1 MiB ceiling
+using a bounded file-handle read, including when another process appends while
+the file is being read.
+
+
 
 The metadata-only audit trail is still a filesystem write surface. Before
 reading or writing it, the Host requires the Trash root to be a real directory
