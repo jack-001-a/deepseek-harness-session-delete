@@ -8,7 +8,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
-- Add a reference-aware attachment GC RFC documenting the Host/provider capability gap, staged-upload ownership, cross-process coordination, hard-link handling and phased delivery plan.
+- Add a reference-aware attachment GC RFC and a concrete Host Attachment Reference API proposal covering leased writes, durable Session owners, fork/Trash/purge integration, cross-process coordination, recovery and test gates.
 - Add regression tests proving Trash, purge and permanent session deletion leave provider-owned image objects, generic-file objects and file aliases untouched.
 
 - Add a sidebar Trash manager with live item count, session-ID search, restore

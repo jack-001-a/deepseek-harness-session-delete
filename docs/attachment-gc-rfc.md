@@ -51,6 +51,15 @@ Attachment IDs are opaque. A path helper can locate a known reference, but it do
 
 A missing, malformed, inaccessible, or unrecognized session record is not evidence that its attachments are unused. Nor is a missing staged receipt proof that the related object has no other owner. A collector that cannot prove completeness must skip collection for the affected scope.
 
+## Detailed Host API proposal
+
+The companion [Host Attachment Reference API Proposal](host-attachment-reference-api-proposal.md)
+turns the capability requirements below into proposed TypeScript contracts,
+lease-transfer semantics, Session/fork/Trash integration points, cross-process
+coordination rules, recovery behavior, and an implementation/test rollout.
+The API sketch is a proposal only; none of the Host methods are claimed to exist
+in the current Harness release.
+
 ## Required Host capability
 
 The design should be implemented as a provider-owned maintenance capability, coordinated by the Host lifecycle. The exact API names and payloads remain for the Harness maintainers to decide; the following are requirements, not declarations that the current Host already implements them.

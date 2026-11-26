@@ -54,9 +54,9 @@ per-session deletion lock does not coordinate concurrent uploads or another
 Harness process. A modification-time rule cannot close either gap.
 
 See [Reference-aware attachment GC RFC](attachment-gc-rfc.md) for the
-source-level findings, required Host/provider contracts, race model, alias
-handling, test gates, and a phased integration plan. This is a design proposal,
-not an implemented cleanup capability.
+source-level findings and [Host Attachment Reference API Proposal](host-attachment-reference-api-proposal.md)
+for concrete leased-write, Session-owner, fork, purge, and cross-process API
+sketches. Both are design proposals, not implemented cleanup capabilities.
 ## Current user-facing contract
 
 | Data | On moving a conversation to Trash | On permanent deletion/purge |

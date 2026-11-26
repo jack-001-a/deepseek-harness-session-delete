@@ -117,7 +117,8 @@ files. Harness attachments are content-addressed and may be shared by several
 sessions. The plugin does not scan or unlink provider-owned objects: the Host
 attachment seam has no complete reference inventory or collection operation,
 and staged uploads can be durable before an event commits. See [Attachment
-lifecycle](attachment-lifecycle.md) and the [reference-aware GC RFC](attachment-gc-rfc.md)
+lifecycle](attachment-lifecycle.md), the [reference-aware GC RFC](attachment-gc-rfc.md),
+and the [Host Attachment Reference API Proposal](host-attachment-reference-api-proposal.md)
 before proposing any change to this behavior.
 
 ## Trash manager UI
