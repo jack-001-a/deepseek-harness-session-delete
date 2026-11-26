@@ -10,6 +10,7 @@ reviewable before either side is changed.
 |---|---|---|
 | Session selection | client.js | Adds the sidebar menu action and row action; captures the selected session id and display title |
 | Confirmation | client.js | Asks the Host for capabilities, explains Trash vs. permanent mode, confirms the target, and reports the result |
+| Trash manager | client.js | Lists Host Trash entries from the sidebar footer, searches session IDs, restores entries, and guards permanent purge with exact-ID confirmation |
 | Persistence mutation | index.js | Locates and moves/removes the session artifact; coordinates the Host write lease |
 | Workspace state | index.js | Captures and releases membership, order, pin and archive state; replays it on restore |
 | Recovery | index.js | Reconciles interrupted Trash/restore transactions at startup and on later operations |
