@@ -438,7 +438,14 @@ class SessionDeleteService {
    * intentionally leaves a fail-closed orphan for manual inspection.
    */
   async acquireProcessLock(sessionId) {
-    const lockPath = await this.processLockPath(sessionId)
+    return this.acquireProcessLockAt(await this.processLockPath(sessionId), sessionId)
+  }
+
+  /**
+   * Acquire one named cross-process lock using the same fail-closed protocol
+   * as session locks. The path is a dedicated namespace, not a session id.
+   */
+  async acquireProcessLockAt(lockPath, label) {
     const root = dirname(lockPath)
     await mkdir(root, { recursive: true })
     const startedAt = Date.now()
@@ -447,30 +454,32 @@ class SessionDeleteService {
       await mkdir(lockPath)
       const owner = { pid: process.pid, host: hostname(), token: randomUUID(), createdAt: Date.now() }
       try {
-        await writeFile(join(lockPath, PROCESS_LOCK_OWNER_FILE), `${JSON.stringify(owner)}\n`, { flag: 'wx' })
+        await writeFile(join(lockPath, PROCESS_LOCK_OWNER_FILE), `${JSON.stringify(owner)}\\n`, { flag: 'wx' })
       } catch (error) {
         // Never remove the canonical path blindly here: if ownership changed
         // between mkdir and this failure, recursive removal could erase a
         // different process's newly-claimed lock. An ownerless directory is
         // deliberately fail-closed and can be inspected by an operator.
         this.ctx.logger?.warn(
-          `sessionDelete: writing lock ownership for "${sessionId}" failed; the lock directory was preserved for inspection: ${String(error)}`,
+          `sessionDelete: writing lock ownership for "${label}" failed; the lock directory was preserved for inspection: ${String(error)}`,
         )
         throw error
       }
-      this.processLockTokens.set(sessionId, owner.token)
+      // Key by the canonical lock path so named locks cannot collide with a
+      // session id or with another internal coordination domain.
+      this.processLockTokens.set(lockPath, owner.token)
       return async () => {
         const current = await this.readProcessLockOwner(lockPath)
         if (current?.token !== owner.token || current.pid !== process.pid || current.host !== owner.host) {
-          this.ctx.logger?.warn(`sessionDelete: lock ownership changed for "${sessionId}"; the lock was left untouched`)
+          this.ctx.logger?.warn(`sessionDelete: lock ownership changed for "${label}"; the lock was left untouched`)
           return
         }
         try {
           await rm(lockPath, { recursive: true })
         } catch (error) {
-          this.ctx.logger?.warn(`sessionDelete: releasing the lock for "${sessionId}" failed: ${String(error)}`)
+          this.ctx.logger?.warn(`sessionDelete: releasing the lock for "${label}" failed: ${String(error)}`)
         } finally {
-          if (this.processLockTokens.get(sessionId) === owner.token) this.processLockTokens.delete(sessionId)
+          if (this.processLockTokens.get(lockPath) === owner.token) this.processLockTokens.delete(lockPath)
         }
       }
     }
@@ -505,11 +514,11 @@ class SessionDeleteService {
               if (error?.code !== 'EEXIST') throw error
             }
           } else {
-            this.ctx.logger?.warn(`sessionDelete: stale lock metadata changed for "${sessionId}"; preserved "${quarantine}"`)
+            this.ctx.logger?.warn(`sessionDelete: stale lock metadata changed for "${label}"; preserved "${quarantine}"`)
           }
         } catch (error) {
           if (error?.code !== 'ENOENT' && error?.code !== 'EEXIST') {
-            this.ctx.logger?.warn(`sessionDelete: reclaiming a dead lock for "${sessionId}" failed: ${String(error)}`)
+            this.ctx.logger?.warn(`sessionDelete: reclaiming a dead lock for "${label}" failed: ${String(error)}`)
           }
         }
       }
@@ -517,8 +526,8 @@ class SessionDeleteService {
       if (Date.now() - startedAt >= PROCESS_LOCK_WAIT_MS) {
         throw new SessionDeleteError(
           'session-delete/lock-timeout',
-          `sessionDelete: another process holds the operation lock for "${sessionId}", or its ownership cannot be verified; no filesystem changes were made`,
-          { sessionId, lockPath, ownerPid: owner?.pid, ownerHost: owner?.host },
+          `sessionDelete: another process holds the operation lock for "${label}", or its ownership cannot be verified; no filesystem changes were made`,
+          { lockPath, ownerPid: owner?.pid, ownerHost: owner?.host },
         )
       }
       await delay(PROCESS_LOCK_POLL_MS)
@@ -528,6 +537,17 @@ class SessionDeleteService {
   /** Run a session mutation while holding its cross-process filesystem lock. */
   async withProcessLock(sessionId, run) {
     const release = await this.acquireProcessLock(sessionId)
+    try {
+      return await run()
+    } finally {
+      await release()
+    }
+  }
+
+  /** Serialize audit append-and-trim across every process sharing the store. */
+  async withAuditLock(run) {
+    const lockPath = join(await this.processLockRoot(), 'audit-trail.lock')
+    const release = await this.acquireProcessLockAt(lockPath, 'audit trail')
     try {
       return await run()
     } finally {
@@ -2609,9 +2629,15 @@ class SessionDeleteService {
     }
     const file = join(root, AUDIT_FILE_NAME)
     try {
-      await mkdir(root, { recursive: true })
-      await appendFile(file, `${JSON.stringify(record)}\n`, 'utf8')
-      await this.trimAudit(file)
+      await this.withAuditLock(async () => {
+        await mkdir(root, { recursive: true })
+        await appendFile(file, `${JSON.stringify(record)}\\n`, 'utf8')
+        // The cached count is process-local. Another Harness process may have
+        // appended since this instance last wrote, so refresh it while holding
+        // the shared audit lock before applying the bounded-retention policy.
+        this.auditRecords = undefined
+        await this.trimAudit(file)
+      })
     } catch (error) {
       this.ctx.logger?.warn(`sessionDelete: writing the audit trail failed: ${String(error)}`)
     }
