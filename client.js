@@ -661,13 +661,13 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         {
-            className: 'dshSessionDelete_overlay',
-            // A click inside the dialog bubbles here too; only the backdrop itself
-            // is a dismissal target.
-            onMouseDown: (event) => {
-              if (event.target === event.currentTarget) onClose()
-            },
+          className: 'dshSessionDelete_overlay',
+          // A click inside the dialog bubbles here too; only the backdrop itself
+          // is a dismissal target.
+          onMouseDown: (event) => {
+            if (event.target === event.currentTarget) onClose()
           },
+        },
         h(
           'div',
           {
@@ -1165,7 +1165,7 @@ window.__ModuleLoader__.load({
       // Be explicit about what this operation does not remove. Harness attachments
       // are shared content-addressed objects, so deleting one session must not
       // unlink files that another session may still reference.
-      if (!unsupported && outcome === undefined) {
+      if (!loading && !unsupported && outcome === undefined) {
         body.push(
           h('p', { role: 'note', className: 'dshSessionDelete_fileNote', key: 'filesRetained' }, t('dialog.filesRetained')),
         )
