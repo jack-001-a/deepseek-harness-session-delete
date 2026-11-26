@@ -88,7 +88,7 @@ test('lease transfer is idempotent for the same owner and cannot be silently sto
   assert.deepEqual(model.commitLease(leaseId, owner), { committed: true, idempotent: true })
   assert.throws(
     () => model.commitLease(leaseId, sessionOwner('session-b')),
-    /unknown or released lease/,
+    /different owner/,
   )
   assert.equal(model.objectSnapshot(IMAGE.objectId).ownerCount, 1)
 })
@@ -131,6 +131,28 @@ test('fork creates independent child owners that survive parent purge', () => {
   assert.equal(model.hasOwner(IMAGE.objectId, sessionOwner('parent', 4, 'messages[3].image')), false)
   assert.equal(model.hasOwner(IMAGE.objectId, sessionOwner('child', 4, 'messages[3].image')), true)
   assert.equal(model.collect().objectCount, 0)
+})
+
+test('fork validates the complete inherited reference set before creating any child owners', () => {
+  const { model } = createModel()
+  model.publish({
+    objectId: IMAGE.objectId,
+    kind: 'image',
+    bytes: 128,
+    processId: 'host-a',
+  })
+  model.retainReference(IMAGE, sessionOwner('parent', 4, 'messages[3].image'))
+
+  assert.throws(() => model.retainFork({
+    childSessionId: 'child',
+    references: [
+      { reference: IMAGE, eventSeq: 4, slot: 'messages[3].image' },
+      { reference: { objectId: 'missing-object', kind: 'image' }, eventSeq: 5, slot: 'messages[4].image' },
+    ],
+  }), /unknown attachment reference in fork prefix/)
+
+  assert.equal(model.hasOwner(IMAGE.objectId, sessionOwner('child', 4, 'messages[3].image')), false)
+  assert.equal(model.indexStatus().state, 'incomplete')
 })
 
 test('Trash and Restore do not change attachment ownership', () => {
@@ -354,6 +376,6 @@ test('unknown references are rejected and never turned into collectible objects'
     () => model.retainReference({ objectId: 'missing', kind: 'image' }, sessionOwner('session-a')),
     /unknown attachment reference/,
   )
-  model.markIndexIncomplete('unresolved-reference')
+  assert.equal(model.indexStatus().state, 'incomplete', 'unknown references automatically poison the inventory')
   assert.equal(model.collect().state, 'incomplete')
 })
