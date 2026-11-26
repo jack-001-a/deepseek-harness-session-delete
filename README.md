@@ -43,10 +43,19 @@ sessions. Removing an object because one conversation was deleted could break
 another conversation.
 
 The checkbox in the reference design therefore cannot safely mean “unlink all
-files used by this conversation.” This plugin does not expose that destructive
-option until the Host provides reference-aware garbage collection. The exact
-current behavior and the requirements for a safe future implementation are in
-[Attachment lifecycle](docs/attachment-lifecycle.md), including the current Host capability gap, the [reference-aware GC RFC](docs/attachment-gc-rfc.md), the [Host Attachment Reference API Proposal](docs/host-attachment-reference-api-proposal.md), and the [executable attachment reference contract](docs/attachment-reference-conformance.md). The in-memory model and its tests are a semantic reference, not a production Host provider or a claim that GC is implemented.
+files used by this conversation.” This plugin still does not unlink attachments
+or offer a file-cleanup checkbox. The integration branch now recognizes an
+optional Host callback, `fileUploads.onSessionPermanentlyPurged(sessionId)`,
+which is invoked only after a Session artifact has been irreversibly removed
+(permanent mode, explicit Trash purge, or retention sweep). Moving an artifact
+to Trash and restoring it do not release attachment owners. A callback failure
+is logged as a safe retained-reference leak and does not turn a completed
+artifact deletion into a false failure. The matching Harness provider ledger
+is being developed separately; neither branch enables physical attachment GC.
+See [Attachment lifecycle](docs/attachment-lifecycle.md), the [reference-aware
+GC RFC](docs/attachment-gc-rfc.md), the [Host Attachment Reference API
+Proposal](docs/host-attachment-reference-api-proposal.md), and the [executable
+attachment reference contract](docs/attachment-reference-conformance.md).
 
 ## Trash and restore
 
@@ -439,7 +448,7 @@ DeepSeek Harness 只能归档会话、无法真正删除，日志会一直堆积
 
 **会被处理的**：会话日志目录（日志 + 锁文件，移入回收站）、投影缓存记录、工作区记账（成员关系/排序/置顶/归档标记）。
 
-**不会删的**：附件目录（按内容寻址、可能被多个会话共享）、工作区中由对话上传或创建的文件、临时 spill 文件、由该对话分叉出的子会话（确认框会提示数量）。确认框会明确说明附件和工作区文件会保留；当前 Harness 附件接口没有完整引用清单、上传租约和 Provider 所有的 GC 能力，因此本插件不会自行扫描或 unlink 附件。详见 [附件生命周期说明](docs/attachment-lifecycle.md)、[安全 GC 设计 RFC](docs/attachment-gc-rfc.md) 和 [Host 附件引用 API 提案](docs/host-attachment-reference-api-proposal.md)。
+**不会删的**：附件目录（按内容寻址、可能被多个会话共享）、工作区中由对话上传或创建的文件、临时 spill 文件、由该对话分叉出的子会话（确认框会提示数量）。当前集成分支增加了可选 Host 回调 `fileUploads.onSessionPermanentlyPurged(sessionId)`：仅在永久删除模式、手动永久清除或回收站保留期清理真正移除 Session artifact 后调用；移入回收站和还原都保留附件 owner。回调失败会记录警告并保留过量引用，不会把已经成功的日志删除报告成失败。该回调只释放引用记录，不会 unlink 附件；对应的 Harness Provider 引用账本仍在独立 PR 中开发，尚未开放物理 GC。详见 [附件生命周期说明](docs/attachment-lifecycle.md)、[安全 GC 设计 RFC](docs/attachment-gc-rfc.md) 和 [Host 附件引用 API 提案](docs/host-attachment-reference-api-proposal.md)。
 
 **错误码**：`active`（仍有运行中的工作）、`locked`（另一个 Harness 写入者仍持有租约）、`not-found`（已删除或不存在）、`io`（文件无法移动，未做任何改动）、`unsupported-store`（当前版本无法定位文件）、`unreadable`（日志无法读取）、`unsafe-path`（目标不在会话存储根目录内）、`trash-unavailable`、`conflict`、`invalid-request`（请求非法）。
 

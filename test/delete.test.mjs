@@ -63,6 +63,7 @@ function harness(options = {}) {
   const ctx = {
     sessions,
     sessionPersistence: persistence,
+    fileUploads: extra.fileUploads,
     waterfall: async (_name, _payload, base) => (options.activity ? options.activity : base()),
     parallel: async (_name, payload) => {
       calls.stopped.push(payload.sessionId)
@@ -344,7 +345,17 @@ test('permanent mode: removes the artifact outright', async () => {
   const h = harness({
     ...storedTarget(store),
     registry,
-    services: cacheServices(cache, () => sequence.push('cache')),
+    services: {
+      ...cacheServices(cache, () => sequence.push('cache')),
+      fileUploads: {
+        onSessionPermanentlyPurged: async (sessionId) => {
+          assert.equal(sessionId, SESSION_ID)
+          await assert.rejects(stat(store.log), (error) => error.code === 'ENOENT')
+          sequence.push('owners')
+          return true
+        },
+      },
+    },
     config: { mode: 'permanent' },
   })
 
@@ -357,22 +368,107 @@ test('permanent mode: removes the artifact outright', async () => {
   assert.equal(outcome.trashId, undefined)
   await assert.rejects(stat(store.log), (error) => error.code === 'ENOENT')
   await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
-  assert.deepEqual(sequence, ['detach', 'unpin', 'unarchive', 'cache'])
+  assert.deepEqual(sequence, ['owners', 'detach', 'unpin', 'unarchive', 'cache'])
   assert.equal(cache.has(SESSION_ID), false)
   assert.deepEqual(h.calls.emitted, [['api-session/removed', SESSION_ID]])
+})
+
+test('permanent deletion remains successful when attachment-owner notification fails', async () => {
+  const store = await makeStore()
+  const h = harness({
+    ...storedTarget(store),
+    config: { mode: 'permanent' },
+    services: {
+      fileUploads: {
+        onSessionPermanentlyPurged: async () => {
+          await assert.rejects(stat(store.log), (error) => error.code === 'ENOENT')
+          throw new Error('attachment ledger unavailable')
+        },
+      },
+    },
+  })
+
+  const outcome = await h.service.delete(SESSION_ID)
+
+  assert.equal(outcome.purged, true)
+  await assert.rejects(stat(store.log), (error) => error.code === 'ENOENT')
+  assert.ok(
+    h.calls.warnings.some(message => message.includes('attachment-owner release failed') && message.includes('attachment ledger unavailable')),
+    'a stale attachment owner must be reported as a safe leak',
+  )
+})
+
+test('manual Trash purge remains successful when attachment-owner notification fails', async () => {
+  const store = await makeStore()
+  const h = harness({
+    ...storedTarget(store),
+    services: {
+      fileUploads: {
+        onSessionPermanentlyPurged: async () => { throw new Error('provider busy') },
+      },
+    },
+  })
+  const deleted = await h.service.delete(SESSION_ID)
+
+  const outcome = await h.service.purge(SESSION_ID)
+
+  assert.deepEqual(outcome, { sessionId: SESSION_ID, purged: true })
+  await assert.rejects(stat(trashEntry(store, deleted.trashId)), (error) => error.code === 'ENOENT')
+  assert.ok(h.calls.warnings.some(message => message.includes('provider busy')))
+})
+
+test('retention sweep continues after attachment-owner notification fails', async () => {
+  const store = await makeStore()
+  const h = harness({
+    ...storedTarget(store),
+    config: { retentionDays: 1 },
+    services: {
+      fileUploads: {
+        onSessionPermanentlyPurged: async () => { throw new Error('provider unavailable') },
+      },
+    },
+  })
+  await h.service.delete(SESSION_ID)
+  const expired = trashEntry(store, h.service.trashIndex.keys().next().value)
+  const manifest = JSON.parse(await readFile(join(expired, 'meta.json'), 'utf8'))
+  manifest.deletedAt = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()
+  await writeFile(join(expired, 'meta.json'), JSON.stringify(manifest))
+
+  const purged = await h.service.listTrash()
+
+  assert.deepEqual(purged.entries, [])
+  await assert.rejects(stat(expired), (error) => error.code === 'ENOENT')
+  assert.ok(h.calls.warnings.some(message => message.includes('provider unavailable')))
 })
 
 test('Trash and later purge leave provider-owned attachment objects and aliases intact', async () => {
   const store = await makeStore()
   const attachments = await makeAttachmentFixtures(store)
-  const h = harness({ ...storedTarget(store) })
+  const released = []
+  let deletedTrashId
+  const h = harness({
+    ...storedTarget(store),
+    services: {
+      fileUploads: {
+        onSessionPermanentlyPurged: async (sessionId) => {
+          assert.equal(sessionId, SESSION_ID)
+          await assert.rejects(stat(trashEntry(store, deletedTrashId)), (error) => error.code === 'ENOENT')
+          released.push(sessionId)
+          return true
+        },
+      },
+    },
+  })
 
   const deleted = await h.service.delete(SESSION_ID)
+  deletedTrashId = deleted.trashId
   assert.equal(deleted.trashed, true)
+  assert.deepEqual(released, [], 'moving a Session to Trash must preserve attachment owners')
   await assertAttachmentFixturesIntact(attachments)
 
   const purged = await h.service.purge(SESSION_ID)
   assert.deepEqual(purged, { sessionId: SESSION_ID, purged: true })
+  assert.deepEqual(released, [SESSION_ID], 'only permanent purge releases Session owners')
   await assertAttachmentFixturesIntact(attachments)
 })
 
@@ -1341,7 +1437,19 @@ test('the trash listing reports every entry, newest first', async () => {
 
 test('entries older than the retention window are purged lazily', async () => {
   const store = await makeStore()
-  const h = harness({ ...storedTarget(store), config: { retentionDays: 1 } })
+  const released = []
+  const h = harness({
+    ...storedTarget(store),
+    config: { retentionDays: 1 },
+    services: {
+      fileUploads: {
+        onSessionPermanentlyPurged: async (sessionId) => {
+          released.push(sessionId)
+          return true
+        },
+      },
+    },
+  })
 
   await h.service.delete(SESSION_ID)
   const expired = trashEntry(store, h.service.trashIndex.keys().next().value)
@@ -1353,6 +1461,7 @@ test('entries older than the retention window are purged lazily', async () => {
 
   assert.deepEqual(listed.entries, [], 'an expired entry must not survive the sweep')
   await assert.rejects(stat(expired), (error) => error.code === 'ENOENT')
+  assert.deepEqual(released, [SESSION_ID], 'retention sweep releases owners only after the trash entry is removed')
 })
 
 test('every mutation is recorded in the audit trail without any content', async () => {

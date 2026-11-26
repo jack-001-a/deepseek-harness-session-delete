@@ -32,10 +32,14 @@ directory. Provider-owned path helpers are for locating objects in supported
 read contexts; a resolved path alone is not proof that an object is no longer
 referenced.
 
-The Host's attachment subsystem currently treats shared immutable objects as
-retention-neutral; reference-aware garbage collection is a Host-level
-lifecycle concern, not something this plugin may safely infer from one
-session's event log.
+The pinned Host baseline treats shared immutable objects as retention-neutral.
+The integration branch now calls an optional Host callback only after the
+Session artifact has been irreversibly removed. That callback can release the
+Session's durable owner rows; it does not remove any image object, generic-file
+object, alias, or workspace file. The corresponding Harness implementation is
+being proposed in [Harness PR #1](https://github.com/jack-001-a/deepseek-harness/pull/1)
+and is not part of the pinned/released baseline yet. The plugin remains unable
+to infer reference ownership or collect provider objects from one Session log.
 
 ## Current Host capability gap
 
@@ -55,8 +59,11 @@ Harness process. A modification-time rule cannot close either gap.
 
 See [Reference-aware attachment GC RFC](attachment-gc-rfc.md) for the
 source-level findings and [Host Attachment Reference API Proposal](host-attachment-reference-api-proposal.md)
-for concrete leased-write, Session-owner, fork, purge, and cross-process API
-sketches. Both are design proposals, not implemented cleanup capabilities.
+for the full ledger, reconciliation and cross-process requirements. The
+Session Delete integration branch calls the optional Host callback only after
+successful permanent-mode deletion, explicit Trash purge, or retention sweep.
+Trash and Restore preserve owners. The Host-side SQLite ledger is still an
+open PR and is retention-only: no physical collection operation is enabled.
 ## Current user-facing contract
 
 | Data | On moving a conversation to Trash | On permanent deletion/purge |
@@ -68,7 +75,10 @@ sketches. Both are design proposals, not implemented cleanup capabilities.
 | Plugin audit metadata | Kept within the bounded audit trail | Kept within the bounded audit trail |
 
 Trash retention applies to the session artifact, not to shared attachment
-objects or arbitrary workspace files.
+objects or arbitrary workspace files. A retention sweep may release that
+Session's owner rows only after the trash entry itself has been removed; any
+notification failure leaves stale rows as a safe leak. This owner release is
+not physical attachment cleanup.
 
 ## Requirements before offering an “also delete files” checkbox
 
