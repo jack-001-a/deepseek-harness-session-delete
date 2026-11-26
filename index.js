@@ -177,6 +177,7 @@ async function readBoundedTransactionFile(file, maxBytes, label) {
 
 /** Maximum number of artifact tree entries examined by one recovery comparison. */
 const ARTIFACT_COMPARE_MAX_ENTRIES = 10_000
+const ARTIFACT_DELETE_ENTRY_LIMIT = 10_000
 /** Maximum nesting depth accepted during an artifact tree comparison. */
 const ARTIFACT_COMPARE_MAX_DEPTH = 128
 /** Fixed-size read buffer used while comparing artifact file contents. */
@@ -1742,8 +1743,23 @@ class SessionDeleteService {
           { sessionId, path: lockPath, reason: 'invalid-host-write-lock' },
         )
       }
-      for (const name of await readdir(artifact.target)) {
-        if (name === HOST_WRITE_LOCK_FILE_NAME) continue
+      // Enumerate before deleting so an over-limit directory is refused
+      // without partially removing its contents. Retain only a bounded list.
+      const names = []
+      const directory = await opendir(artifact.target)
+      let examined = 0
+      for await (const entry of directory) {
+        examined += 1
+        if (examined > ARTIFACT_DELETE_ENTRY_LIMIT) {
+          throw new SessionDeleteError(
+            'session-delete/unsupported-store',
+            'sessionDelete: the session artifact directory exceeds the safe entry limit; nothing was removed',
+            { sessionId, limit: ARTIFACT_DELETE_ENTRY_LIMIT, reason: 'artifact-entry-limit' },
+          )
+        }
+        if (entry.name !== HOST_WRITE_LOCK_FILE_NAME) names.push(entry.name)
+      }
+      for (const name of names) {
         await this.removeWithRetries(join(artifact.target, name), sessionId)
       }
       return { removed: true, trashed: false, purged: true }
@@ -2661,22 +2677,23 @@ class SessionDeleteService {
   async readTrashEntries({ recoverMoves = true } = {}) {
     const root = this.trashRoot()
     if (root === undefined) return []
-    let names
+    const candidates = []
     try {
-      names = await readdir(root, { withFileTypes: true })
+      const directory = await opendir(root)
+      // Bound raw entries, not only valid Trash directories. A root full of
+      // junk files must not force a complete, unbounded directory scan.
+      for await (const item of directory) {
+        if (candidates.length >= SWEEP_ENTRY_LIMIT) break
+        candidates.push(item)
+      }
     } catch (error) {
       if (error?.code === 'ENOENT') return []
       this.ctx.logger?.warn(`sessionDelete: reading the trash directory failed: ${String(error)}`)
       return []
     }
     const entries = []
-    let examined = 0
-    for (const item of names) {
-      // The bound counts the directories read, not the usable entries, so a
-      // trash full of junk cannot turn one request into a long stall.
-      if (examined >= SWEEP_ENTRY_LIMIT) break
+    for (const item of candidates) {
       if (!item.isDirectory()) continue
-      examined += 1
       const path = join(root, item.name)
       const manifest = await this.readManifest(path)
       if (manifest === undefined) continue
