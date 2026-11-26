@@ -2655,11 +2655,14 @@ class SessionDeleteService {
   async trimAudit(file) {
     let text
     if (this.auditRecords === undefined) {
+      // The append has already completed, so a fresh count includes the
+      // current record and must not be incremented a second time.
       text = await this.readAuditTrail(file)
       this.auditRecords =
         text === undefined ? 0 : text.split('\n').filter((line) => line.length > 0).length
+    } else {
+      this.auditRecords += 1
     }
-    this.auditRecords += 1
     if (this.auditRecords <= AUDIT_MAX_RECORDS) return
     if (text === undefined) {
       text = await this.readAuditTrail(file)
