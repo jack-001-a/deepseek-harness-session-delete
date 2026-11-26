@@ -44,6 +44,20 @@ have been redirected. Audit failures remain fail-soft and never turn a
 completed Session deletion into a reported failure.
 
 
+## Trash transaction metadata
+
+Trash manifests are capped at 256 KiB and copy/restore markers at 16 KiB.
+Readers open these files without following a final-component symlink where the
+platform supports it, verify a regular single-link file through its descriptor,
+and read with a fixed buffer plus a one-byte growth sentinel. The Trash entry
+itself must be a real direct child of the configured Trash root.
+
+Restore-pending metadata is written through an exclusively created temporary
+file and an atomic rename. An unreadable, oversized, linked or otherwise
+unsafe existing manifest is preserved rather than treated as missing and
+reconstructed. This keeps recovery fail-closed and avoids following a local
+filesystem redirection into unrelated files.
+
 ## Delete transaction
 
 The public delete(sessionId) call is serialized through a per-session
