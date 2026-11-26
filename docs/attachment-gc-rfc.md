@@ -123,6 +123,16 @@ A future integration can:
 
 No client-side path construction, reference counting, or unlinking belongs in this plugin.
 
+## Executable contract model
+
+The plugin repository now contains a test-only in-memory semantic model and
+17 conformance scenarios in [Attachment reference contract tests](attachment-reference-conformance.md).
+They make the proposed lease/owner/fork/Trash/purge/read-lease/index/barrier
+rules reviewable and executable, but do not prove filesystem durability,
+OS-level cross-process locking, or real Session-event extraction. The Host
+implementation must run equivalent scenarios against its real local provider
+and two real Harness processes before enabling collection.
+
 ## Delivery plan
 
 | Phase | Owner | Deliverable | Exit criterion |
