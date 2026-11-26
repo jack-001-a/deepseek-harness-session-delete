@@ -998,6 +998,82 @@ test('a directory artifact is refused when the store has no root, including perm
   assert.ok((await stat(store.log)).isFile(), 'permanent mode must not remove an unverified directory')
 })
 
+test('trash listing refuses a symlinked manifest without reading its target', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const h = harness({ ...storedTarget(store) })
+  const deleted = await h.service.delete(SESSION_ID)
+  const entry = trashEntry(store, deleted.trashId)
+  const manifest = join(entry, 'meta.json')
+  const outside = join(store.base, 'outside-manifest.json')
+  const sentinel = JSON.stringify({
+    sessionId: SESSION_ID,
+    originalPath: store.dir,
+    deletedAt: new Date().toISOString(),
+  })
+  await writeFile(outside, sentinel)
+  await rm(manifest)
+  await symlink(outside, manifest)
+
+  assert.equal(await h.service.readManifest(entry), undefined)
+  assert.deepEqual((await h.service.listTrash()).entries, [])
+  assert.equal(await readFile(outside, 'utf8'), sentinel)
+})
+
+test('restore-pending metadata refuses to replace an unreadable or linked manifest', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const h = harness({ ...storedTarget(store) })
+  const deleted = await h.service.delete(SESSION_ID)
+  const entry = await h.service.trashEntryFor(SESSION_ID)
+  const manifest = join(entry.path, 'meta.json')
+  const outside = join(store.base, 'outside-manifest.json')
+  const sentinel = 'preserve outside metadata'
+  await writeFile(outside, sentinel)
+  await rm(manifest)
+  await symlink(outside, manifest)
+
+  assert.equal(await h.service.markRestorePending(entry), false)
+  assert.equal(await readFile(outside, 'utf8'), sentinel)
+  assert.ok(
+    h.calls.warnings.some((message) => message.includes('refusing to replace an unreadable trash manifest')),
+  )
+  assert.equal(deleted.trashId, entry.trashId)
+})
+
+test('trash manifests above the byte limit are rejected before parsing', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const h = harness({ ...storedTarget(store) })
+  const deleted = await h.service.delete(SESSION_ID)
+  const entry = trashEntry(store, deleted.trashId)
+  const manifest = join(entry, 'meta.json')
+  await writeFile(manifest, Buffer.alloc(256 * 1024 + 1, 0x61))
+
+  assert.equal(await h.service.readManifest(entry), undefined)
+  assert.equal((await stat(manifest)).size, 256 * 1024 + 1)
+})
+
+test('recovery markers refuse symbolic links without touching their targets', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const h = harness({ ...storedTarget(store) })
+  const deleted = await h.service.delete(SESSION_ID)
+  const entryPath = trashEntry(store, deleted.trashId)
+  const outside = join(store.base, 'outside-copy-marker.json')
+  const sentinel = JSON.stringify({ dev: 1, ino: 2, isDirectory: true, size: 3, mtimeMs: 4 })
+  await writeFile(outside, sentinel)
+  const marker = join(entryPath, '.copying')
+  await symlink(outside, marker)
+  const manifest = await h.service.readManifest(entryPath)
+
+  assert.equal(await h.service.recoverTrashMove(entryPath, manifest), false)
+  assert.equal(await readFile(outside, 'utf8'), sentinel)
+  assert.ok(
+    h.calls.warnings.some((message) => message.includes('recovery marker') && message.includes('unreadable')),
+  )
+})
+
 test('the trash entry holds the artifact and a manifest of the identifying fields', async () => {
   const store = await makeStore()
   const h = harness({ ...storedTarget(store) })
