@@ -104,6 +104,7 @@ const PROCESS_LOCK_WAIT_MS = 15000
 const PROCESS_LOCK_POLL_MS = 50
 /** Lock owner metadata stored inside each atomically-created lock directory. */
 const PROCESS_LOCK_OWNER_FILE = '.owner.json'
+const PROCESS_LOCK_OWNER_MAX_BYTES = 4 * 1024
 /** Exclusive sentinel that serializes stale-lock reclamation attempts. */
 const PROCESS_LOCK_RECLAIM_FILE = '.reclaim'
 /** POSIX JSONL write-lease inode; keep it stable while a write handle is held. */
@@ -577,7 +578,11 @@ class SessionDeleteService {
 
     let owner
     try {
-      owner = JSON.parse(await readFile(ownerPath, 'utf8'))
+      owner = JSON.parse(await readBoundedTransactionFile(
+        ownerPath,
+        PROCESS_LOCK_OWNER_MAX_BYTES,
+        'process lock owner metadata',
+      ))
     } catch {
       return undefined
     }

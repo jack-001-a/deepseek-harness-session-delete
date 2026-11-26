@@ -58,6 +58,11 @@ unsafe existing manifest is preserved rather than treated as missing and
 reconstructed. This keeps recovery fail-closed and avoids following a local
 filesystem redirection into unrelated files.
 
+The per-process lock's `.owner.json` metadata is limited to 4 KiB and uses the
+same bounded, descriptor-based reader. An oversized or replaced owner record
+is treated as unverifiable, so the lock is never reclaimed based on partial or
+untrusted metadata.
+
 ## Delete transaction
 
 The public delete(sessionId) call is serialized through a per-session
