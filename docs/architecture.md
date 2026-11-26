@@ -155,10 +155,22 @@ empty Trash.
 The fallback dialog must only dismiss on an actual backdrop click; clicks on
 its content must not bubble into a close action.
 
+## Attachment reference contract model
+
+The test-only `AttachmentReferenceModel` and its conformance scenarios live in
+`test/helpers/attachment-reference-model.mjs` and
+`test/attachment-reference-contract.test.mjs`. They pin lease transfer,
+Session/fork/Trash/purge ownership, read leases, hard-link mismatches, index
+completeness, mutation barriers and dry-run behavior. This is an in-memory
+semantic reference model only; it is not loaded by the plugin and does not
+prove real filesystem or cross-process correctness. See
+[Attachment reference contract tests](attachment-reference-conformance.md).
+
 ## Tests
 
-- npm run check: syntax-checks Host, browser, E2E fixtures and test files.
-- npm test: runs the Host deletion/recovery tests and browser dialog tests.
+- `npm run check`: syntax-checks Host, browser, E2E fixtures, and the reference model/tests.
+- `npm run test:attachment-contract`: runs the attachment reference conformance scenarios only.
+- `npm test`: runs the Host deletion/recovery, browser dialog, and attachment contract tests.
 - The GitHub Actions matrix runs the unit suite on Linux, Windows and macOS
   across Node 22, 24 and 26.
 - The two-process integration job checks the native write lease and
