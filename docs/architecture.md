@@ -111,7 +111,7 @@ protocol.
 
 Deleting a session artifact does not unlink uploaded attachments or workspace
 files. Harness attachments are content-addressed and may be shared by several
-sessions. See Attachment lifecycle before proposing any change to this behavior.
+sessions. See [Attachment lifecycle](attachment-lifecycle.md) before proposing any change to this behavior.
 
 ## Error and UI behavior
 
