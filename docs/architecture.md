@@ -23,6 +23,19 @@ path. The implementation deliberately uses Node built-ins
 only; do not add runtime dependencies without checking the local bundle
 resolution constraints described in the module header.
 
+## Audit trail integrity
+
+The metadata-only audit trail is still a filesystem write surface. Before
+reading or writing it, the Host requires the Trash root to be a real directory
+and the audit entry to be a regular file with a single hard link; symbolic
+links, special files and hard-linked targets are rejected. Appends use an
+opened file handle and `O_NOFOLLOW` where the platform exposes it, then verify
+the opened descriptor before writing. Newly created audit files use mode
+`0600`. Trimming writes a uniquely named, exclusively created temporary file
+and atomically renames it into place instead of truncating a path that could
+have been redirected. Audit failures remain fail-soft and never turn a
+completed Session deletion into a reported failure.
+
 ## Delete transaction
 
 The public delete(sessionId) call is serialized through a per-session
