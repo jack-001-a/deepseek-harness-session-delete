@@ -106,11 +106,19 @@ interface Leased<TRef> {
   readonly leaseId: AttachmentLeaseId
 }
 
+interface LeasedAdmission<TContent> {
+  readonly content: TContent
+  readonly leases: readonly Leased<AttachmentReference>[]
+}
+
 interface LeasedAttachmentStore {
   saveImageLeased(input: SaveImageAttachment): Promise<Leased<ImageAttachmentRef>>
   saveImagesLeased(inputs: readonly SaveImageAttachment[]): Promise<readonly Leased<ImageAttachmentRef>[]>
   saveFileLeased(input: SaveFileAttachment): Promise<Leased<FileAttachmentRef>>
   saveFileStreamLeased(input: SaveFileStreamAttachment): Promise<Leased<FileAttachmentRef>>
+  admitEncodedFileLeased(input: EncodedFileAttachment): Promise<Leased<FileAttachmentRef>>
+  admitPromptContentLeased(content: readonly AttachmentAdmissionPart[]): Promise<LeasedAdmission<AdmittedPromptContentPart[]>>
+  acquireReadLease(ref: AttachmentReference): Promise<AttachmentLeaseId>
 }
 ~~~
 
@@ -120,7 +128,8 @@ Required semantics:
 - The provider publishes bytes and durably records the temporary lease before returning a `Leased` value.
 - The lease protects the canonical object and the specific generic-file alias needed by the returned reference.
 - Cancellation before publication creates no object or lease. Cancellation after publication but before receipt delivery releases the lease only after the writer has stopped.
-- Legacy unleased writes remain non-collectable until their references have been reconciled. The Host must not enable GC while an active writer can create untracked objects.
+- A batch write that fails after publishing an earlier member releases every lease created by that failed batch; the published immutable bytes become ordinary grace-period candidates only after the failed writer is stopped.
+- Existing unleased methods remain available during migration but mark the index as containing legacy/untracked writes. They must not silently bypass lease creation once GC is enabled.
 
 ### 4.2 Lease transfer and release
 
@@ -138,6 +147,9 @@ interface AttachmentLeaseLedger {
   commitLeases(transfers: readonly LeaseTransfer[]): Promise<void>
 
   releaseLeases(leases: readonly AttachmentLeaseId[], reason: string): Promise<void>
+
+  /** Release a bounded provider/Host filesystem read lease after its handle closes. */
+  releaseReadLease(leaseId: AttachmentLeaseId): Promise<void>
 }
 ~~~
 
@@ -150,6 +162,14 @@ interface AttachmentLeaseLedger {
 ### 4.3 Session ownership coordinator
 
 ~~~ts
+interface ReferenceIndexStatus {
+  readonly state: 'complete' | 'incomplete'
+  readonly generation: string
+  readonly retainedSessionCount: number
+  readonly indexedReferenceCount: number
+  readonly blockers: readonly string[]
+}
+
 interface SessionAttachmentReferences {
   /**
    * Associate upload/admission leases with one accepted request before its
@@ -166,7 +186,7 @@ interface SessionAttachmentReferences {
   /** Register a typed extractor for event shapes owned by a Host package. */
   registerExtractor(
     name: string,
-    extract: (event: SessionEvent) => readonly Omit<AttachmentReferenceOccurrence, 'eventSeq'>[],
+    extract: (event: SessionEvent) => readonly { readonly ref: AttachmentReference; readonly slot: string }[],
   ): () => void
 
   /** Retain all attachments inherited by a child before the child is published. */
@@ -196,7 +216,7 @@ interface SessionAttachmentReferences {
 
 `AttachmentReference` should carry the complete typed provider reference (image or file), including the display alias for generic files. It must not be reconstructed from arbitrary JSON keys or an opaque ID string.
 
-The extractor registry is explicit and owned by the package that defines each attachment-bearing event shape. An extractor returns occurrences such as `{ ref, slot }`, not only a digest list. GC is disabled if a loaded package can write an attachment-bearing event but has not registered an extractor. Unknown required event records or an unavailable extractor make the index incomplete.
+The extractor registry is explicit and owned by the package that defines each attachment-bearing event shape. An extractor returns occurrences such as `{ ref, slot }`, not only a digest list. The coordinator adds the event's assigned sequence number when it materializes an `AttachmentReferenceOccurrence`. GC is disabled if a loaded package can write an attachment-bearing event but has not registered an extractor. Unknown required event records or an unavailable extractor make the index incomplete.
 
 ## 5. Lifecycle protocol
 
