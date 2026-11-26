@@ -114,12 +114,17 @@ protocol.
 
 Deleting a session artifact does not unlink uploaded attachments or workspace
 files. Harness attachments are content-addressed and may be shared by several
-sessions. The plugin does not scan or unlink provider-owned objects: the Host
-attachment seam has no complete reference inventory or collection operation,
-and staged uploads can be durable before an event commits. See [Attachment
-lifecycle](attachment-lifecycle.md), the [reference-aware GC RFC](attachment-gc-rfc.md),
-and the [Host Attachment Reference API Proposal](host-attachment-reference-api-proposal.md)
-before proposing any change to this behavior.
+sessions. The integration branch invokes the optional Host callback
+`fileUploads.onSessionPermanentlyPurged(sessionId)` only after permanent-mode
+delete, explicit Trash purge, or retention sweep has removed the Session
+artifact. Trash and Restore preserve owners. If the callback fails, the plugin
+logs the failure and leaves a conservative stale owner; the already-completed
+Session deletion remains successful. The callback releases ownership records
+only; it does not unlink provider objects. The matching SQLite ledger work is
+tracked separately in [Harness PR #1](https://github.com/jack-001-a/deepseek-harness/pull/1)
+and is not yet in the pinned baseline. See [Attachment lifecycle](attachment-lifecycle.md),
+the [reference-aware GC RFC](attachment-gc-rfc.md), and the [Host Attachment
+Reference API Proposal](host-attachment-reference-api-proposal.md).
 
 ## Trash manager UI
 
