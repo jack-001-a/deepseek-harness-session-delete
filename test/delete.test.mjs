@@ -10,7 +10,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { appendFile, link, mkdtemp, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { appendFile, link, mkdtemp, mkdir, readFile, readlink, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -1489,6 +1489,72 @@ test('every mutation is recorded in the audit trail without any content', async 
   const text = JSON.stringify(lines)
   assert.equal(text.includes('session.4.jsonl'), false, 'the trail must not carry artifact names')
   assert.equal(text.includes('seq'), false, 'the trail must not carry content')
+})
+
+
+test('the audit trail refuses a symbolic-link file without modifying its target', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const target = join(store.base, 'outside-audit-target.txt')
+  const file = join(store.trashRoot, 'audit.jsonl')
+  await writeFile(target, 'preserve this file\n')
+  await mkdir(store.trashRoot, { recursive: true })
+  try {
+    await symlink(target, file)
+  } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP', 'EOPNOTSUPP'].includes(error?.code)) {
+      t.skip('the current platform does not permit symbolic links')
+      return
+    }
+    throw error
+  }
+
+  const h = harness({ ...storedTarget(store), config: { trashRoot: store.trashRoot } })
+  await h.service.audit('delete', SESSION_ID, true, { mode: 'trash' })
+
+  assert.equal(await readFile(target, 'utf8'), 'preserve this file\n')
+  assert.equal(await readlink(file), target)
+  assert.ok(h.calls.warnings.some((message) => message.includes('writing the audit trail failed')))
+})
+
+test('the audit trail refuses a symbolic-link Trash root without writing into its target', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const outside = join(store.base, 'outside-trash-root')
+  await mkdir(outside)
+  try {
+    await symlink(outside, store.trashRoot, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP', 'EOPNOTSUPP'].includes(error?.code)) {
+      t.skip('the current platform does not permit directory symbolic links')
+      return
+    }
+    throw error
+  }
+
+  const h = harness({ ...storedTarget(store), config: { trashRoot: store.trashRoot } })
+  await h.service.audit('delete', SESSION_ID, true, { mode: 'trash' })
+
+  assert.deepEqual(await readdir(outside), [])
+  assert.equal(await readlink(store.trashRoot), outside)
+  assert.ok(h.calls.warnings.some((message) => message.includes('writing the audit trail failed')))
+})
+
+test('the audit trail refuses a hard-linked file without modifying either name', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const target = join(store.base, 'outside-audit-target.txt')
+  const file = join(store.trashRoot, 'audit.jsonl')
+  await writeFile(target, 'preserve this file\n')
+  await mkdir(store.trashRoot, { recursive: true })
+  await link(target, file)
+
+  const h = harness({ ...storedTarget(store), config: { trashRoot: store.trashRoot } })
+  await h.service.audit('delete', SESSION_ID, true, { mode: 'trash' })
+
+  assert.equal(await readFile(target, 'utf8'), 'preserve this file\n')
+  assert.equal(await readFile(file, 'utf8'), 'preserve this file\n')
+  assert.ok(h.calls.warnings.some((message) => message.includes('writing the audit trail failed')))
 })
 
 test('a refused deletion is recorded with its code', async () => {
