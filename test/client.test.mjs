@@ -542,6 +542,7 @@ test('trash mode offers a reversible action and names the retention window', asy
   const dialog = dialogElement(form)
   assert.match(dialog.props.title, /Trash/)
   assert.match(text(dialog.props.description), /7 days/)
+  assert.match(text(findByRole(form, 'note')), /attachments and files created.*kept/i)
   const [cancel, confirm] = footerButtons(form)
   assert.equal(text(cancel), 'Cancel')
   assert.equal(text(confirm), 'Move to Trash')
@@ -560,6 +561,7 @@ test('permanent mode requires the typed title before the destructive action', as
   const dialog = dialogElement(form)
   assert.match(dialog.props.title, /permanently/)
   assert.match(text(dialog.props.description), /cannot be undone/)
+  assert.match(text(findByRole(form, 'note')), /上传的附件和工作区中创建的文件都会保留/)
   const confirm = footerButtons(form)[1]
   assert.equal(text(confirm), 'Delete permanently')
   assert.equal(confirm.props.disabled, true, 'the destructive action waits for the typed title')
@@ -1042,6 +1044,30 @@ test('the plain overlay cancels on ESC and traps the focus', async () => {
   })
   assert.equal(prevented, true)
   assert.equal(settled, 1, 'ESC cancels the plain overlay')
+})
+
+test('the plain dialog only dismisses when the backdrop itself is clicked', async () => {
+  const { plugin, React } = await loadPlugin({ primitives: false })
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  let settled = 0
+  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+    describeDeletion: async () => DESCRIBE_TRASH,
+    settleDelete: () => {
+      settled += 1
+    },
+  })
+  await settle()
+
+  const overlay = renderElement(form.tree)
+  const dialog = overlay.children[0]
+  assert.equal(overlay.props.className, 'dshSessionDelete_overlay')
+  assert.equal(dialog.props.className, 'dshSessionDelete_dialog')
+
+  overlay.props.onMouseDown({ target: dialog, currentTarget: overlay })
+  assert.equal(settled, 0, 'clicks inside the modal must not dismiss it')
+
+  overlay.props.onMouseDown({ target: overlay, currentTarget: overlay })
+  assert.equal(settled, 1, 'clicking the backdrop itself still dismisses the modal')
 })
 
 test('a partial primitives module still leaves the plugin working', async () => {
