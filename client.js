@@ -1811,6 +1811,7 @@ window.__ModuleLoader__.load({
       purgeSession,
       listTrash,
       describeDeletion,
+      updateTrashCount,
       t,
     }) {
       const request = useDeleteRequest((pending) => pending)
@@ -1971,6 +1972,7 @@ window.__ModuleLoader__.load({
             purgeSession,
             listTrash,
             describeDeletion,
+            updateTrashCount,
           })
 
           ctx.slots.inject('sidebar.workspaces.session.menu.item', function* () {
