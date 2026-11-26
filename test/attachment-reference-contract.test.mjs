@@ -101,6 +101,7 @@ test('retaining an existing event reference is idempotent', () => {
     bytes: 128,
     processId: 'host-a',
   })
+  model.releaseLease('upload-lease-1')
   const owner = sessionOwner('session-a')
 
   assert.deepEqual(model.retainReference(IMAGE, owner), { retained: true, idempotent: false })
@@ -116,6 +117,7 @@ test('fork creates independent child owners that survive parent purge', () => {
     bytes: 128,
     processId: 'host-a',
   })
+  model.releaseLease('upload-lease-1')
   model.retainReference(IMAGE, sessionOwner('parent', 4, 'messages[3].image'))
   const fork = model.retainFork({
     childSessionId: 'child',
@@ -141,6 +143,7 @@ test('fork validates the complete inherited reference set before creating any ch
     bytes: 128,
     processId: 'host-a',
   })
+  model.releaseLease('upload-lease-1')
   model.retainReference(IMAGE, sessionOwner('parent', 4, 'messages[3].image'))
 
   assert.throws(() => model.retainFork({
@@ -163,6 +166,7 @@ test('Trash and Restore do not change attachment ownership', () => {
     bytes: 128,
     processId: 'host-a',
   })
+  model.releaseLease('upload-lease-1')
   const owner = sessionOwner('session-a')
   model.retainReference(IMAGE, owner)
 
@@ -184,6 +188,7 @@ test('purge refuses to release Session owners before the artifact is removed', (
     bytes: 128,
     processId: 'host-a',
   })
+  model.releaseLease('upload-lease-1')
   model.retainReference(IMAGE, sessionOwner('session-a'))
 
   assert.throws(() => model.purgeSession('session-a'), /artifact must be removed/)
@@ -198,12 +203,15 @@ test('purging one Session releases only its Session-event owners, not command ow
     bytes: 128,
     processId: 'host-a',
   })
+  model.releaseLease('upload-lease-1')
   const transcriptOwner = sessionOwner('session-a')
   const execution = commandOwner()
   model.retainReference(IMAGE, transcriptOwner)
   model.retainReference(IMAGE, execution)
+  assert.equal(model.objectSnapshot(IMAGE.objectId).ownerCount, 2)
 
   assert.equal(model.purgeSession('session-a', { artifactRemoved: true }).releasedOwnerCount, 1)
+  assert.equal(model.objectSnapshot(IMAGE.objectId).ownerCount, 1)
   assert.equal(model.hasOwner(IMAGE.objectId, transcriptOwner), false)
   assert.equal(model.hasOwner(IMAGE.objectId, execution), true)
   assert.deepEqual(model.releaseOwner(execution), { releasedOwnerCount: 1, alreadyReleased: false })
@@ -218,6 +226,7 @@ test('an active read lease blocks collection after the last durable owner is rel
     bytes: 128,
     processId: 'host-a',
   })
+  model.releaseLease('upload-lease-1')
   model.retainReference(IMAGE, sessionOwner('session-a'))
   const readLease = model.acquireReadLease(IMAGE, 'reader-a')
   model.purgeSession('session-a', { artifactRemoved: true })
