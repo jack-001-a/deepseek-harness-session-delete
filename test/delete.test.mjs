@@ -1519,6 +1519,32 @@ test('the audit trail refuses a symbolic-link file without modifying its target'
   )
 })
 
+test('the audit trail refuses a symbolic-link Trash root without writing into its target', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const outside = join(store.base, 'outside-trash-root')
+  await mkdir(outside)
+  try {
+    await symlink(outside, store.trashRoot, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP', 'EOPNOTSUPP'].includes(error?.code)) {
+      t.skip('the current platform does not permit directory symbolic links')
+      return
+    }
+    throw error
+  }
+
+  const h = harness({ ...storedTarget(store), config: { trashRoot: store.trashRoot } })
+  await h.service.audit('delete', SESSION_ID, true, { mode: 'trash' })
+
+  assert.deepEqual(await readdir(outside), [])
+  assert.equal(await readlink(store.trashRoot), outside)
+  assert.ok(
+    h.calls.warnings.some((message) => message.includes('writing the audit trail failed')),
+    'the unsafe Trash root must be reported',
+  )
+})
+
 test('the audit trail refuses a hard-linked file without modifying either name', async (t) => {
   const store = await makeStore()
   t.after(() => rm(store.base, { recursive: true, force: true }))
