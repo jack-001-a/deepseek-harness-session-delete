@@ -58,17 +58,16 @@ The provider owns a namespaced object key:
 
 The consumer still treats `attachmentId` as opaque. Only the provider interprets its own identifier and maps it to a stored object.
 
-### Reference owners
+### Owner records and temporary pins
 
-Each durable owner is idempotently keyed. Suggested owner types:
+Durable Session ownership is keyed idempotently by Session ID, event sequence, and content slot. Temporary pins have their own lease IDs and must not be confused with durable Session owners.
 
-| Owner type | Created by | Released by |
+| Record/pin type | Created by | Released by |
 |---|---|---|
-| `session-event` | Committed event reference extraction | Irreversible deletion of the Session artifact |
-| `session-fork` | Fork publication for the inherited event prefix | Irreversible deletion of the child Session artifact |
-| `staged-upload` | Leased upload before a receipt is returned | Prompt commit, command completion, explicit discard, or stale-instance recovery |
-| `command-execution` | Command handler accepts staged attachment input | Command completion/failure after any output references are retained |
-| `read-lease` | Provider or Host filesystem opens an attachment for a bounded read | Read stream/handle closes |
+| `session-event` owner | Committed event reference extraction; fork creates equivalent owners under the child Session ID | Irreversible deletion of that Session artifact |
+| `staged-upload` lease | Leased upload before a receipt is returned | Prompt commit, explicit discard, or stale-instance recovery |
+| `command-execution` owner | Command handler consumes staged attachment input | Command completion/failure after any output references are retained |
+| `read-lease` | Provider or Host filesystem opens an attachment for a bounded read or execution-path use | Read stream/handle closes or the execution scope ends |
 
 A Session moved into Trash remains a durable owner. Restore does not change its references. Purging the Trash entry releases that Session's owners only after the Session artifact has been irreversibly removed.
 
@@ -152,6 +151,9 @@ interface AttachmentLeaseLedger {
 
   /** Release an ephemeral upload/command lease after its producer has stopped. */
   releaseLeases(leases: readonly AttachmentLeaseId[], reason: string): Promise<void>
+
+  /** Release a committed temporary owner such as command-execution. */
+  releaseOwner(owner: AttachmentOwner): Promise<void>
 
   /** Release a bounded provider/Host filesystem read lease after its handle closes. */
   releaseReadLease(leaseId: AttachmentLeaseId): Promise<void>
@@ -262,7 +264,7 @@ The lease is the crash bridge between append and reference-index durability. A T
 
 ### 5.3 Commands and staged receipts
 
-Command-only receipts need an explicit command-execution lifetime. The current behavior of keeping them until Session disposal is safe but coarse. The command registry should transfer each consumed receipt to a `command-execution` owner and release it after the handler settles. Any attachment reference emitted in a durable tool/session event is separately retained by the event extractor before the execution lease is released. The prompt and command paths must never drop a lease merely because the in-memory receipt table is cleared on `session/disposed`; disposal schedules an explicit idempotent lease release, while crash recovery handles leases from a dead Host instance.
+Command-only receipts need an explicit command-execution lifetime. The current behavior of keeping them until Session disposal is safe but coarse. The command registry should transfer each consumed receipt to a `command-execution` owner and release it after the handler settles. Any attachment reference emitted in a durable tool/session event is separately retained by the event extractor before the execution lease is released. The prompt and command paths must never drop a lease merely because the in-memory receipt table is cleared on `session/disposed`; disposal schedules an explicit idempotent release for ephemeral staged/command leases, while crash recovery handles leases from a dead Host instance. Memory disposal must not release durable `session-event` owners: a cold Session or a Session moved to Trash is still retained history.
 
 ### 5.4 Fork
 
