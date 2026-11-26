@@ -25,6 +25,7 @@
  * a local directory resolves its imports from that directory, so every import
  * would have to be a Node built-in.
  */
+import { Buffer } from 'node:buffer'
 import { constants as fsConstants } from 'node:fs'
 import { cp, lstat, mkdir, open, readFile, readlink, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
@@ -79,6 +80,10 @@ const TRASH_DIR_NAME = '.trash'
 const AUDIT_FILE_NAME = 'audit.jsonl'
 /** Name of the manifest written beside every trashed artifact. */
 const MANIFEST_FILE_NAME = 'meta.json'
+/** Largest accepted trash manifest, including captured workspace metadata. */
+const TRASH_MANIFEST_MAX_BYTES = 256 * 1024
+/** Largest accepted JSON transaction marker. */
+const TRASH_MARKER_MAX_BYTES = 16 * 1024
 /** Name of the subdirectory that holds the moved artifact in a trash entry. */
 const ARTIFACT_DIR_NAME = 'artifact'
 /** Marker for a trash move that may need crash recovery. */
@@ -119,6 +124,157 @@ const TRASH_NAME_ATTEMPTS = 5
  * moving the artifact a second time; it holds no artifact of its own by then.
  */
 const RESTORE_PENDING = 'accounting-pending'
+
+/**
+ * Read a small transaction file without following links or trusting its size.
+ *
+ * The fstat size is checked before allocation, then the file is read with a
+ * fixed buffer and a one-byte overrun sentinel to detect concurrent growth.
+ * The path and opened descriptor are checked again before returning bytes.
+ * @param file - the transaction file path.
+ * @param maxBytes - maximum accepted UTF-8 byte count.
+ * @param label - safe diagnostic label.
+ * @returns decoded UTF-8 content.
+ */
+async function readBoundedTransactionFile(file, maxBytes, label) {
+  let handle
+  try {
+    const before = await lstat(file)
+    if (
+      !before.isFile() ||
+      before.isSymbolicLink() ||
+      (Number.isFinite(before.nlink) && before.nlink > 1)
+    ) {
+      throw new Error('Refusing to read a non-regular or linked ' + label + '.')
+    }
+    handle = await open(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0))
+    const opened = await handle.stat()
+    if (
+      !opened.isFile() ||
+      (Number.isFinite(opened.nlink) && opened.nlink > 1) ||
+      opened.dev !== before.dev ||
+      opened.ino !== before.ino ||
+      opened.size !== before.size ||
+      opened.mtimeMs !== before.mtimeMs ||
+      opened.ctimeMs !== before.ctimeMs
+    ) {
+      throw new Error('The ' + label + ' changed while it was being opened.')
+    }
+    if (opened.size > maxBytes) {
+      throw new Error('The ' + label + ' exceeds its ' + maxBytes + '-byte limit.')
+    }
+
+    const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, maxBytes + 1))
+    const chunks = []
+    let total = 0
+    for (;;) {
+      const remaining = maxBytes + 1 - total
+      if (remaining <= 0) throw new Error('The ' + label + ' grew beyond its byte limit.')
+      const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, remaining), total)
+      if (bytesRead === 0) break
+      total += bytesRead
+      if (total > maxBytes) throw new Error('The ' + label + ' grew beyond its byte limit.')
+      chunks.push(Buffer.from(buffer.subarray(0, bytesRead)))
+    }
+
+    const after = await handle.stat()
+    const current = await lstat(file)
+    if (
+      total !== opened.size ||
+      after.size !== opened.size ||
+      after.mtimeMs !== opened.mtimeMs ||
+      after.ctimeMs !== opened.ctimeMs ||
+      !current.isFile() ||
+      current.isSymbolicLink() ||
+      (Number.isFinite(current.nlink) && current.nlink > 1) ||
+      current.dev !== opened.dev ||
+      current.ino !== opened.ino
+    ) {
+      throw new Error('The ' + label + ' changed while it was being read.')
+    }
+    return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, total))
+  } finally {
+    await handle?.close().catch(() => {})
+  }
+}
+
+/**
+ * Verify that a trash entry is a real, direct child of the real trash root.
+ * @param root - the configured trash root.
+ * @param entry - the candidate entry directory.
+ */
+async function assertSafeTrashEntryDirectory(root, entry) {
+  const [rootStat, entryStat] = await Promise.all([lstat(root), lstat(entry)])
+  if (
+    !rootStat.isDirectory() ||
+    rootStat.isSymbolicLink() ||
+    !entryStat.isDirectory() ||
+    entryStat.isSymbolicLink()
+  ) {
+    throw new Error('Refusing to use a non-directory or linked trash path.')
+  }
+  const [canonicalRoot, canonicalEntry] = await Promise.all([realpath(root), realpath(entry)])
+  const child = relative(canonicalRoot, canonicalEntry)
+  if (
+    !child ||
+    child === '..' ||
+    child.startsWith('..' + pathSeparator()) ||
+    isAbsolute(child) ||
+    child.includes(pathSeparator())
+  ) {
+    throw new Error('Refusing a trash entry outside its configured trash root.')
+  }
+}
+
+/** Path separator helper avoids importing another alias from node:path. */
+function pathSeparator() {
+  return process.platform === 'win32' ? '\\\\' : '/'
+}
+
+/**
+ * Atomically replace a regular transaction file without following its path.
+ * @param file - target transaction file.
+ * @param text - complete UTF-8 replacement content.
+ * @param label - safe diagnostic label.
+ */
+async function writeAtomicTransactionFile(file, text, label) {
+  const directory = dirname(file)
+  const parent = await lstat(directory)
+  if (!parent.isDirectory() || parent.isSymbolicLink()) {
+    throw new Error('Refusing to write a transaction file into an unsafe directory.')
+  }
+  const existing = await lstat(file).catch((error) => {
+    if (error?.code === 'ENOENT') return undefined
+    throw error
+  })
+  if (
+    existing &&
+    (!existing.isFile() || existing.isSymbolicLink() ||
+      (Number.isFinite(existing.nlink) && existing.nlink > 1))
+  ) {
+    throw new Error('Refusing to replace a non-regular or linked ' + label + '.')
+  }
+  const temporary = join(directory, '.' + basename(file) + '.' + process.pid + '.' + randomUUID() + '.tmp')
+  try {
+    await writeFile(temporary, text, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+    // A rename replaces the directory entry itself, never the target of a
+    // raced final-component symlink. Recheck to refuse known unsafe paths.
+    const current = await lstat(file).catch((error) => {
+      if (error?.code === 'ENOENT') return undefined
+      throw error
+    })
+    if (
+      current &&
+      (!current.isFile() || current.isSymbolicLink() ||
+        (Number.isFinite(current.nlink) && current.nlink > 1))
+    ) {
+      throw new Error('Refusing to replace a non-regular or linked ' + label + '.')
+    }
+    await rename(temporary, file)
+  } finally {
+    await rm(temporary, { force: true }).catch(() => {})
+  }
+}
 
 
 /**
