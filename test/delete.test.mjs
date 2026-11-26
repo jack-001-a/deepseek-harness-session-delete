@@ -63,6 +63,7 @@ function harness(options = {}) {
   const ctx = {
     sessions,
     sessionPersistence: persistence,
+    fileUploads: extra.fileUploads,
     waterfall: async (_name, _payload, base) => (options.activity ? options.activity : base()),
     parallel: async (_name, payload) => {
       calls.stopped.push(payload.sessionId)
@@ -321,7 +322,7 @@ test('stored session: moves the log into the trash, then releases accounting and
   assert.equal(typeof outcome.trashId, 'string')
   await assert.rejects(stat(store.log), (error) => error.code === 'ENOENT')
   await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
-  assert.deepEqual(sequence, ['detach', 'unpin', 'unarchive', 'cache'])
+  assert.deepEqual(sequence, ['detach', 'owners', 'unpin', 'unarchive', 'cache'])
   assert.equal(cache.has(SESSION_ID), false)
   assert.deepEqual(h.calls.emitted, [['api-session/removed', SESSION_ID]])
   assert.deepEqual(h.calls.stopped, [SESSION_ID])
@@ -344,7 +345,17 @@ test('permanent mode: removes the artifact outright', async () => {
   const h = harness({
     ...storedTarget(store),
     registry,
-    services: cacheServices(cache, () => sequence.push('cache')),
+    services: {
+      ...cacheServices(cache, () => sequence.push('cache')),
+      fileUploads: {
+        onSessionPermanentlyPurged: async (sessionId) => {
+          assert.equal(sessionId, SESSION_ID)
+          await assert.rejects(stat(store.log), (error) => error.code === 'ENOENT')
+          sequence.push('owners')
+          return true
+        },
+      },
+    },
     config: { mode: 'permanent' },
   })
 
@@ -365,14 +376,31 @@ test('permanent mode: removes the artifact outright', async () => {
 test('Trash and later purge leave provider-owned attachment objects and aliases intact', async () => {
   const store = await makeStore()
   const attachments = await makeAttachmentFixtures(store)
-  const h = harness({ ...storedTarget(store) })
+  const released = []
+  let deletedTrashId
+  const h = harness({
+    ...storedTarget(store),
+    services: {
+      fileUploads: {
+        onSessionPermanentlyPurged: async (sessionId) => {
+          assert.equal(sessionId, SESSION_ID)
+          await assert.rejects(stat(trashEntry(store, deletedTrashId)), (error) => error.code === 'ENOENT')
+          released.push(sessionId)
+          return true
+        },
+      },
+    },
+  })
 
   const deleted = await h.service.delete(SESSION_ID)
+  deletedTrashId = deleted.trashId
   assert.equal(deleted.trashed, true)
+  assert.deepEqual(released, [], 'moving a Session to Trash must preserve attachment owners')
   await assertAttachmentFixturesIntact(attachments)
 
   const purged = await h.service.purge(SESSION_ID)
   assert.deepEqual(purged, { sessionId: SESSION_ID, purged: true })
+  assert.deepEqual(released, [SESSION_ID], 'only permanent purge releases Session owners')
   await assertAttachmentFixturesIntact(attachments)
 })
 
@@ -1341,7 +1369,19 @@ test('the trash listing reports every entry, newest first', async () => {
 
 test('entries older than the retention window are purged lazily', async () => {
   const store = await makeStore()
-  const h = harness({ ...storedTarget(store), config: { retentionDays: 1 } })
+  const released = []
+  const h = harness({
+    ...storedTarget(store),
+    config: { retentionDays: 1 },
+    services: {
+      fileUploads: {
+        onSessionPermanentlyPurged: async (sessionId) => {
+          released.push(sessionId)
+          return true
+        },
+      },
+    },
+  })
 
   await h.service.delete(SESSION_ID)
   const expired = trashEntry(store, h.service.trashIndex.keys().next().value)
@@ -1353,6 +1393,7 @@ test('entries older than the retention window are purged lazily', async () => {
 
   assert.deepEqual(listed.entries, [], 'an expired entry must not survive the sweep')
   await assert.rejects(stat(expired), (error) => error.code === 'ENOENT')
+  assert.deepEqual(released, [SESSION_ID], 'retention sweep releases owners only after the trash entry is removed')
 })
 
 test('every mutation is recorded in the audit trail without any content', async () => {
