@@ -413,20 +413,48 @@ class SessionDeleteService {
 
   /** Read and validate lock metadata without treating malformed state as stale. */
   async readProcessLockOwner(lockPath) {
+    const lockStat = await lstat(lockPath).catch((error) => {
+      if (error?.code === 'ENOENT') return undefined
+      throw error
+    })
+    if (!lockStat) return undefined
+    if (!lockStat.isDirectory() || lockStat.isSymbolicLink()) {
+      throw new SessionDeleteError(
+        'session-delete/unsafe-path',
+        'sessionDelete: the operation lock path is not a real directory; refusing to follow it',
+        { path: lockPath, reason: 'symlinked-lock-directory' },
+      )
+    }
+
+    const ownerPath = join(lockPath, PROCESS_LOCK_OWNER_FILE)
+    const ownerStat = await lstat(ownerPath).catch((error) => {
+      if (error?.code === 'ENOENT') return undefined
+      throw error
+    })
+    if (!ownerStat) return undefined
+    if (!ownerStat.isFile() || ownerStat.isSymbolicLink()) {
+      throw new SessionDeleteError(
+        'session-delete/unsafe-path',
+        'sessionDelete: the operation lock owner must be a regular file; refusing to follow it',
+        { path: ownerPath, reason: 'symlinked-lock-owner' },
+      )
+    }
+
+    let owner
     try {
-      const owner = JSON.parse(await readFile(join(lockPath, PROCESS_LOCK_OWNER_FILE), 'utf8'))
-      if (
-        owner === null ||
-        typeof owner !== 'object' ||
-        !Number.isSafeInteger(owner.pid) ||
-        typeof owner.host !== 'string' ||
-        typeof owner.token !== 'string' ||
-        owner.token.length === 0
-      ) return undefined
-      return owner
+      owner = JSON.parse(await readFile(ownerPath, 'utf8'))
     } catch {
       return undefined
     }
+    if (
+      owner === null ||
+      typeof owner !== 'object' ||
+      !Number.isSafeInteger(owner.pid) ||
+      typeof owner.host !== 'string' ||
+      typeof owner.token !== 'string' ||
+      owner.token.length === 0
+    ) return undefined
+    return owner
   }
 
   /**
@@ -448,6 +476,14 @@ class SessionDeleteService {
   async acquireProcessLockAt(lockPath, label) {
     const root = dirname(lockPath)
     await mkdir(root, { recursive: true })
+    const rootStat = await lstat(root)
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      throw new SessionDeleteError(
+        'session-delete/unsafe-path',
+        'sessionDelete: the operation lock root is not a real directory; refusing to follow it',
+        { path: root, reason: 'symlinked-lock-root' },
+      )
+    }
     const startedAt = Date.now()
 
     const claim = async () => {
