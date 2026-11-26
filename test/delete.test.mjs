@@ -1108,6 +1108,25 @@ test('process lock owner metadata is bounded before JSON parsing', async (t) => 
   assert.equal((await stat(ownerPath)).size, bytes.length)
 })
 
+test('restore recovery compares large artifact files in bounded chunks', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'dsh-session-delete-stream-compare-'))
+  t.after(() => rm(base, { recursive: true, force: true }))
+  const left = join(base, 'left')
+  const right = join(base, 'right')
+  await Promise.all([mkdir(left), mkdir(right)])
+  const leftFile = join(left, 'session.jsonl')
+  const rightFile = join(right, 'session.jsonl')
+  const payload = Buffer.alloc(8 * 1024 * 1024, 0x61)
+  await Promise.all([writeFile(leftFile, payload), writeFile(rightFile, payload)])
+
+  const h = harness()
+  assert.equal(await h.service.artifactsMatch(left, right), true)
+
+  payload[payload.length - 1] = 0x62
+  await writeFile(rightFile, payload)
+  assert.equal(await h.service.artifactsMatch(left, right), false)
+})
+
 test('the trash entry holds the artifact and a manifest of the identifying fields', async () => {
   const store = await makeStore()
   const h = harness({ ...storedTarget(store) })
