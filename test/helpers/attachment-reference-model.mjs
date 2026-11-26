@@ -169,10 +169,16 @@ export class AttachmentReferenceModel {
   retainReference(reference, owner) {
     const objectId = reference.objectId
     const object = this.#objects.get(objectId)
-    if (!object || object.kind !== reference.kind) throw new Error('unknown attachment reference')
+    if (!object || object.kind !== reference.kind) {
+      this.markIndexIncomplete('unresolved-reference')
+      throw new Error('unknown attachment reference')
+    }
     const key = ownerKey(owner)
     if (object.kind === 'file') {
-      if (!object.aliases.has(reference.alias)) throw new Error('unknown file alias')
+      if (!object.aliases.has(reference.alias)) {
+        this.markIndexIncomplete('unresolved-file-alias')
+        throw new Error('unknown file alias')
+      }
       object.aliases.get(reference.alias).add(key)
     }
     if (object.owners.has(key)) return { retained: true, idempotent: true }
@@ -240,14 +246,28 @@ export class AttachmentReferenceModel {
   retainFork({ childSessionId, references }) {
     if (typeof childSessionId !== 'string' || childSessionId.length === 0) throw new TypeError('childSessionId is required')
     if (!Array.isArray(references)) throw new TypeError('references must be an array')
-    for (const occurrence of references) {
-      this.retainReference(occurrence.reference, {
+    const prepared = references.map((occurrence) => {
+      const object = this.#objects.get(occurrence.reference?.objectId)
+      if (!object || object.kind !== occurrence.reference.kind) {
+        this.markIndexIncomplete('unresolved-fork-reference')
+        throw new Error('unknown attachment reference in fork prefix')
+      }
+      if (object.kind === 'file' && !object.aliases.has(occurrence.reference.alias)) {
+        this.markIndexIncomplete('unresolved-fork-alias')
+        throw new Error('unknown file alias in fork prefix')
+      }
+      const owner = {
         kind: 'session-event',
         sessionId: childSessionId,
         eventSeq: occurrence.eventSeq,
         slot: occurrence.slot,
-      })
-    }
+      }
+      ownerKey(owner)
+      referenceKey(occurrence.reference)
+      return { reference: occurrence.reference, owner }
+    })
+    // Validate the complete inherited prefix before writing any child owner.
+    for (const occurrence of prepared) this.retainReference(occurrence.reference, occurrence.owner)
     return { childSessionId, retainedReferenceCount: references.length }
   }
 
