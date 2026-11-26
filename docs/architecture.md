@@ -114,7 +114,11 @@ protocol.
 
 Deleting a session artifact does not unlink uploaded attachments or workspace
 files. Harness attachments are content-addressed and may be shared by several
-sessions. See [Attachment lifecycle](attachment-lifecycle.md) before proposing any change to this behavior.
+sessions. The plugin does not scan or unlink provider-owned objects: the Host
+attachment seam has no complete reference inventory or collection operation,
+and staged uploads can be durable before an event commits. See [Attachment
+lifecycle](attachment-lifecycle.md) and the [reference-aware GC RFC](attachment-gc-rfc.md)
+before proposing any change to this behavior.
 
 ## Trash manager UI
 
