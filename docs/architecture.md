@@ -70,6 +70,11 @@ one comparison is limited to 10,000 entries and 128 directory levels. If a tree
 exceeds either budget or changes during comparison, recovery fails closed and
 preserves both copies for inspection.
 
+Trash listing uses incremental directory iteration and examines at most 500 raw
+entries, including junk and non-directory entries. Permanent deletion with a
+held POSIX Host write lease collects at most 10,000 child names before removing
+anything; an oversized directory is refused without partially clearing it.
+
 ## Delete transaction
 
 The public delete(sessionId) call is serialized through a per-session
