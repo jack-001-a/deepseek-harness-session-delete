@@ -217,7 +217,7 @@ interface SessionAttachmentReferences {
     references: readonly AttachmentReferenceOccurrence[]
   }): Promise<void>
 
-  /** Release all Session owners after the durable artifact is irreversibly removed. */
+  /** Release all durable session-event owners after the artifact is irreversibly removed. */
   releaseSession(input: {
     sessionId: string
     deletionOperationId: string
@@ -287,11 +287,11 @@ If child creation fails, release the child owners. If parent purge races the for
 
 - **Move to Trash:** preserve all Session owners. The transcript is still retained.
 - **Restore:** preserve the same owners; no count change.
-- **Permanent purge:** after the artifact is irreversibly deleted, call `releaseSession({ sessionId, deletionOperationId })`.
+- **Permanent purge:** hold the shared lifecycle barrier from the irreversible artifact unlink through `releaseSession({ sessionId, deletionOperationId })`. Unlink first, then release durable `session-event` owners. If the process crashes between those steps, the stale owner is a safe leak that reconciliation can remove; releasing before unlink would risk data loss.
 - **Retention sweep:** use the same release path as an explicit purge.
 - **Failed or partial purge:** keep the owner records. An uncertain file operation must never release references.
 
-The Session Delete plugin should use an optional Host capability to release ownership after a successful purge. Until that capability exists, it must continue retaining attachments (a leak is safer than data loss).
+`releaseSession` removes only durable `session-event` owners for that Session ID; it does not steal or expire unrelated staged-upload, command-execution, or read leases. The Session Delete plugin should use an optional Host capability to release ownership after a successful purge. Until that capability exists, it must continue retaining attachments (a leak is safer than data loss).
 
 ## 6. Cross-process and crash coordination
 
