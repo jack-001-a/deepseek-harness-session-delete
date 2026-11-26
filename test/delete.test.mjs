@@ -11,7 +11,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { appendFile, link, mkdtemp, mkdir, readFile, readlink, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { apply } from '../index.js'
@@ -2149,6 +2149,108 @@ test('startup recovery retries workspace accounting when a host write fails', as
     ['unpin', SESSION_ID],
     ['unarchive', SESSION_ID],
   ])
+})
+
+test('stale-lock reclaimers cannot rename a replacement lock held by another contender', async () => {
+  const store = await makeStore()
+  const h = harness({ root: store.root })
+  const lockPath = await h.service.processLockPath(SESSION_ID)
+  await mkdir(lockPath, { recursive: true })
+
+  const deadOwnerProcess = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' })
+  const deadPid = deadOwnerProcess.pid
+  assert.ok(deadPid, 'the stale owner process must have a PID')
+  await new Promise((resolve, reject) => {
+    deadOwnerProcess.once('error', reject)
+    deadOwnerProcess.once('exit', resolve)
+  })
+  assert.equal(h.service.isProcessAlive(deadPid), false, 'the fixture owner process must be definitely dead')
+
+  const staleOwner = { pid: deadPid, host: hostname(), token: 'stale-owner-token', createdAt: Date.now() }
+  await writeFile(join(lockPath, '.owner.json'), JSON.stringify(staleOwner) + '\n')
+
+  const originalReadOwner = h.service.readProcessLockOwner.bind(h.service)
+  let canonicalReads = 0
+  let openRevalidation
+  const revalidationGate = new Promise((resolve) => { openRevalidation = resolve })
+  let announceRevalidation
+  const revalidationStarted = new Promise((resolve) => { announceRevalidation = resolve })
+  let openDelayedRead
+  const delayedReadGate = new Promise((resolve) => { openDelayedRead = resolve })
+  let announceDelayedRead
+  const delayedReadStarted = new Promise((resolve) => { announceDelayedRead = resolve })
+
+  h.service.readProcessLockOwner = async (candidatePath) => {
+    const owner = await originalReadOwner(candidatePath)
+    if (candidatePath !== lockPath) return owner
+    canonicalReads += 1
+    if (canonicalReads === 2) {
+      announceRevalidation()
+      await revalidationGate
+    } else if (canonicalReads === 3) {
+      announceDelayedRead()
+      await delayedReadGate
+    }
+    return owner
+  }
+
+  let firstPromise
+  let secondPromise
+  let firstRelease
+  let secondRelease
+  let firstReleased = false
+  let secondReleased = false
+  try {
+    firstPromise = h.service.acquireProcessLock(SESSION_ID)
+    await revalidationStarted
+    secondPromise = h.service.acquireProcessLock(SESSION_ID)
+    await delayedReadStarted
+
+    openRevalidation()
+    firstRelease = await firstPromise
+    openDelayedRead()
+
+    let secondError
+    const secondSettlement = secondPromise.then(
+      (release) => {
+        secondRelease = release
+        return 'acquired'
+      },
+      (error) => {
+        secondError = error
+        return 'rejected'
+      },
+    )
+    const secondBeforeRelease = await Promise.race([
+      secondSettlement,
+      new Promise((resolve) => setTimeout(() => resolve('pending'), 200)),
+    ])
+    assert.equal(
+      secondBeforeRelease,
+      'pending',
+      'a delayed observer of the dead owner must not move the first contender live replacement lock',
+    )
+    if (secondError) throw secondError
+
+    await firstRelease()
+    firstReleased = true
+    if (!secondRelease) secondRelease = await secondPromise
+    await secondRelease()
+    secondReleased = true
+  } finally {
+    openRevalidation()
+    openDelayedRead()
+    if (firstRelease && !firstReleased) await firstRelease()
+    if (secondPromise && !secondReleased) {
+      const lateRelease = await Promise.race([
+        secondPromise.catch(() => undefined),
+        new Promise((resolve) => setTimeout(() => resolve(undefined), 2000)),
+      ])
+      if (typeof lateRelease === 'function') await lateRelease()
+    } else if (secondRelease && !secondReleased) {
+      await secondRelease()
+    }
+  }
 })
 
 test('a symlinked process-lock root is rejected before creating session locks', async (t) => {
