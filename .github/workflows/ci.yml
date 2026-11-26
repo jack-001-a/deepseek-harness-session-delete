@@ -40,7 +40,7 @@ jobs:
 
       - name: Verify the package manifest
         run: |
-          node -e "const p=require('./package.json'); if (p.private) throw new Error('package.json must not be private'); if (!p.repository?.url) throw new Error('repository.url is required for trusted publishing'); if (!p.engines?.node) throw new Error('engines.node is required'); console.log(p.name, p.version)"
+          node -e "const p=require('./package.json'); if (p.private) throw new Error('package.json must not be private'); if (!p.repository?.url) throw new Error('repository.url is required for trusted publishing'); if (!p.engines?.node) throw new Error('engines.node is required'); if (!p.engines?.dsh) throw new Error('engines.dsh is required'); console.log(p.name, p.version)"
 
       - name: Inspect the tarball contents
         run: npm pack --dry-run
@@ -58,6 +58,8 @@ jobs:
             ref: "3f321d32bfe382212a8ed8785c1d47a5a300aa23"
           - version: "0.2.2-rc.5"
             ref: "9c2670d3bce5275e0d1610272958121af87787bb"
+          - version: "0.2.3-alpha.2"
+            ref: "4b399c39a6d1479cd84ca591b4d7c88e24d38a96"
     steps:
       - name: Check out Session Delete
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -73,7 +75,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.9.0
+          node-version: 24.22.3
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v6.1.1
