@@ -27,7 +27,7 @@
  */
 import { Buffer } from 'node:buffer'
 import { constants as fsConstants } from 'node:fs'
-import { cp, lstat, mkdir, open, readFile, readlink, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { cp, lstat, mkdir, open, opendir, readlink, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -198,6 +198,159 @@ async function readBoundedTransactionFile(file, maxBytes, label) {
   } finally {
     await handle?.close().catch(() => {})
   }
+}
+
+/** Maximum number of artifact tree entries examined by one recovery comparison. */
+const ARTIFACT_COMPARE_MAX_ENTRIES = 10_000
+/** Maximum nesting depth accepted during an artifact tree comparison. */
+const ARTIFACT_COMPARE_MAX_DEPTH = 128
+/** Fixed-size read buffer used while comparing artifact file contents. */
+const ARTIFACT_COMPARE_CHUNK_BYTES = 64 * 1024
+
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino
+}
+
+function unchangedFileSnapshot(left, right) {
+  return (
+    sameFileIdentity(left, right) &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs
+  )
+}
+
+async function readChunk(handle, buffer, length, position) {
+  let total = 0
+  while (total < length) {
+    const { bytesRead } = await handle.read(buffer, total, length - total, position + total)
+    if (bytesRead === 0) break
+    total += bytesRead
+  }
+  return total
+}
+
+/** Compare regular files using fixed-size buffers and stable descriptor snapshots. */
+async function regularArtifactFilesMatch(left, right, leftBefore, rightBefore) {
+  if (leftBefore.size !== rightBefore.size) return false
+  const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0)
+  let leftHandle
+  let rightHandle
+  try {
+    leftHandle = await open(left, flags)
+    rightHandle = await open(right, flags)
+    const [leftOpened, rightOpened] = await Promise.all([leftHandle.stat(), rightHandle.stat()])
+    if (
+      !leftOpened.isFile() ||
+      !rightOpened.isFile() ||
+      !unchangedFileSnapshot(leftBefore, leftOpened) ||
+      !unchangedFileSnapshot(rightBefore, rightOpened)
+    ) {
+      throw new Error('An artifact file changed while it was being opened.')
+    }
+
+    const leftBuffer = Buffer.allocUnsafe(ARTIFACT_COMPARE_CHUNK_BYTES)
+    const rightBuffer = Buffer.allocUnsafe(ARTIFACT_COMPARE_CHUNK_BYTES)
+    let position = 0
+    while (position < leftOpened.size) {
+      const length = Math.min(ARTIFACT_COMPARE_CHUNK_BYTES, leftOpened.size - position)
+      const [leftBytes, rightBytes] = await Promise.all([
+        readChunk(leftHandle, leftBuffer, length, position),
+        readChunk(rightHandle, rightBuffer, length, position),
+      ])
+      if (leftBytes !== length || rightBytes !== length) {
+        throw new Error('An artifact file was truncated while it was being compared.')
+      }
+      if (!leftBuffer.subarray(0, length).equals(rightBuffer.subarray(0, length))) return false
+      position += length
+    }
+
+    const [leftAfter, rightAfter, leftCurrent, rightCurrent] = await Promise.all([
+      leftHandle.stat(),
+      rightHandle.stat(),
+      lstat(left),
+      lstat(right),
+    ])
+    if (
+      !unchangedFileSnapshot(leftOpened, leftAfter) ||
+      !unchangedFileSnapshot(rightOpened, rightAfter) ||
+      !leftCurrent.isFile() ||
+      leftCurrent.isSymbolicLink() ||
+      !rightCurrent.isFile() ||
+      rightCurrent.isSymbolicLink() ||
+      !sameFileIdentity(leftOpened, leftCurrent) ||
+      !sameFileIdentity(rightOpened, rightCurrent) ||
+      leftCurrent.size !== leftOpened.size ||
+      rightCurrent.size !== rightOpened.size
+    ) {
+      throw new Error('An artifact file changed while it was being compared.')
+    }
+    return true
+  } finally {
+    await Promise.all([
+      leftHandle?.close().catch(() => {}),
+      rightHandle?.close().catch(() => {}),
+    ])
+  }
+}
+
+/**
+ * Compare two artifact trees without following links or materializing directory
+ * listings. A shared entry budget bounds recovery work for wide trees.
+ */
+async function compareArtifactTrees(left, right, budget, depth = 0) {
+  if (depth > ARTIFACT_COMPARE_MAX_DEPTH) {
+    throw new Error('Artifact tree exceeds the comparison depth limit.')
+  }
+  const [leftStat, rightStat] = await Promise.all([
+    lstat(left).catch((error) => error?.code === 'ENOENT' ? undefined : Promise.reject(error)),
+    lstat(right).catch((error) => error?.code === 'ENOENT' ? undefined : Promise.reject(error)),
+  ])
+  if (!leftStat || !rightStat) return false
+  if (leftStat.isDirectory() !== rightStat.isDirectory()) return false
+  if (leftStat.isFile() !== rightStat.isFile()) return false
+  if (leftStat.isSymbolicLink() !== rightStat.isSymbolicLink()) return false
+
+  if (leftStat.isFile()) return regularArtifactFilesMatch(left, right, leftStat, rightStat)
+  if (leftStat.isSymbolicLink()) {
+    const [leftLink, rightLink] = await Promise.all([readlink(left), readlink(right)])
+    return leftLink === rightLink
+  }
+  if (!leftStat.isDirectory()) return false
+
+  let leftCount = 0
+  const leftDirectory = await opendir(left)
+  for await (const entry of leftDirectory) {
+    budget.entries += 1
+    leftCount += 1
+    if (budget.entries > ARTIFACT_COMPARE_MAX_ENTRIES) {
+      throw new Error('Artifact tree exceeds the comparison entry limit.')
+    }
+    if (!await compareArtifactTrees(join(left, entry.name), join(right, entry.name), budget, depth + 1)) {
+      return false
+    }
+  }
+
+  let rightCount = 0
+  const rightDirectory = await opendir(right)
+  for await (const _entry of rightDirectory) {
+    rightCount += 1
+    if (rightCount > leftCount) return false
+  }
+  if (leftCount !== rightCount) return false
+
+  const [leftAfter, rightAfter] = await Promise.all([lstat(left), lstat(right)])
+  if (
+    !sameFileIdentity(leftStat, leftAfter) ||
+    !sameFileIdentity(rightStat, rightAfter) ||
+    leftStat.mtimeMs !== leftAfter.mtimeMs ||
+    leftStat.ctimeMs !== leftAfter.ctimeMs ||
+    rightStat.mtimeMs !== rightAfter.mtimeMs ||
+    rightStat.ctimeMs !== rightAfter.ctimeMs
+  ) {
+    throw new Error('An artifact directory changed while it was being compared.')
+  }
+  return true
 }
 
 /**
@@ -1597,30 +1750,7 @@ class SessionDeleteService {
    * @returns whether both trees have identical names, types and contents.
    */
   async artifactsMatch(left, right) {
-    const leftStat = await lstat(left).catch(() => undefined)
-    const rightStat = await lstat(right).catch(() => undefined)
-    if (!leftStat || !rightStat || leftStat.isDirectory() !== rightStat.isDirectory()) return false
-    if (leftStat.isDirectory()) {
-      const [leftNames, rightNames] = await Promise.all([readdir(left), readdir(right)])
-      if (leftNames.length !== rightNames.length) return false
-      leftNames.sort()
-      rightNames.sort()
-      for (let index = 0; index < leftNames.length; index++) {
-        if (leftNames[index] !== rightNames[index]) return false
-        if (!(await this.artifactsMatch(join(left, leftNames[index]), join(right, rightNames[index])))) return false
-      }
-      return true
-    }
-    if (leftStat.isFile()) {
-      const [leftBytes, rightBytes] = await Promise.all([readFile(left), readFile(right)])
-      return leftBytes.equals(rightBytes)
-    }
-    try {
-      const [leftLink, rightLink] = await Promise.all([readlink(left), readlink(right)])
-      return leftLink === rightLink
-    } catch {
-      return false
-    }
+    return compareArtifactTrees(left, right, { entries: 0 })
   }
 
   /**
