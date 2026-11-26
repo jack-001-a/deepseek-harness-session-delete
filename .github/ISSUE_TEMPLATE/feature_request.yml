@@ -1,0 +1,30 @@
+name: Feature request
+description: Propose a user-facing improvement
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the user problem first. Features that mutate session files,
+        attachments or workspace data must include a safe ownership model.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What is difficult or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful behavior and its expected UX.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Data and compatibility considerations
+      description: Could this affect transcripts, shared attachments, workspace files, recovery or older Harness versions?
+    validations:
+      required: false
