@@ -469,6 +469,14 @@ class SessionDeleteService {
     const lockPath = await this.processLockPath(sessionId)
     const root = dirname(lockPath)
     await mkdir(root, { recursive: true })
+    const rootStat = await lstat(root)
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      throw new SessionDeleteError(
+        'session-delete/unsafe-path',
+        'sessionDelete: the operation lock root is not a real directory; refusing to follow it',
+        { path: root, reason: 'symlinked-lock-root' },
+      )
+    }
     const startedAt = Date.now()
 
     const claim = async () => {
