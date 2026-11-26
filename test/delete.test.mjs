@@ -1534,7 +1534,7 @@ test('audit append and retention trimming are serialized across Harness processe
   const initial = Array.from({ length: 990 }, (_, index) =>
     JSON.stringify({ at: new Date(0).toISOString(), action: 'old', sessionId: 'old-' + index, ok: true }),
   )
-  await writeFile(file, initial.join('\\n') + '\\n')
+  await writeFile(file, initial.join('\n') + '\n')
 
   const moduleUrl = new URL('../index.js', import.meta.url).href
   const worker = `
@@ -1572,7 +1572,7 @@ test('audit append and retention trimming are serialized across Harness processe
 
   await Promise.all([launch('worker-a'), launch('worker-b')])
 
-  const lines = (await readFile(file, 'utf8')).trim().split('\\n').map((line) => JSON.parse(line))
+  const lines = (await readFile(file, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
   const workerIds = new Set(lines
     .filter((line) => line.action === 'worker-audit')
     .map((line) => line.sessionId))
