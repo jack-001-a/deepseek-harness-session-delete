@@ -92,6 +92,14 @@ The following is a design sketch, not a claim that these methods exist today. Na
 
 ~~~ts
 type AttachmentLeaseId = string & { readonly __brand: 'AttachmentLeaseId' }
+type AttachmentReference = ImageAttachmentRef | FileAttachmentRef
+
+interface AttachmentReferenceOccurrence {
+  readonly ref: AttachmentReference
+  readonly eventSeq: number
+  /** Stable path/ordinal within the event, assigned by the typed extractor. */
+  readonly slot: string
+}
 
 interface Leased<TRef> {
   readonly ref: TRef
@@ -158,7 +166,7 @@ interface SessionAttachmentReferences {
   /** Register a typed extractor for event shapes owned by a Host package. */
   registerExtractor(
     name: string,
-    extract: (event: SessionEvent) => readonly AttachmentReference[],
+    extract: (event: SessionEvent) => readonly Omit<AttachmentReferenceOccurrence, 'eventSeq'>[],
   ): () => void
 
   /** Retain all attachments inherited by a child before the child is published. */
@@ -166,7 +174,7 @@ interface SessionAttachmentReferences {
     sourceSessionId: string
     childSessionId: string
     inheritedEventCount: number
-    references: readonly AttachmentReference[]
+    references: readonly AttachmentReferenceOccurrence[]
   }): Promise<void>
 
   /** Release all Session owners after the durable artifact is irreversibly removed. */
