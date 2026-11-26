@@ -332,8 +332,83 @@ test('generic-file aliases are tracked separately while their canonical object s
 
   model.purgeSession('session-a', { artifactRemoved: true })
   assert.equal(model.hasObject(FILE_REPORT.objectId), true)
-  assert.equal(model.objectSnapshot(FILE_REPORT.objectId).aliases.length, 2)
+  const afterPurge = model.objectSnapshot(FILE_REPORT.objectId)
+  assert.deepEqual(afterPurge.aliases, [{ name: 'summary.pdf', ownerCount: 1 }])
+  assert.equal(afterPurge.ownerCount, 1)
+  assert.equal(afterPurge.observedLinkCount, 2)
+  assert.equal(afterPurge.expectedLinkCount, 2)
   assert.equal(model.hasOwner(FILE_REPORT.objectId, sessionOwner('session-b', 3, 'files[0]')), true)
+})
+
+test('an unowned alias remains while a matching read lease is active, then is removed independently', () => {
+  const { model } = createModel()
+  const upload = model.publish({
+    objectId: FILE_REPORT.objectId,
+    kind: 'file',
+    alias: FILE_REPORT.alias,
+    bytes: 512,
+    processId: 'host-a',
+  })
+  const owner = sessionOwner('session-a', 2, 'files[0]')
+  model.commitLease(upload.leaseId, owner)
+
+  const readLease = model.acquireReadLease(FILE_REPORT, 'reader-a')
+  model.releaseOwner(owner)
+  assert.deepEqual(model.objectSnapshot(FILE_REPORT.objectId).aliases, [
+    { name: 'report.pdf', ownerCount: 0 },
+  ])
+
+  model.releaseReadLease(readLease)
+  const snapshot = model.objectSnapshot(FILE_REPORT.objectId)
+  assert.deepEqual(snapshot.aliases, [])
+  assert.equal(snapshot.observedLinkCount, 1)
+  assert.equal(snapshot.expectedLinkCount, 1)
+  assert.equal(model.hasObject(FILE_REPORT.objectId), true, 'alias cleanup must not remove the canonical object')
+})
+
+test('adding and releasing aliases never masks an unexplained hard link', () => {
+  const { model, advance } = createModel()
+  const first = model.publish({
+    objectId: FILE_REPORT.objectId,
+    kind: 'file',
+    alias: FILE_REPORT.alias,
+    bytes: 512,
+    processId: 'host-a',
+    observedLinkCount: 3,
+  })
+  model.commitLease(first.leaseId, sessionOwner('session-a', 2, 'files[0]'))
+
+  const second = model.publish({
+    objectId: FILE_REPORT.objectId,
+    kind: 'file',
+    alias: FILE_SUMMARY.alias,
+    bytes: 512,
+    processId: 'host-b',
+  })
+  model.commitLease(second.leaseId, sessionOwner('session-b', 3, 'files[0]'))
+
+  let snapshot = model.objectSnapshot(FILE_REPORT.objectId)
+  assert.equal(snapshot.observedLinkCount, 4)
+  assert.equal(snapshot.expectedLinkCount, 3)
+
+  model.purgeSession('session-a', { artifactRemoved: true })
+  snapshot = model.objectSnapshot(FILE_REPORT.objectId)
+  assert.equal(snapshot.observedLinkCount, 3)
+  assert.equal(snapshot.expectedLinkCount, 2)
+
+  model.purgeSession('session-b', { artifactRemoved: true })
+  snapshot = model.objectSnapshot(FILE_REPORT.objectId)
+  assert.equal(snapshot.observedLinkCount, 2)
+  assert.equal(snapshot.expectedLinkCount, 1)
+  advance(GRACE)
+
+  const report = model.collect({ dryRun: false })
+  assert.equal(report.objectCount, 0)
+  assert.deepEqual(report.skipped, [{
+    objectId: FILE_REPORT.objectId,
+    reasons: ['hard-link-count-mismatch'],
+  }])
+  assert.equal(model.hasObject(FILE_REPORT.objectId), true)
 })
 
 test('a dry-run reports counts and bytes without exposing object contents or mutating state', () => {

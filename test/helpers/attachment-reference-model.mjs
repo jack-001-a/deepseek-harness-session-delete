@@ -115,15 +115,15 @@ export class AttachmentReferenceModel {
         aliases: new Map(),
         leases: new Set(),
         readLeases: new Set(),
-        observedLinkCount: kind === 'file' ? (observedLinkCount ?? 2) : 1,
+        observedLinkCount: kind === 'file' ? (observedLinkCount ?? 1) : 1,
       }
       this.#objects.set(objectId, object)
     }
     if (kind === 'file') {
       if (!object.aliases.has(alias)) {
         object.aliases.set(alias, new Set())
-        // One canonical object link plus one provider-owned link per alias.
-        if (observedLinkCount === undefined) object.observedLinkCount = 1 + object.aliases.size
+        // Preserve unexplained links while accounting for this new provider alias.
+        if (observedLinkCount === undefined) object.observedLinkCount += 1
       }
       if (observedLinkCount !== undefined) object.observedLinkCount = observedLinkCount
     }
@@ -195,6 +195,7 @@ export class AttachmentReferenceModel {
     const object = this.#objects.get(lease.objectId)
     object.leases.delete(leaseId)
     this.#leases.delete(leaseId)
+    this.#removeUnownedAliases(object)
     this.#updateUnreferencedAt(object)
     return { released: true, reason }
   }
@@ -213,7 +214,7 @@ export class AttachmentReferenceModel {
     if (!object || object.kind !== reference.kind) throw new Error('unknown attachment reference')
     if (object.kind === 'file' && !object.aliases.has(reference.alias)) throw new Error('unknown file alias')
     const readLeaseId = `read-lease-${this.#nextReadLease++}`
-    this.#readLeases.set(readLeaseId, { readLeaseId, objectId: object.objectId, processId })
+    this.#readLeases.set(readLeaseId, { readLeaseId, objectId: object.objectId, alias: reference.alias, processId })
     object.readLeases.add(readLeaseId)
     this.#instances.set(processId, { state: 'live', stoppedAt: undefined })
     return readLeaseId
@@ -225,6 +226,7 @@ export class AttachmentReferenceModel {
     const object = this.#objects.get(lease.objectId)
     object.readLeases.delete(readLeaseId)
     this.#readLeases.delete(readLeaseId)
+    this.#removeUnownedAliases(object)
     this.#updateUnreferencedAt(object)
     return { released: true }
   }
@@ -236,6 +238,7 @@ export class AttachmentReferenceModel {
     for (const object of this.#objects.values()) {
       if (!object.owners.delete(key)) continue
       for (const aliasOwners of object.aliases.values()) aliasOwners.delete(key)
+      this.#removeUnownedAliases(object)
       released += 1
       this.#updateUnreferencedAt(object)
     }
@@ -297,6 +300,7 @@ export class AttachmentReferenceModel {
         }
         releasedOwnerCount += 1
       }
+      this.#removeUnownedAliases(object)
       this.#updateUnreferencedAt(object)
     }
     return { sessionId, releasedOwnerCount }
@@ -430,6 +434,21 @@ export class AttachmentReferenceModel {
       readLeaseCount: object.readLeases.size,
       observedLinkCount: object.observedLinkCount,
       expectedLinkCount: object.kind === 'file' ? 1 + object.aliases.size : 1,
+    }
+  }
+
+  #removeUnownedAliases(object) {
+    if (object.kind !== 'file') return
+    for (const [alias, owners] of object.aliases) {
+      if (owners.size > 0) continue
+      const hasStagedLease = [...object.leases]
+        .some((leaseId) => this.#leases.get(leaseId)?.alias === alias)
+      const hasReadLease = [...object.readLeases]
+        .some((leaseId) => this.#readLeases.get(leaseId)?.alias === alias)
+      if (hasStagedLease || hasReadLease) continue
+      object.aliases.delete(alias)
+      // Keep the canonical object link and any unexplained links accounted for.
+      object.observedLinkCount = Math.max(1, object.observedLinkCount - 1)
     }
   }
 
