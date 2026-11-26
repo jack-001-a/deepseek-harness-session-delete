@@ -1505,23 +1505,27 @@ window.__ModuleLoader__.load({
      * The capability is queried once on mount. Permanent-only stores and
      * unsupported persistence backends do not render a dead control.
      */
-    function TrashManagerButton({ wide, openTrashManager, describeDeletion, t }) {
-      const [info, setInfo] = React.useState(undefined)
+    function TrashManagerButton({ wide, openTrashManager, describeDeletion, updateTrashCount, useTrashCount, t }) {
+      const [available, setAvailable] = React.useState(false)
+      const countValue = useTrashCount((count) => count)
       React.useEffect(() => {
         let active = true
         Promise.resolve()
           .then(() => describeDeletion())
           .then((value) => {
-            if (active) setInfo(value)
+            if (active) {
+              setAvailable(value?.canListTrash === true)
+              updateTrashCount(Number.isSafeInteger(value?.trashCount) ? value.trashCount : 0)
+            }
           })
           .catch(() => {
-            if (active) setInfo({ canListTrash: false })
+            if (active) setAvailable(false)
           })
         return () => { active = false }
       }, [])
 
-      if (info?.canListTrash !== true) return null
-      const count = Number.isSafeInteger(info.trashCount) && info.trashCount > 0 ? info.trashCount : 0
+      if (!available) return null
+      const count = Number.isSafeInteger(countValue) && countValue > 0 ? countValue : 0
       const label = count > 0 ? t('trash.openCount', { count }) : t('trash.open')
       return h(
         adapter.Tooltip,
@@ -1550,7 +1554,7 @@ window.__ModuleLoader__.load({
      * Trash manifest stores no display title and the plugin does not persist
      * conversation content just to make this list friendlier.
      */
-    function TrashManagerDialog({ settleTrashManager, listTrash, restoreSession, purgeSession, retentionDays, t }) {
+    function TrashManagerDialog({ settleTrashManager, listTrash, restoreSession, purgeSession, describeDeletion, updateTrashCount, t }) {
       const [entries, setEntries] = React.useState([])
       const [loading, setLoading] = React.useState(true)
       const [loadError, setLoadError] = React.useState(undefined)
@@ -1567,7 +1571,9 @@ window.__ModuleLoader__.load({
         return Promise.resolve()
           .then(() => listTrash())
           .then((result) => {
-            setEntries(Array.isArray(result?.entries) ? result.entries : [])
+            const nextEntries = Array.isArray(result?.entries) ? result.entries : []
+            setEntries(nextEntries)
+            updateTrashCount(nextEntries.length)
           })
           .catch((failure) => {
             setLoadError(describeActionFailure(t, failure, 'trash.loadFailed'))
@@ -1575,8 +1581,17 @@ window.__ModuleLoader__.load({
           .finally(() => setLoading(false))
       }
 
+      const [retentionDays, setRetentionDays] = React.useState(7)
       React.useEffect(() => {
         refresh()
+        Promise.resolve()
+          .then(() => describeDeletion())
+          .then((info) => {
+            if (Number.isSafeInteger(info?.retentionDays) && info.retentionDays >= 0) {
+              setRetentionDays(info.retentionDays)
+            }
+          })
+          .catch(() => {})
       }, [])
 
       const close = () => {
@@ -1649,6 +1664,9 @@ window.__ModuleLoader__.load({
       )
       if (loading) {
         body.push(h('div', { role: 'status', className: 'dshSessionDelete_trashManagerStatus', key: 'loading' }, t('trash.loading')))
+      } else if (loadError !== undefined) {
+        // The error below replaces an empty-state claim: an unreadable Trash
+        // must never be presented as an empty one.
       } else if (entries.length === 0) {
         body.push(h('div', { className: 'dshSessionDelete_trashManagerStatus', key: 'empty' }, t('trash.empty')))
       } else if (visibleEntries.length === 0) {
@@ -1817,7 +1835,8 @@ window.__ModuleLoader__.load({
           listTrash,
           restoreSession,
           purgeSession,
-          retentionDays: 7,
+          describeDeletion,
+          updateTrashCount,
           t,
         })
       }
@@ -1836,6 +1855,8 @@ window.__ModuleLoader__.load({
 
           const pending = createObservable(null)
           const trashManagerOpen = createObservable(false)
+          const trashCount = createObservable(undefined)
+          const updateTrashCount = (count) => trashCount.set(count)
           const openTrashManager = () => trashManagerOpen.set(true)
           const settleTrashManager = () => trashManagerOpen.set(false)
 
@@ -1935,7 +1956,12 @@ window.__ModuleLoader__.load({
           }
 
           const actionInjected = () => ({ requestDelete })
-          const trashActionInjected = () => ({ openTrashManager, describeDeletion })
+          const trashActionInjected = () => ({
+            openTrashManager,
+            describeDeletion,
+            updateTrashCount,
+            hooks: { trashCount },
+          })
           const dialogInjected = () => ({
             hooks: { deleteRequest: pending, trashManagerOpen },
             settleDelete,
