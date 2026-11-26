@@ -2021,7 +2021,7 @@ test('stale-lock reclaimers cannot rename a replacement lock held by another con
     token: 'stale-owner-token',
     createdAt: Date.now(),
   }
-  await writeFile(join(lockPath, '.owner.json'), `${JSON.stringify(staleOwner)}\\n`)
+  await writeFile(join(lockPath, '.owner.json'), `${JSON.stringify(staleOwner)}\n`)
 
   // Pause the first contender during its post-marker owner recheck. Start a
   // second contender and capture its stale snapshot before allowing the first
