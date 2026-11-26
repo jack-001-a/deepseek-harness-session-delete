@@ -1571,9 +1571,11 @@ window.__ModuleLoader__.load({
         return Promise.resolve()
           .then(() => listTrash())
           .then((result) => {
-            const nextEntries = Array.isArray(result?.entries) ? result.entries : []
-            setEntries(nextEntries)
-            updateTrashCount(nextEntries.length)
+            if (!Array.isArray(result?.entries)) {
+              throw new Error('sessionDelete/listTrash returned an invalid entry list')
+            }
+            setEntries(result.entries)
+            updateTrashCount(result.entries.length)
           })
           .catch((failure) => {
             setLoadError(describeActionFailure(t, failure, 'trash.loadFailed'))
