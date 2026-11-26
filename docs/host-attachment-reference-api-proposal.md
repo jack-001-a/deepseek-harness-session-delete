@@ -144,8 +144,13 @@ interface LeaseTransfer {
 }
 
 interface AttachmentLeaseLedger {
+  /** Atomically transfer staged leases to durable owners. */
   commitLeases(transfers: readonly LeaseTransfer[]): Promise<void>
 
+  /** Add event owners for already-owned references (retries, copied blocks, or other existing refs). */
+  retainEventReferences(sessionId: string, occurrences: readonly AttachmentReferenceOccurrence[]): Promise<void>
+
+  /** Release an ephemeral upload/command lease after its producer has stopped. */
   releaseLeases(leases: readonly AttachmentLeaseId[], reason: string): Promise<void>
 
   /** Release a bounded provider/Host filesystem read lease after its handle closes. */
@@ -189,6 +194,13 @@ interface SessionAttachmentReferences {
     extract: (event: SessionEvent) => readonly { readonly ref: AttachmentReference; readonly slot: string }[],
   ): () => void
 
+  /**
+   * Observe one accepted event, transfer matching pending leases, and add
+   * independent owners for existing references. The listener is post-commit;
+   * its pending operation is drained by flush().
+   */
+  observeEvent(session: Session, event: SessionEvent): void
+
   /** Retain all attachments inherited by a child before the child is published. */
   retainFork(input: {
     sourceSessionId: string
@@ -229,7 +241,8 @@ The extractor registry is explicit and owned by the package that defines each at
 5. Prompt admission binds receipt IDs to the request ID as today.
 6. Before `agent.followup()` / `agent.steer()` can append the accepted message, the admission path binds both upload-receipt leases and newly admitted encoded-image leases to `(sessionId, requestId)`. This uses the same request identity already carried by the user/retry source `rpcId`.
 7. When the accepted `user/message` event is observed, the typed event extractor returns exact reference occurrences and stable content slots. The coordinator matches the request's bound leases against those occurrences and transfers each matching lease to a `session-event` owner keyed by Session ID, event sequence, and slot. A lease whose reference is not present in the committed event is not transferred.
-8. After the transfer succeeds, the receipt and temporary lease can be retired. If transfer fails, keep the lease and retry during `session/flush`; never drop the lease on a failed ledger write.
+8. References in the event that do not consume a new lease (for example, an existing reference copied into a retry or another event) receive independent `session-event` owners through `retainEventReferences`.
+9. After all owner writes succeed, the receipt and temporary lease can be retired. If transfer fails, keep the lease and retry during `session/flush`; never drop the lease on a failed ledger write.
 
 For direct encoded-image prompt admission (not a prior upload receipt), the admission path must return leased references internally and keep those leases until the accepted event is committed.
 
