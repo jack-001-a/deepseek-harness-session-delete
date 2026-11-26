@@ -127,7 +127,7 @@ export class AttachmentReferenceModel {
       if (observedLinkCount !== undefined) object.observedLinkCount = observedLinkCount
     }
 
-    this.#instances.set(processId, 'live')
+    this.#instances.set(processId, { state: 'live', stoppedAt: undefined })
     const leaseId = `upload-lease-${this.#nextLease++}`
     const lease = { leaseId, objectId, alias, processId, createdAt: at, committedOwner: undefined }
     this.#leases.set(leaseId, lease)
@@ -193,7 +193,7 @@ export class AttachmentReferenceModel {
   /** Record that a Host process has stopped; its staged leases still need a grace period. */
   stopInstance(processId) {
     if (!this.#instances.has(processId)) return false
-    this.#instances.set(processId, 'stopped')
+    this.#instances.set(processId, { state: 'stopped', stoppedAt: this.now() })
     return true
   }
 
@@ -206,7 +206,7 @@ export class AttachmentReferenceModel {
     const readLeaseId = `read-lease-${this.#nextReadLease++}`
     this.#readLeases.set(readLeaseId, { readLeaseId, objectId: object.objectId, processId })
     object.readLeases.add(readLeaseId)
-    this.#instances.set(processId, 'live')
+    this.#instances.set(processId, { state: 'live', stoppedAt: undefined })
     return readLeaseId
   }
 
@@ -218,6 +218,19 @@ export class AttachmentReferenceModel {
     this.#readLeases.delete(readLeaseId)
     this.#updateUnreferencedAt(object)
     return { released: true }
+  }
+
+  /** Release a durable owner idempotently, including command-execution owners. */
+  releaseOwner(owner) {
+    const key = ownerKey(owner)
+    let released = 0
+    for (const object of this.#objects.values()) {
+      if (!object.owners.delete(key)) continue
+      for (const aliasOwners of object.aliases.values()) aliasOwners.delete(key)
+      released += 1
+      this.#updateUnreferencedAt(object)
+    }
+    return { releasedOwnerCount: released, alreadyReleased: released === 0 }
   }
 
   /** Create independent child owners for an inherited Session event prefix. */
@@ -328,17 +341,25 @@ export class AttachmentReferenceModel {
       const reasons = []
       if (object.owners.size > 0) reasons.push('durable-references')
       if (object.readLeases.size > 0) reasons.push('active-read-lease')
-      const activeOrRecentLease = [...object.leases]
+      const objectLeases = [...object.leases]
         .map((id) => this.#leases.get(id))
         .filter(Boolean)
-        .some((lease) => this.#instances.get(lease.processId) !== 'stopped' || now - lease.createdAt < this.graceMs)
+      const activeOrRecentLease = objectLeases.some((lease) => {
+        const instance = this.#instances.get(lease.processId)
+        if (!instance || instance.state !== 'stopped') return true
+        const stoppedAt = instance.stoppedAt ?? lease.createdAt
+        return now - Math.max(lease.createdAt, stoppedAt) < this.graceMs
+      })
       if (activeOrRecentLease) reasons.push('staged-upload-lease')
       if (object.kind === 'file' && object.observedLinkCount !== 1 + object.aliases.size) {
         reasons.push('hard-link-count-mismatch')
       }
-      const eligibleAt = object.unreferencedAt === undefined
-        ? Number.POSITIVE_INFINITY
-        : object.unreferencedAt + this.graceMs
+      const staleLeaseStopTimes = objectLeases
+        .map((lease) => this.#instances.get(lease.processId))
+        .filter((instance) => instance?.state === 'stopped')
+        .map((instance) => instance.stoppedAt)
+      const unreferencedAt = object.unreferencedAt ?? (staleLeaseStopTimes.length > 0 ? Math.max(...staleLeaseStopTimes) : undefined)
+      const eligibleAt = unreferencedAt === undefined ? Number.POSITIVE_INFINITY : unreferencedAt + this.graceMs
       if (now < eligibleAt) reasons.push('grace-period')
       if (reasons.length > 0) {
         if (reasons.includes('hard-link-count-mismatch')) {
@@ -357,6 +378,7 @@ export class AttachmentReferenceModel {
     }
     if (!dryRun) {
       for (const object of candidates) {
+        for (const leaseId of object.leases) this.#leases.delete(leaseId)
         this.#objects.delete(object.objectId)
       }
       return { ...report, collectedObjectCount: candidates.length }
