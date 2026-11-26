@@ -43,8 +43,9 @@
     "dsh": ">=0.2.1-rc.2 <0.3.0"
   },
   "scripts": {
-    "check": "node --check index.js && node --check client.js && node --check scripts/run-harness-session-delete-e2e.mjs && node --check scripts/fixtures/harness-session-holder.mjs && node --check test/client.test.mjs && node --check test/delete.test.mjs",
-    "test": "node --test"
+    "check": "node --check index.js && node --check client.js && node --check scripts/run-harness-session-delete-e2e.mjs && node --check scripts/fixtures/harness-session-holder.mjs && node --check test/client.test.mjs && node --check test/delete.test.mjs && node --check test/attachment-reference-contract.test.mjs && node --check test/helpers/attachment-reference-model.mjs",
+    "test": "node --test",
+    "test:attachment-contract": "node --test test/attachment-reference-contract.test.mjs"
   },
   "exports": {
     ".": "./index.js",
