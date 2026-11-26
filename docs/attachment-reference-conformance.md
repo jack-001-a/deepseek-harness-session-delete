@@ -22,7 +22,7 @@ npm run test:attachment-contract
 npm test
 ```
 
-## Contract scenarios (18)
+## Contract scenarios (20)
 
 The tests currently cover:
 
@@ -46,11 +46,17 @@ The tests currently cover:
     established.
 13. An incomplete reference index blocks the entire collection pass.
 14. An unexplained generic-file hard link is skipped.
-15. Generic-file aliases remain separate from their shared canonical object.
-16. A dry-run reports counts and bytes without exposing content or mutating
+15. Generic-file aliases remain separate from their shared canonical object;
+    an unowned alias can be removed without deleting another alias or the
+    canonical object.
+16. A matching read lease keeps an otherwise unowned alias present until the
+    reader releases it.
+17. Adding and releasing aliases preserves unexplained hard-link count
+    mismatches rather than normalizing them away.
+18. A dry-run reports counts and bytes without exposing content or mutating
     storage.
-17. An active mutation barrier blocks collection during reference changes.
-18. Unknown references are rejected rather than silently becoming collectible.
+19. An active mutation barrier blocks collection during reference changes.
+20. Unknown references are rejected rather than silently becoming collectible.
 
 ## How to use this against a real Host implementation
 
