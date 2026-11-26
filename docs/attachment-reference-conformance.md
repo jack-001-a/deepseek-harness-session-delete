@@ -22,7 +22,7 @@ npm run test:attachment-contract
 npm test
 ```
 
-## Contract scenarios
+## Contract scenarios (18)
 
 The tests currently cover:
 
@@ -34,21 +34,23 @@ The tests currently cover:
 5. Retaining an already-owned reference is idempotent.
 6. Fork creates independent child owners, so purging the parent cannot collect
    an object still referenced by the child.
-7. Moving to Trash and restoring do not change attachment ownership.
-8. Purge cannot release Session owners before the Session artifact is removed.
-9. Purging a Session releases only its Session-event owners, not a
-   command-execution owner.
-10. A read lease blocks collection after the last durable owner is released.
-11. A staged upload from a stopped Host remains protected for a recovery grace
+7. Fork validates the entire inherited reference set before creating any child
+   owners, so an unknown later reference cannot leave a partial child index.
+8. Moving to Trash and restoring do not change attachment ownership.
+9. Purge cannot release Session owners before the Session artifact is removed.
+10. Purging a Session releases only its Session-event owners, not a
+    command-execution owner.
+11. A read lease blocks collection after the last durable owner is released.
+12. A staged upload from a stopped Host remains protected for a recovery grace
     period, then becomes eligible only after process death and grace are both
     established.
-12. An incomplete reference index blocks the entire collection pass.
-13. An unexplained generic-file hard link is skipped.
-14. Generic-file aliases remain separate from their shared canonical object.
-15. A dry-run reports counts and bytes without exposing content or mutating
+13. An incomplete reference index blocks the entire collection pass.
+14. An unexplained generic-file hard link is skipped.
+15. Generic-file aliases remain separate from their shared canonical object.
+16. A dry-run reports counts and bytes without exposing content or mutating
     storage.
-16. An active mutation barrier blocks collection during reference changes.
-17. Unknown references are rejected rather than silently becoming collectible.
+17. An active mutation barrier blocks collection during reference changes.
+18. Unknown references are rejected rather than silently becoming collectible.
 
 ## How to use this against a real Host implementation
 
