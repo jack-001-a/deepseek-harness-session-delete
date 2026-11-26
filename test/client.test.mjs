@@ -282,17 +282,22 @@ function makeT(dictionaries, locale) {
 function renderDialog(registrations, dictionaries, React, locale, options = {}) {
   const injected = registrations['shell.overlay'].spec.inject()
   const pending = injected.hooks.deleteRequest
-  const request = options.request ?? REQUEST
+  const request = Object.prototype.hasOwnProperty.call(options, 'request') ? options.request : REQUEST
   pending.set(request)
+  const trashOpen = injected.hooks.trashManagerOpen
+  trashOpen.set(options.trashManagerOpen === true)
   const outer = mount(registrations['shell.overlay'].component, {
-    // The slot framework turns `hooks.deleteRequest` into `useDeleteRequest`;
-    // this is that adapter, reading the same observable.
+    // The slot framework turns these injected observables into selector hooks;
+    // this is the test adapter, reading the same snapshots.
     useDeleteRequest: (select) => select(pending.getSnapshot()),
+    useTrashManagerOpen: (select) => select(trashOpen.getSnapshot()),
     settleDelete: options.settleDelete ?? (() => {}),
     confirmDelete: options.confirmDelete ?? injected.confirmDelete,
     restoreSession: options.restoreSession ?? injected.restoreSession,
     purgeSession: options.purgeSession ?? injected.purgeSession,
     describeDeletion: options.describeDeletion ?? (async () => DESCRIBE_TRASH),
+    listTrash: options.listTrash ?? injected.listTrash,
+    updateTrashCount: injected.updateTrashCount,
     t: makeT(dictionaries, locale),
   })
   assert.ok(outer.tree, 'the dialog entry must render the inner form for a pending request')
@@ -410,6 +415,7 @@ test('registers the menu row, hover button and dialog on the shipped slots', asy
 
   assert.deepEqual(Object.keys(registrations).sort(), [
     'shell.overlay',
+    'sidebar.footer.action',
     'sidebar.workspaces.session.menu.item',
     'sidebar.workspaces.session.row.action',
   ])
@@ -419,13 +425,19 @@ test('registers the menu row, hover button and dialog on the shipped slots', asy
     assert.equal(registration.spec.locale, NS)
   }
   assert.equal(typeof registrations['sidebar.workspaces.session.row.action'].spec.inject().requestDelete, 'function')
+  assert.equal(registrations['sidebar.footer.action'].spec.id, 'ybbmm.dsh-session-delete-trash')
+  assert.equal(typeof registrations['sidebar.footer.action'].spec.inject().openTrashManager, 'function')
+  assert.equal(typeof registrations['sidebar.footer.action'].spec.inject().describeDeletion, 'function')
   const dialog = registrations['shell.overlay'].spec.inject()
   assert.equal(typeof dialog.settleDelete, 'function')
   assert.equal(typeof dialog.confirmDelete, 'function')
   assert.equal(typeof dialog.restoreSession, 'function')
   assert.equal(typeof dialog.purgeSession, 'function')
   assert.equal(typeof dialog.describeDeletion, 'function')
+  assert.equal(typeof dialog.listTrash, 'function')
+  assert.equal(typeof dialog.settleTrashManager, 'function')
   assert.equal(typeof dialog.hooks.deleteRequest.subscribe, 'function')
+  assert.equal(typeof dialog.hooks.trashManagerOpen.subscribe, 'function')
 })
 
 test('registers identical en/zh dictionaries covering every key the code uses', async () => {
@@ -438,7 +450,7 @@ test('registers identical en/zh dictionaries covering every key the code uses', 
   const source = await readFile(new URL('../client.js', import.meta.url), 'utf8')
   // Every dictionary key the source mentions, whether it is looked up
   // directly or through one of the mode tables.
-  const used = new Set([...source.matchAll(/['"]((?:menu|actions|dialog|error)\.[A-Za-z.]+)['"]/g)].map((match) => match[1]))
+  const used = new Set([...source.matchAll(/['"]((?:menu|actions|dialog|error|trash)\.[A-Za-z.]+)['"]/g)].map((match) => match[1]))
   for (const key of Object.values(ERROR_CODES)) used.add(key)
   for (const key of [
     'error.offline',
@@ -461,6 +473,157 @@ test('registers identical en/zh dictionaries covering every key the code uses', 
     assert.ok(key in zh, `missing zh copy for "${key}"`)
     assert.ok(key in en, `missing en copy for "${key}"`)
   }
+})
+
+test('the sidebar Trash action appears only when the Host supports recoverable Trash', async () => {
+  const { plugin, React } = await loadPlugin()
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  let opened = 0
+  const component = registrations['sidebar.footer.action'].component
+  const mounted = mount(component, {
+    ...registrations['sidebar.footer.action'].spec.inject(),
+    wide: true,
+    openTrashManager: () => { opened += 1 },
+    describeDeletion: async () => ({ ...DESCRIBE_TRASH, trashCount: 3 }),
+    updateTrashCount: () => {},
+    useTrashCount: (select) => select(3),
+    t: makeT(dictionaries, 'en'),
+  })
+  await settle()
+
+  const button = findByType(mounted, 'button')
+  assert.ok(button)
+  assert.equal(button.props['aria-label'], 'Open Trash (3)')
+  button.props.onClick()
+  assert.equal(opened, 1)
+
+  const unsupported = mount(component, {
+    ...registrations['sidebar.footer.action'].spec.inject(),
+    wide: true,
+    openTrashManager: () => { opened += 1 },
+    describeDeletion: async () => DESCRIBE_PERMANENT,
+    updateTrashCount: () => {},
+    useTrashCount: (select) => select(0),
+    t: makeT(dictionaries, 'en'),
+  })
+  await settle()
+  assert.equal(unsupported.tree, null, 'permanent-only stores must not show a dead Trash entry')
+})
+
+test('the Trash manager lists sessions without exposing filesystem paths', async () => {
+  const { plugin, React } = await loadPlugin()
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+    request: null,
+    trashManagerOpen: true,
+    listTrash: async () => ({
+      entries: [{
+        trashId: 'trash-a',
+        sessionId: 'session-a',
+        deletedAt: '2026-11-25T10:00:00.000Z',
+        originalPath: 'C:\\private\\workspace\\session-a',
+      }],
+    }),
+  })
+  await settle()
+
+  assert.match(text(form.tree), /Trash/)
+  assert.match(text(form.tree), /session-a/)
+  assert.match(text(form.tree), /Deleted/)
+  assert.doesNotMatch(text(form.tree), /private.*workspace/)
+  assert.match(text(form.tree), /Restore/)
+  assert.match(text(form.tree), /Delete permanently/)
+})
+
+test('the Trash manager restores an entry and reloads its listing', async () => {
+  const { plugin, React } = await loadPlugin()
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  let listed = true
+  const restored = []
+  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+    request: null,
+    trashManagerOpen: true,
+    listTrash: async () => ({
+      entries: listed ? [{ trashId: 'trash-a', sessionId: 'session-a', deletedAt: '2026-11-25T10:00:00.000Z' }] : [],
+    }),
+    restoreSession: async (sessionId) => {
+      restored.push(sessionId)
+      listed = false
+      return { sessionId, restored: true, reattached: true }
+    },
+  })
+  await settle()
+
+  let restoreButton
+  walk(form.tree, (node) => {
+    if (restoreButton === undefined && node.type === 'Button' && text(node) === 'Restore') restoreButton = node
+  })
+  assert.ok(restoreButton)
+  restoreButton.props.onClick()
+  await settle()
+
+  assert.deepEqual(restored, ['session-a'])
+  assert.match(text(form.tree), /The conversation was restored/)
+  assert.match(text(form.tree), /Trash is empty/)
+})
+
+test('permanent purge in the Trash manager requires the exact session id', async () => {
+  const { plugin, React } = await loadPlugin()
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  const purged = []
+  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+    request: null,
+    trashManagerOpen: true,
+    listTrash: async () => ({
+      entries: [{
+        trashId: 'trash-a',
+        sessionId: 'session-to-purge',
+        deletedAt: '2026-11-25T10:00:00.000Z',
+      }],
+    }),
+    purgeSession: async (sessionId) => {
+      purged.push(sessionId)
+      return { sessionId, purged: true }
+    },
+  })
+  await settle()
+
+  let purgeButton
+  walk(form.tree, (node) => {
+    if (purgeButton === undefined && node.type === 'Button' && text(node) === 'Delete permanently') purgeButton = node
+  })
+  assert.ok(purgeButton)
+  purgeButton.props.onClick()
+  await settle()
+
+  let confirmButton
+  let confirmationInput
+  walk(form.tree, (node) => {
+    if (node.type === 'Button' && text(node) === 'Permanently delete') confirmButton = node
+    if (node.type === 'input' && node.props.className === 'dshSessionDelete_trashConfirmInput') confirmationInput = node
+  })
+  assert.ok(confirmButton)
+  assert.ok(confirmationInput)
+  assert.equal(confirmButton.props.disabled, true)
+  confirmationInput.props.onChange({ target: { value: 'session-to-purg' } })
+  await settle()
+  assert.equal(confirmButton.props.disabled, true, 'a partial id must not enable the destructive action')
+
+  walk(form.tree, (node) => {
+    if (node.type === 'Button' && text(node) === 'Permanently delete') confirmButton = node
+    if (node.type === 'input' && node.props.className === 'dshSessionDelete_trashConfirmInput') confirmationInput = node
+  })
+  confirmationInput.props.onChange({ target: { value: 'session-to-purge' } })
+  await settle()
+  walk(form.tree, (node) => {
+    if (node.type === 'Button' && text(node) === 'Permanently delete') confirmButton = node
+  })
+  assert.equal(confirmButton.props.disabled, false)
+  confirmButton.props.onClick()
+  await settle()
+
+  assert.deepEqual(purged, ['session-to-purge'])
+  assert.match(text(form.tree), /permanently deleted/i)
 })
 
 test('the menu row closes the menu and asks for confirmation', async () => {
