@@ -527,12 +527,13 @@ test('the Trash manager lists sessions without exposing filesystem paths', async
   })
   await settle()
 
-  assert.match(text(form.tree), /Trash/)
-  assert.match(text(form.tree), /session-a/)
-  assert.match(text(form.tree), /Deleted/)
-  assert.doesNotMatch(text(form.tree), /private.*workspace/)
-  assert.match(text(form.tree), /Restore/)
-  assert.match(text(form.tree), /Delete permanently/)
+  const managerText = text({ children: [form.tree.props.children] })
+  assert.match(managerText, /Trash/)
+  assert.match(managerText, /session-a/)
+  assert.match(managerText, /Deleted/)
+  assert.doesNotMatch(managerText, /private.*workspace/)
+  assert.match(managerText, /Restore/)
+  assert.match(managerText, /Delete permanently/)
 })
 
 test('the Trash manager restores an entry and reloads its listing', async () => {
@@ -571,18 +572,20 @@ test('permanent purge in the Trash manager requires the exact session id', async
   const { plugin, React } = await loadPlugin()
   const { registrations, dictionaries } = applyPlugin(plugin)
   const purged = []
+  let listed = true
   const { form } = renderDialog(registrations, dictionaries, React, 'en', {
     request: null,
     trashManagerOpen: true,
     listTrash: async () => ({
-      entries: [{
+      entries: listed ? [{
         trashId: 'trash-a',
         sessionId: 'session-to-purge',
         deletedAt: '2026-11-25T10:00:00.000Z',
-      }],
+      }] : [],
     }),
     purgeSession: async (sessionId) => {
       purged.push(sessionId)
+      listed = false
       return { sessionId, purged: true }
     },
   })
