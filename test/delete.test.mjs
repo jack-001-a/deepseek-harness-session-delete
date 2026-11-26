@@ -1095,6 +1095,21 @@ test('recovery markers refuse symbolic links without touching their targets', as
 })
 
 
+test('process lock owner metadata is bounded before JSON parsing', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const h = harness({ ...storedTarget(store) })
+  const lockPath = join(store.base, '.process-lock-owner-test')
+  const ownerPath = join(lockPath, '.owner.json')
+  await mkdir(lockPath, { recursive: true })
+  const bytes = Buffer.alloc(4 * 1024 + 1, 0x7b)
+  await writeFile(ownerPath, bytes)
+
+  assert.equal(await h.service.readProcessLockOwner(lockPath), undefined)
+  assert.equal((await stat(ownerPath)).size, bytes.length)
+})
+
+
 test('the trash entry holds the artifact and a manifest of the identifying fields', async () => {
   const store = await makeStore()
   const h = harness({ ...storedTarget(store) })
