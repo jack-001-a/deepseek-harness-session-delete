@@ -81,7 +81,7 @@ For a generic file, track:
 2. Every provider-created display-name hard-link alias separately.
 3. The owner set that needs each alias.
 
-An alias may be removed when it has no owners. The canonical object may be removed only when no alias or object owner remains. Before unlinking the canonical object, the provider verifies that the actual hard-link count matches the provider's known aliases. An unexplained external link, mismatch, symlink, or unexpected file identity means **skip and report**, not guess.
+An alias may be removed when it has no owners. The canonical object may be removed only when no alias or object owner remains. Before unlinking the canonical object, the provider verifies that the actual hard-link count equals one canonical link plus the provider's known aliases. If the filesystem cannot report/verify that count, or an unexplained external link, mismatch, symlink, or unexpected file identity exists, the provider means **skip and report**, not guess.
 
 ## 4. Proposed TypeScript contract
 
@@ -163,6 +163,7 @@ interface AttachmentLeaseLedger {
 - `commitLeases` is idempotent for the same lease/owner pair. It writes the durable owner row before removing the temporary lease in one recoverable provider transaction.
 - Repeating a committed transfer returns the same outcome; it never increments an accidental duplicate count.
 - A transfer to a different owner must be explicit and must not silently steal a lease.
+- `retainEventReferences` is idempotent and accepts only provider-known references or references already protected by a live lease. An unknown/legacy-untracked reference makes the index incomplete; it must not be silently imported as collectible.
 - `releaseLeases` is idempotent. A missing lease is reported as already released, not treated as an object deletion request.
 - The ledger records stable reason codes and operation IDs, not file content or display names.
 
@@ -296,8 +297,8 @@ The Session Delete plugin should use an optional Host capability to release owne
 
 Use a provider-owned coordination primitive shared by every Harness process using the same attachment root. The exact OS implementation is a Host decision, but it must provide the following semantics:
 
-- **Shared mutation barrier:** upload publication, lease transfer/release, Session event reference updates, fork owner creation, Trash/restore/purge owner changes, and index reconciliation take a shared lifecycle lock for their metadata transaction.
-- **Exclusive collection barrier:** GC takes an exclusive lock while it validates the index, marks candidates, revalidates them, and unlinks them. No writer or owner transfer can cross the mark/delete window.
+- **Shared mutation barrier:** upload publication, lease transfer/release, Session event reference updates, fork owner creation, and Trash/restore/purge owner changes take a shared lifecycle lock for their metadata transaction.
+- **Exclusive maintenance barrier:** initial index rebuild/reconciliation and GC take an exclusive lock (or use a generation snapshot with a verified no-write compare). GC holds it while it validates the index, marks candidates, revalidates them, and unlinks them. No writer or owner transfer can cross the mark/delete window.
 - **Host-instance liveness:** each running Host instance has a separately testable process lease. The collector must distinguish a live staged-upload lease from an abandoned lease left by a stopped process. A process ID string or wall-clock TTL alone is not proof of process death.
 - **Per-object serialization:** publishing the same digest, adding aliases, changing owners, and collecting that object use one provider-side object transaction/lock.
 - **Fail closed on unsupported coordination:** network filesystems or backends that cannot guarantee the lock semantics must report collection unavailable rather than pretending to be safe.
@@ -306,7 +307,7 @@ The collection barrier must not require every long-running Harness process to ex
 
 ## 7. Reference-index recovery and migration
 
-Before enabling GC on an existing installation:
+Before enabling GC on an existing installation, the Host takes the exclusive maintenance barrier (or performs a generation-snapshot rebuild and proves the generation did not change):
 
 1. Enumerate every retained Session source: active/cold stores, plugin Trash roots, and any configured archive/retention store.
 2. Parse events using the same versioned Session readers used by normal restore. Do not implement a second permissive JSONL parser.
