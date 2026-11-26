@@ -114,7 +114,7 @@ protocol.
 
 Deleting a session artifact does not unlink uploaded attachments or workspace
 files. Harness attachments are content-addressed and may be shared by several
-sessions. The integration branch invokes the optional Host callback
+sessions. Session Delete invokes the optional Host callback
 `fileUploads.onSessionPermanentlyPurged(sessionId)` only after permanent-mode
 delete, explicit Trash purge, or retention sweep has removed the Session
 artifact. Trash and Restore preserve owners. If the callback fails, the plugin
