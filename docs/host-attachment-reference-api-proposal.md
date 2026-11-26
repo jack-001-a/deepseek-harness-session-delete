@@ -81,7 +81,7 @@ For a generic file, track:
 2. Every provider-created display-name hard-link alias separately.
 3. The owner set that needs each alias.
 
-An alias may be removed when it has no owners. The canonical object may be removed only when no alias or object owner remains. Before unlinking the canonical object, the provider verifies that the actual hard-link count equals one canonical link plus the provider's known aliases. If the filesystem cannot report/verify that count, or an unexplained external link, mismatch, symlink, or unexpected file identity exists, the provider means **skip and report**, not guess.
+An alias may be removed when it has no owners. The canonical object may be removed only when no alias or object owner remains. Before unlinking the canonical object, the provider verifies that the actual hard-link count equals one canonical link plus the provider's known aliases. If the filesystem cannot report/verify that count, or an unexplained external link, mismatch, symlink, or unexpected file identity exists, the provider must **skip and report**, not guess.
 
 ## 4. Proposed TypeScript contract
 
