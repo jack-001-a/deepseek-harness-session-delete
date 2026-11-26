@@ -552,7 +552,7 @@ test('the Trash manager lists sessions without exposing filesystem paths', async
   })
   await settle()
 
-  const managerText = text({ children: [form.tree.props.children] })
+  const managerText = trashManagerText(form)
   assert.match(managerText, /Trash/)
   assert.match(managerText, /session-a/)
   assert.match(managerText, /Deleted/)
@@ -664,7 +664,7 @@ test('a failed Trash listing is reported instead of shown as empty', async () =>
   })
   await settle()
 
-  const managerText = text({ children: [form.tree.props.children] })
+  const managerText = trashManagerText(form)
   assert.match(managerText, /could not be loaded/i)
   assert.doesNotMatch(managerText, /Trash is empty/)
 })
@@ -686,7 +686,7 @@ test('accounting-pending Trash entries can be finished but not purged', async ()
   })
   await settle()
 
-  const managerText = text({ children: [form.tree.props.children] })
+  const managerText = trashManagerText(form)
   assert.match(managerText, /finish the workspace reattachment/i)
   assert.match(managerText, /Finish restore/)
   assert.doesNotMatch(managerText, /Delete permanently/)
