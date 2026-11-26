@@ -11,14 +11,19 @@ that a unit-test double can prove real filesystem or cross-process safety.
   for staged leases, durable owners, Session fork/Trash/restore/purge, read
   leases, index completeness, maintenance barriers, hard-link counts, and
   dry-run/sweep eligibility.
-- `test/attachment-reference-contract.test.mjs` — scenarios that define the
-  observable contract expected from a real Host implementation.
+- `test/attachment-reference-contract.test.mjs` — 20 in-memory scenarios
+  that define the observable ownership contract expected from a real Host
+  implementation.
+- `test/attachment-hardlink-filesystem.test.mjs` — 3 tests using real
+  temporary files and OS hard links to verify inode identity, alias unlink,
+  and detection of unexplained hard links.
 
 ## Run
 
 ```bash
 npm run check
 npm run test:attachment-contract
+npm run test:attachment-filesystem
 npm test
 ```
 
@@ -58,6 +63,22 @@ The tests currently cover:
 19. An active mutation barrier blocks collection during reference changes.
 20. Unknown references are rejected rather than silently becoming collectible.
 
+## Real filesystem scenarios (3)
+
+These tests use Node's filesystem APIs and a temporary directory on the CI
+runner's actual filesystem. They verify:
+
+1. Two display aliases are real hard links to one canonical file object and
+   increase the observed link count.
+2. Removing one alias leaves the canonical object and other alias readable.
+3. An extra link outside the provider's alias inventory remains detectable
+   after a known alias is removed.
+
+The fixtures never use `DSH_HOME`, do not import Harness internals, and clean
+up their temporary directory after each test. They verify filesystem
+primitives only; they do not prove that the Harness provider creates, tracks,
+or safely removes links.
+
 ## How to use this against a real Host implementation
 
 The model is a semantic oracle, not a substitute for a provider test. When a
@@ -80,13 +101,15 @@ The in-memory model does **not** prove:
 - durability of a lease across a process crash;
 - atomic file publication or fsync ordering;
 - correctness of an OS-level lock or multi-process barrier;
-- actual hard-link counts, symlink behavior, or filesystem identity;
+- that the Harness provider creates, tracks, or removes real aliases correctly;
 - correctness of typed Session-event extractors on real event payloads;
 - compatibility with every configured attachment backend.
 
-Those guarantees require tests against the real provider and at least two real
-Harness processes. The model deliberately does not import or patch Harness
-internals, and it never accesses a user's attachment directory.
+The filesystem suite verifies basic hard-link behavior on the CI runner's OS,
+not the Harness provider's implementation. The remaining guarantees require
+tests against the real provider and at least two real Harness processes. None
+of these tests import or patch Harness internals or access a user's attachment
+directory.
 
 ## Implementation boundary
 
