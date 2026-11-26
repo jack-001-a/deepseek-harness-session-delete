@@ -46,7 +46,7 @@ The checkbox in the reference design therefore cannot safely mean “unlink all
 files used by this conversation.” This plugin does not expose that destructive
 option until the Host provides reference-aware garbage collection. The exact
 current behavior and the requirements for a safe future implementation are in
-[Attachment lifecycle](docs/attachment-lifecycle.md), including the current Host capability gap, the [reference-aware GC RFC](docs/attachment-gc-rfc.md), and the [Host Attachment Reference API Proposal](docs/host-attachment-reference-api-proposal.md).
+[Attachment lifecycle](docs/attachment-lifecycle.md), including the current Host capability gap, the [reference-aware GC RFC](docs/attachment-gc-rfc.md), the [Host Attachment Reference API Proposal](docs/host-attachment-reference-api-proposal.md), and the [executable attachment reference contract](docs/attachment-reference-conformance.md). The in-memory model and its tests are a semantic reference, not a production Host provider or a claim that GC is implemented.
 
 ## Trash and restore
 
@@ -414,6 +414,7 @@ Restart the Harness if your profile does not hot-reload plugin bundles.
 - [Attachment lifecycle and safe cleanup boundary](docs/attachment-lifecycle.md)
 - [Reference-aware attachment GC RFC](docs/attachment-gc-rfc.md)
 - [Host Attachment Reference API Proposal](docs/host-attachment-reference-api-proposal.md)
+- [Executable attachment reference contract](docs/attachment-reference-conformance.md)
 - [Contributing and local checks](CONTRIBUTING.md)
 - [Security reporting](SECURITY.md)
 
