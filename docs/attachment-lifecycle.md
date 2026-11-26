@@ -37,6 +37,26 @@ retention-neutral; reference-aware garbage collection is a Host-level
 lifecycle concern, not something this plugin may safely infer from one
 session's event log.
 
+## Current Host capability gap
+
+The pinned Harness baseline (`dsh-v0.2.3-alpha.2`) exposes provider methods for
+saving, reading, and locating a **known** image or file reference. It does not
+expose a complete object inventory, reference index, temporary upload lease,
+or provider-owned collection operation. The local provider has distinct image
+objects, canonical generic-file objects plus hard-link aliases, write staging,
+and a separate derived request-image cache.
+
+The Host's file-upload service also keeps staged receipts in an in-memory
+`WeakMap` keyed by Session. A completed upload can already be durable before
+its prompt event is committed. A session-log-only scan therefore cannot see
+every object that is still owned by an upload or admission, and the plugin's
+per-session deletion lock does not coordinate concurrent uploads or another
+Harness process. A modification-time rule cannot close either gap.
+
+See [Reference-aware attachment GC RFC](attachment-gc-rfc.md) for the
+source-level findings, required Host/provider contracts, race model, alias
+handling, test gates, and a phased integration plan. This is a design proposal,
+not an implemented cleanup capability.
 ## Current user-facing contract
 
 | Data | On moving a conversation to Trash | On permanent deletion/purge |
