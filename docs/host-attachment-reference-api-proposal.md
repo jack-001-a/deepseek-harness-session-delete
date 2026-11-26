@@ -119,14 +119,15 @@ Required semantics:
 ~~~ts
 type AttachmentOwner =
   | { readonly kind: 'session-event'; readonly sessionId: string; readonly eventSeq: number; readonly slot: string }
-  | { readonly kind: 'session-fork'; readonly sessionId: string; readonly sourceSessionId: string; readonly inheritedEventCount: number }
   | { readonly kind: 'command-execution'; readonly sessionId: string; readonly executionId: string }
 
+interface LeaseTransfer {
+  readonly leaseId: AttachmentLeaseId
+  readonly owner: AttachmentOwner
+}
+
 interface AttachmentLeaseLedger {
-  commitLeases(
-    leases: readonly AttachmentLeaseId[],
-    owner: AttachmentOwner,
-  ): Promise<void>
+  commitLeases(transfers: readonly LeaseTransfer[]): Promise<void>
 
   releaseLeases(leases: readonly AttachmentLeaseId[], reason: string): Promise<void>
 }
@@ -142,6 +143,18 @@ interface AttachmentLeaseLedger {
 
 ~~~ts
 interface SessionAttachmentReferences {
+  /**
+   * Associate upload/admission leases with one accepted request before its
+   * Session event can be appended. The request ID is matched against the
+   * event's user/retry source rpcId; the event extractor then verifies which
+   * leases' references actually occur in that event.
+   */
+  bindRequestLeases(input: {
+    sessionId: string
+    requestId: string
+    leases: readonly Leased<AttachmentReference>[]
+  }): void
+
   /** Register a typed extractor for event shapes owned by a Host package. */
   registerExtractor(
     name: string,
@@ -175,7 +188,7 @@ interface SessionAttachmentReferences {
 
 `AttachmentReference` should carry the complete typed provider reference (image or file), including the display alias for generic files. It must not be reconstructed from arbitrary JSON keys or an opaque ID string.
 
-The extractor registry is explicit and owned by the package that defines each attachment-bearing event shape. GC is disabled if a loaded package can write an attachment-bearing event but has not registered an extractor. Unknown required event records or an unavailable extractor make the index incomplete.
+The extractor registry is explicit and owned by the package that defines each attachment-bearing event shape. An extractor returns occurrences such as `{ ref, slot }`, not only a digest list. GC is disabled if a loaded package can write an attachment-bearing event but has not registered an extractor. Unknown required event records or an unavailable extractor make the index incomplete.
 
 ## 5. Lifecycle protocol
 
@@ -186,9 +199,9 @@ The extractor registry is explicit and owned by the package that defines each at
 3. Before returning, the provider commits a durable `staged-upload` lease and returns `{ ref, leaseId }`.
 4. `FileUploads` stores the lease beside its receipt. The in-memory receipt remains a delivery convenience; the durable lease is the GC safety boundary.
 5. Prompt admission binds receipt IDs to the request ID as today.
-6. When the accepted `user/message` event is observed, the Session coordinator extracts the exact attachment refs and transfers matching leases to stable `session-event` owners keyed by Session ID, event sequence, and content slot.
-7. After the transfer succeeds, the receipt and temporary lease can be retired.
-8. If transfer fails, keep the lease and retry during `session/flush`; never drop the lease on a failed ledger write.
+6. Before `agent.followup()` / `agent.steer()` can append the accepted message, the admission path binds both upload-receipt leases and newly admitted encoded-image leases to `(sessionId, requestId)`. This uses the same request identity already carried by the user/retry source `rpcId`.
+7. When the accepted `user/message` event is observed, the typed event extractor returns exact reference occurrences and stable content slots. The coordinator matches the request's bound leases against those occurrences and transfers each matching lease to a `session-event` owner keyed by Session ID, event sequence, and slot. A lease whose reference is not present in the committed event is not transferred.
+8. After the transfer succeeds, the receipt and temporary lease can be retired. If transfer fails, keep the lease and retry during `session/flush`; never drop the lease on a failed ledger write.
 
 For direct encoded-image prompt admission (not a prior upload receipt), the admission path must return leased references internally and keep those leases until the accepted event is committed.
 
@@ -208,15 +221,15 @@ The lease is the crash bridge between append and reference-index durability. A T
 
 ### 5.3 Commands and staged receipts
 
-Command-only receipts need an explicit command-execution lifetime. The current behavior of keeping them until Session disposal is safe but coarse. The command registry should transfer each consumed receipt to a `command-execution` owner and release it after the handler settles. Any attachment reference emitted in a durable tool/session event is separately retained by the event extractor before the execution lease is released.
+Command-only receipts need an explicit command-execution lifetime. The current behavior of keeping them until Session disposal is safe but coarse. The command registry should transfer each consumed receipt to a `command-execution` owner and release it after the handler settles. Any attachment reference emitted in a durable tool/session event is separately retained by the event extractor before the execution lease is released. The prompt and command paths must never drop a lease merely because the in-memory receipt table is cleared on `session/disposed`; disposal schedules an explicit idempotent lease release, while crash recovery handles leases from a dead Host instance.
 
 ### 5.4 Fork
 
-The fork coordinator must hold the Session lifecycle mutation barrier while it:
+The fork coordinator must cover both the core Session fork path and the Session Controller's seeded-Agent fork path, using one shared lifecycle helper. It must hold the Session lifecycle mutation barrier while it:
 
 1. Reads the exact source event prefix.
 2. Extracts all image/file references from that prefix.
-3. Creates child ownership for those references.
+3. Creates child `session-event` owner rows using the child's Session ID and the inherited event sequence/slot identities. This is a direct child reference set, not an owner that depends on the parent.
 4. Creates and publishes the child Session.
 
 If child creation fails, release the child owners. If parent purge races the fork, exactly one operation must win the shared/exclusive lifecycle protocol; a child must never be published with references whose last owner has already been collected.
