@@ -177,6 +177,11 @@ interface ReferenceIndexStatus {
   readonly blockers: readonly string[]
 }
 
+interface RequestLeaseBinding extends Disposable {
+  /** Keep the request-to-lease association after the prompt is accepted. */
+  commit(): void
+}
+
 interface SessionAttachmentReferences {
   /**
    * Associate upload/admission leases with one accepted request before its
@@ -188,7 +193,7 @@ interface SessionAttachmentReferences {
     sessionId: string
     requestId: string
     leases: readonly Leased<AttachmentReference>[]
-  }): void
+  }): RequestLeaseBinding
 
   /** Register a typed extractor for event shapes owned by a Host package. */
   registerExtractor(
