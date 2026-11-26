@@ -1,12 +1,18 @@
 # @ybbmm/dsh-session-delete
 
+[![CI](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/workflows/ci.yml/badge.svg)](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/%40ybbmm%2Fdsh-session-delete)](https://www.npmjs.com/package/@ybbmm/dsh-session-delete)
+[![license](https://img.shields.io/github/license/jack-001-a/deepseek-harness-session-delete)](LICENSE)
+[![Node.js](https://img.shields.io/node/v/%40ybbmm%2Fdsh-session-delete)](package.json)
+
 **Delete a conversation from the DeepSeek Harness sidebar — recoverably.**
 **在 DeepSeek Harness 侧边栏删除对话——而且可以反悔。**
 
 DeepSeek Harness can archive a conversation but never delete one — the session
 log accumulates on disk forever. This plugin adds the missing action, and does
 it the way a desktop product does: into a recoverable trash, with restore,
-with a permanent-delete escalation, and with an audit trail.
+with a permanent-delete escalation, and with an audit trail. The confirmation
+also makes clear that shared attachments and workspace files are retained.
 
 > [中文说明](#中文说明) 在下方。
 
@@ -18,12 +24,27 @@ with a permanent-delete escalation, and with an audit trail.
 |---|---|
 | Session **"…" menu** | A red **Delete conversation** row, after the shipped pin / rename / fork / archive rows |
 | Session **row hover** | A trash button beside the shipped archive and pin buttons |
-| **Confirmation dialog** | Names the conversation, states whether the deletion is recoverable, and — in permanent mode — asks for the title before it unlocks |
+| **Confirmation dialog** | Names the conversation, explains recovery and file-retention behavior, and — in permanent mode — asks for the title before it unlocks |
 | **After deletion** | Reports what happened, and offers **Restore** and **Delete permanently** on the same dialog |
 
 Deleting the conversation that is currently open reopens a new session in the
 same workspace; the dialog stays open just long enough to acknowledge the
 result.
+
+## File and attachment handling
+
+Deleting a conversation does **not** delete uploaded attachments or files created
+in the workspace. The dialog says so before the user confirms. This is
+intentional: Harness attachments are immutable, content-addressed objects and
+may be referenced by more than one conversation, including resumed or forked
+sessions. Removing an object because one conversation was deleted could break
+another conversation.
+
+The checkbox in the reference design therefore cannot safely mean “unlink all
+files used by this conversation.” This plugin does not expose that destructive
+option until the Host provides reference-aware garbage collection. The exact
+current behavior and the requirements for a safe future implementation are in
+[Attachment lifecycle](docs/attachment-lifecycle.md).
 
 ## Trash and restore
 
@@ -283,11 +304,16 @@ Restart the Harness if your profile does not hot-reload plugin bundles.
 
 ## Compatibility
 
-- Built and verified against DeepSeek Harness **0.2.1-rc.2** (Desktop/Web GUI,
-  Windows, Chinese and English UI). Separately, the Host-native JSONL write
-  lease path passed automated two-process CI against Harness **0.2.2-rc.4**
-  and **0.2.2-rc.5** on Linux / Node 24; this is persistence-layer coverage,
-  not full Desktop/Web startup validation.
+- Manually verified against DeepSeek Harness **0.2.1-rc.2** (Desktop/Web GUI,
+  Windows, Chinese and English UI). The Host-native JSONL write-lease path has
+  two-process CI coverage for **0.2.2-rc.4** and **0.2.2-rc.5**; the CI matrix
+  additionally targets **0.2.3-alpha.2** at its pinned upstream commit. This is
+  persistence-layer integration coverage, not full Desktop/Web startup
+  certification for every version.
+- The package declares `engines.dsh: >=0.2.1-rc.2 <0.3.0`. Treat this as the
+  compatibility range, not a claim that every prerelease has been manually
+  exercised. Harness **0.2.3-alpha.2** requires Node.js **24.22.3+** in the 24.x
+  line or **26.13.1+** in the 26.x line.
 - **No runtime dependencies.** The bundle imports only Node built-ins, and
   loads nothing from `@deepseek-ai/*` at runtime.
 - It deliberately builds on a few host internals: the session store and
@@ -366,6 +392,13 @@ Restart the Harness if your profile does not hot-reload plugin bundles.
   and the row metadata in place and reports `needsRestart: true`; the next
   launch re-adopts the session through the host's history bootstrap.
 
+## Project documentation
+
+- [Architecture and deletion lifecycle](docs/architecture.md)
+- [Attachment lifecycle and safe cleanup boundary](docs/attachment-lifecycle.md)
+- [Contributing and local checks](CONTRIBUTING.md)
+- [Security reporting](SECURITY.md)
+
 ## Development
 
 ```bash
@@ -387,7 +420,7 @@ DeepSeek Harness 只能归档会话、无法真正删除，日志会一直堆积
 
 **会被处理的**：会话日志目录（日志 + 锁文件，移入回收站）、投影缓存记录、工作区记账（成员关系/排序/置顶/归档标记）。
 
-**不会删的**：附件目录（按内容寻址、被多个会话共享）、临时 spill 文件、由该对话分叉出的子会话（确认框会提示数量）。
+**不会删的**：附件目录（按内容寻址、可能被多个会话共享）、工作区中由对话上传或创建的文件、临时 spill 文件、由该对话分叉出的子会话（确认框会提示数量）。确认框会明确说明附件和工作区文件会保留；在宿主具备跨会话引用追踪与安全 GC 前，不提供可能误删共享文件的复选框。详见 [附件生命周期说明](docs/attachment-lifecycle.md)。
 
 **错误码**：`active`（仍有运行中的工作）、`locked`（另一个 Harness 写入者仍持有租约）、`not-found`（已删除或不存在）、`io`（文件无法移动，未做任何改动）、`unsupported-store`（当前版本无法定位文件）、`unreadable`（日志无法读取）、`unsafe-path`（目标不在会话存储根目录内）、`trash-unavailable`、`conflict`、`invalid-request`（请求非法）。
 
