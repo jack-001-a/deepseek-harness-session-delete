@@ -2285,19 +2285,27 @@ class SessionDeleteService {
    * @param entry - the trash entry whose artifact is already back.
    */
   async markRestorePending(entry) {
-    const manifest = (await this.readManifest(entry.path)) ?? {
+    const manifestPath = join(entry.path, MANIFEST_FILE_NAME)
+    const manifest = await this.readManifest(entry.path)
+    if (manifest === undefined && await this.pathExists(manifestPath)) {
+      this.ctx.logger?.warn(
+        `sessionDelete: refusing to replace an unreadable trash manifest for session "${entry.sessionId}"`,
+      )
+      return false
+    }
+    const previous = manifest ?? {
       sessionId: entry.sessionId,
       originalPath: entry.originalPath,
       deletedAt: entry.deletedAt,
     }
-    const next = { ...manifest, restoreState: RESTORE_PENDING, restoredAt: new Date().toISOString() }
+    const next = { ...previous, restoreState: RESTORE_PENDING, restoredAt: new Date().toISOString() }
     try {
       const root = this.trashRoot()
       if (root === undefined) throw new Error('The trash root is unavailable.')
       await assertSafeTrashEntryDirectory(root, entry.path)
       await writeAtomicTransactionFile(
         join(entry.path, MANIFEST_FILE_NAME),
-        `${JSON.stringify(next, null, 2)}\\n`,
+        `${JSON.stringify(next, null, 2)}\n`,
         'trash manifest',
         TRASH_MANIFEST_MAX_BYTES,
       )
