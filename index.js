@@ -346,6 +346,26 @@ class SessionDeleteService {
   }
 
   /**
+   * Tell an optional Host attachment provider that a Session artifact is now
+   * irreversibly gone. Failure is fail-soft: stale owners are safe leaks, while
+   * releasing before artifact removal would risk deleting still-restorable data.
+   * @param sessionId - permanently purged Session identity.
+   * @returns whether a provider accepted the owner-release notification.
+   */
+  async releaseAttachmentOwnersAfterPurge(sessionId) {
+    const fileUploads = this.ctx.fileUploads
+    if (typeof fileUploads?.onSessionPermanentlyPurged !== 'function') return false
+    try {
+      return await fileUploads.onSessionPermanentlyPurged(sessionId) === true
+    } catch (error) {
+      this.ctx.logger?.warn(
+        `sessionDelete: session "${sessionId}" was purged, but attachment-owner release failed; references remain retained: ${String(error)}`,
+      )
+      return false
+    }
+  }
+
+  /**
    * Stable lock directory shared by plugin instances using the same session store.
    * It lives beside (not inside) the store so the store's project scanner cannot
    * mistake lock metadata for a project directory.
@@ -761,6 +781,10 @@ class SessionDeleteService {
       // stable session.lock inode, as required by the provider.
       await this.releaseHostWriteHandle(hostWriteHandle, sessionId)
       hostWriteHandle = undefined
+
+      // Only an irreversible artifact removal releases attachment owners.
+      // Moving a transcript to Trash keeps it restorable, so it keeps its owners.
+      if (removal.purged === true) await this.releaseAttachmentOwnersAfterPurge(sessionId)
 
       // 6. Release the durable workspace accounting. Fail-soft: the artifact
       //    is already gone, so a stale membership must not fail the deletion.
@@ -2109,6 +2133,7 @@ class SessionDeleteService {
       )
     }
     await this.removeWithRetries(entry.path, sessionId)
+    await this.releaseAttachmentOwnersAfterPurge(sessionId)
     this.forgetTrashEntry(entry.trashId)
     await this.audit('purge', sessionId, true, { mode: this.mode })
     return { sessionId, purged: true }
@@ -2526,6 +2551,7 @@ class SessionDeleteService {
           const currentDeletedAt = Date.parse(current.deletedAt)
           if (!Number.isFinite(currentDeletedAt) || currentDeletedAt >= cutoff) return false
           await this.removeWithRetries(current.path, current.sessionId)
+          await this.releaseAttachmentOwnersAfterPurge(current.sessionId)
           this.forgetTrashEntry(current.trashId)
           await this.audit('purge', current.sessionId, true, { mode: this.mode })
           return true
