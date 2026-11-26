@@ -1,7 +1,7 @@
 
 # Host Attachment Reference API Proposal
 
-**Status:** Proposed Host architecture; not implemented by DeepSeek Harness or this plugin.
+**Status:** Partially implemented on integration branches; not yet merged into the pinned Harness baseline, and no physical garbage collection is enabled.
 
 **Research baseline:** `deepseek-ai/deepseek-harness` `master` at `4b399c39a6d1479cd84ca591b4d7c88e24d38a96` (released as `dsh-v0.2.3-alpha.2`, 2026-11-26).
 
@@ -16,7 +16,7 @@ Introduce two cooperating Host capabilities:
 
 The existing `ctx.attachments` service remains the only owner of attachment bytes and filesystem paths. A new Host lifecycle service may coordinate Session ownership, but it must call provider methods rather than deriving paths or unlinking files itself.
 
-GC stays disabled until the provider reports a complete, reconciled reference index. A missing event, unknown event shape, unreadable Session, unavailable Trash manifest, legacy writer, or untracked upload must cause a fail-closed result.
+GC stays disabled until the provider reports a complete, reconciled reference index. A missing event, unknown event shape, unreadable Session, unavailable Trash manifest, legacy writer, or untracked upload must cause a fail-closed result. The Session Delete integration branch now recognizes an optional `fileUploads.onSessionPermanentlyPurged(sessionId)` callback after successful irreversible artifact removal; Trash and Restore do not call it, and callback failures leave a safe stale owner. The Harness-side ledger and adapter are in [Harness PR #1](https://github.com/jack-001-a/deepseek-harness/pull/1) and remain open. This is owner release, not provider object collection.
 
 ## 2. Source-grounded constraints
 
