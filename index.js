@@ -25,7 +25,8 @@
  * a local directory resolves its imports from that directory, so every import
  * would have to be a Node built-in.
  */
-import { appendFile, cp, lstat, mkdir, readFile, readlink, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { constants as fsConstants } from 'node:fs'
+import { appendFile, cp, lstat, mkdir, open, readFile, readlink, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
@@ -118,6 +119,36 @@ const TRASH_NAME_ATTEMPTS = 5
  * moving the artifact a second time; it holds no artifact of its own by then.
  */
 const RESTORE_PENDING = 'accounting-pending'
+
+
+/**
+ * Refuse audit locations that could redirect reads or writes to unrelated data.
+ * The audit trail is metadata-only, but it is still a persistent write surface.
+ */
+async function assertSafeAuditPath(root, file) {
+  const rootStat = await lstat(root).catch((error) => {
+    if (error?.code === 'ENOENT') return undefined
+    throw error
+  })
+  if (!rootStat?.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error('Refusing to use a missing, non-directory, or symbolic-link audit root.')
+  }
+
+  const fileStat = await lstat(file).catch((error) => {
+    if (error?.code === 'ENOENT') return undefined
+    throw error
+  })
+  if (fileStat && (!fileStat.isFile() || fileStat.isSymbolicLink())) {
+    throw new Error('Refusing to read or write an audit trail that is not a regular file.')
+  }
+  if (fileStat && Number.isFinite(fileStat.nlink) && fileStat.nlink > 1) {
+    throw new Error('Refusing to write an audit trail with multiple hard links.')
+  }
+}
+
+const AUDIT_NOFOLLOW = typeof fsConstants.O_NOFOLLOW === 'number'
+  ? fsConstants.O_NOFOLLOW
+  : 0
 
 /**
  * One deletion failure with a stable code and caller-facing message.
@@ -2660,39 +2691,38 @@ class SessionDeleteService {
       ...(typeof extra.code === 'string' ? { code: extra.code } : {}),
       ...(typeof extra.children === 'number' ? { children: extra.children } : {}),
       ...(typeof extra.mode === 'string' ? { mode: extra.mode } : {}),
-      // Marker only: the files are back but the accounting replay was partial.
       ...(extra.partial === true ? { partial: true } : {}),
     }
     const file = join(root, AUDIT_FILE_NAME)
     try {
       await this.withAuditLock(async () => {
         await mkdir(root, { recursive: true })
-        await appendFile(file, `${JSON.stringify(record)}\n`, 'utf8')
-        // The cached count is process-local. Another Harness process may have
-        // appended since this instance last wrote, so refresh it while holding
-        // the shared audit lock before applying the bounded-retention policy.
+        await assertSafeAuditPath(root, file)
+        const flags = fsConstants.O_WRONLY | fsConstants.O_APPEND |
+          fsConstants.O_CREAT | AUDIT_NOFOLLOW
+        const handle = await open(file, flags, 0o600)
+        try {
+          const fileStat = await handle.stat()
+          if (!fileStat.isFile() || (Number.isFinite(fileStat.nlink) && fileStat.nlink > 1)) {
+            throw new Error('Refusing to append to an unsafe audit trail file.')
+          }
+          await handle.writeFile(JSON.stringify(record) + '\n', 'utf8')
+        } finally {
+          await handle.close()
+        }
         this.auditRecords = undefined
         await this.trimAudit(file)
       })
     } catch (error) {
-      this.ctx.logger?.warn(`sessionDelete: writing the audit trail failed: ${String(error)}`)
+      this.ctx.logger?.warn('sessionDelete: writing the audit trail failed: ' + String(error))
     }
   }
 
-  /**
-   * Keep the audit trail from growing without limit.
-   *
-   * The file is trimmed to its newest half once it passes the record cap, so
-   * the trail always holds recent history and never fills the disk. The file
-   * is only read when the record count is unknown or the cap is reached, and
-   * the read that counts a fresh trail is reused for the trim itself.
-   * @param file - the audit trail file.
-   */
+
   async trimAudit(file) {
     let text
+    await assertSafeAuditPath(dirname(file), file)
     if (this.auditRecords === undefined) {
-      // The append has already completed, so a fresh count includes the
-      // current record and must not be incremented a second time.
       text = await this.readAuditTrail(file)
       this.auditRecords =
         text === undefined ? 0 : text.split('\n').filter((line) => line.length > 0).length
@@ -2709,11 +2739,20 @@ class SessionDeleteService {
     }
     const lines = text.split('\n').filter((line) => line.length > 0)
     const kept = lines.slice(Math.floor(lines.length / 2))
+    const temporary = join(dirname(file), '.' + AUDIT_FILE_NAME + '.' + process.pid + '.' + randomUUID() + '.tmp')
     try {
-      await writeFile(file, `${kept.join('\n')}\n`, 'utf8')
+      await writeFile(temporary, kept.join('\n') + '\n', {
+        encoding: 'utf8',
+        flag: 'wx',
+        mode: 0o600,
+      })
+      await assertSafeAuditPath(dirname(file), file)
+      await rename(temporary, file)
       this.auditRecords = kept.length
     } catch (error) {
-      this.ctx.logger?.warn(`sessionDelete: trimming the audit trail failed: ${String(error)}`)
+      this.ctx.logger?.warn('sessionDelete: trimming the audit trail failed: ' + String(error))
+    } finally {
+      await rm(temporary, { force: true }).catch(() => {})
     }
   }
 
@@ -2723,10 +2762,19 @@ class SessionDeleteService {
    * @returns the file's text, or undefined.
    */
   async readAuditTrail(file) {
+    let handle
     try {
-      return await readFile(file, 'utf8')
+      await assertSafeAuditPath(dirname(file), file)
+      handle = await open(file, fsConstants.O_RDONLY | AUDIT_NOFOLLOW)
+      const fileStat = await handle.stat()
+      if (!fileStat.isFile() || (Number.isFinite(fileStat.nlink) && fileStat.nlink > 1)) {
+        throw new Error('Refusing to read an unsafe audit trail file.')
+      }
+      return await handle.readFile('utf8')
     } catch {
       return undefined
+    } finally {
+      await handle?.close().catch(() => {})
     }
   }
 }
