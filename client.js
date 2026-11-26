@@ -1885,6 +1885,14 @@ window.__ModuleLoader__.load({
            */
           const confirmDelete = async (request) => {
             const outcome = await callRemote(ctx, 'delete', { sessionId: request.sessionId })
+            if (outcome?.trashed === true) {
+              // Keep the sidebar badge accurate without delaying the delete
+              // acknowledgement on a second Host round-trip.
+              Promise.resolve()
+                .then(() => describeDeletion())
+                .then((info) => updateTrashCount(Number.isSafeInteger(info?.trashCount) ? info.trashCount : 0))
+                .catch((failure) => logWarning(ctx, 'could not refresh the Trash count after deletion:', failure))
+            }
             if (currentSessionId(ctx) === request.sessionId) {
               const uiWorkspace = optionalService(ctx, 'uiWorkspace')
               try {
