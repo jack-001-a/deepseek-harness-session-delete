@@ -218,17 +218,12 @@ async function assertSafeTrashEntryDirectory(root, entry) {
   if (
     !child ||
     child === '..' ||
-    child.startsWith('..' + pathSeparator()) ||
+    child.startsWith('..' + path.sep) ||
     isAbsolute(child) ||
-    child.includes(pathSeparator())
+    child.includes(path.sep)
   ) {
     throw new Error('Refusing a trash entry outside its configured trash root.')
   }
-}
-
-/** Path separator helper avoids importing another alias from node:path. */
-function pathSeparator() {
-  return process.platform === 'win32' ? '\\\\' : '/'
 }
 
 /**
@@ -237,7 +232,10 @@ function pathSeparator() {
  * @param text - complete UTF-8 replacement content.
  * @param label - safe diagnostic label.
  */
-async function writeAtomicTransactionFile(file, text, label) {
+async function writeAtomicTransactionFile(file, text, label, maxBytes) {
+  if (Buffer.byteLength(text, 'utf8') > maxBytes) {
+    throw new Error('Refusing to write a ' + label + ' larger than its ' + maxBytes + '-byte limit.')
+  }
   const directory = dirname(file)
   const parent = await lstat(directory)
   if (!parent.isDirectory() || parent.isSymbolicLink()) {
@@ -1677,7 +1675,7 @@ class SessionDeleteService {
       ...(accounting === undefined ? {} : { accounting }),
     }
     try {
-      await writeFile(join(entryPath, MANIFEST_FILE_NAME), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
+      await writeFile(join(entryPath, MANIFEST_FILE_NAME), `${JSON.stringify(manifest, null, 2)}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
     } catch (error) {
       await this.discardTrashEntry(entryPath)
       throw new SessionDeleteError(
@@ -2141,7 +2139,7 @@ class SessionDeleteService {
     if (restoreInProgress) {
       let record
       try {
-        record = JSON.parse(await readFile(restoreMarker, 'utf8'))
+        record = JSON.parse(await readBoundedTransactionFile(restoreMarker, TRASH_MARKER_MAX_BYTES, 'restore marker'))
       } catch {
         throw new SessionDeleteError(
           'session-delete/io',
@@ -2294,7 +2292,15 @@ class SessionDeleteService {
     }
     const next = { ...manifest, restoreState: RESTORE_PENDING, restoredAt: new Date().toISOString() }
     try {
-      await writeFile(join(entry.path, MANIFEST_FILE_NAME), `${JSON.stringify(next, null, 2)}\n`, 'utf8')
+      const root = this.trashRoot()
+      if (root === undefined) throw new Error('The trash root is unavailable.')
+      await assertSafeTrashEntryDirectory(root, entry.path)
+      await writeAtomicTransactionFile(
+        join(entry.path, MANIFEST_FILE_NAME),
+        `${JSON.stringify(next, null, 2)}\\n`,
+        'trash manifest',
+        TRASH_MANIFEST_MAX_BYTES,
+      )
       entry.restoreState = RESTORE_PENDING
       return true
     } catch (error) {
@@ -2380,7 +2386,7 @@ class SessionDeleteService {
 
     let identity
     try {
-      identity = JSON.parse(await readFile(markerPath, 'utf8'))
+      identity = JSON.parse(await readBoundedTransactionFile(markerPath, TRASH_MARKER_MAX_BYTES, 'trash move marker'))
     } catch {
       this.ctx.logger?.warn(`sessionDelete: the recovery marker in "${path}" is unreadable; both copies were preserved`)
       return false
@@ -2530,9 +2536,16 @@ class SessionDeleteService {
    */
   async readManifest(path) {
     try {
-      const text = await readFile(join(path, MANIFEST_FILE_NAME), 'utf8')
+      const root = this.trashRoot()
+      if (root === undefined) return undefined
+      await assertSafeTrashEntryDirectory(root, path)
+      const text = await readBoundedTransactionFile(
+        join(path, MANIFEST_FILE_NAME),
+        TRASH_MANIFEST_MAX_BYTES,
+        'trash manifest',
+      )
       const manifest = JSON.parse(text)
-      if (!manifest || typeof manifest !== 'object') return undefined
+      if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return undefined
       return manifest
     } catch {
       return undefined
