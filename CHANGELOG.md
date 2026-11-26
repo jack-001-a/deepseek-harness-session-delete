@@ -19,6 +19,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 - Explain in the confirmation dialog that uploaded attachments and workspace
   files are retained; validate and publish the declared `engines.dsh` range.
+- Include architecture, attachment, contributor and security documentation in
+  the npm package so README links work for registry users.
 
 ### Fixed
 
