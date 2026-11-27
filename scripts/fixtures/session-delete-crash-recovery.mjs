@@ -8,10 +8,11 @@
  * in-memory Registry state and replay the on-disk transaction.
  */
 import { apply } from '../../index.js'
+import { cp, rename } from 'node:fs/promises'
 import { join } from 'node:path'
 
 const [mode, root, sessionId] = process.argv.slice(2)
-const validModes = ['crash-delete-before-move', 'crash-delete', 'recover-delete', 'crash-restore', 'recover-restore']
+const validModes = ['crash-delete-after-tombstone', 'crash-delete-before-move', 'crash-delete', 'recover-delete', 'crash-restore', 'recover-restore']
 if (!validModes.includes(mode) || !root || !sessionId) {
   throw new Error('Expected a supported mode, session root and session id.')
 }
@@ -89,6 +90,28 @@ const ctx = {
 apply(ctx, {})
 const service = provided.get('sessionDelete')
 if (!service) throw new Error('Session Delete service was not registered.')
+
+if (mode === 'crash-delete-after-tombstone') {
+  // Force the same copy/promote path used after EXDEV, even though the
+  // fixture's temporary store is normally on one volume.
+  service.moveArtifact = async (source, destination, options = {}) => {
+    const staging = destination + '.partial'
+    await cp(source, staging, { recursive: true, force: false, errorOnExist: true })
+    await rename(staging, destination)
+    await options.afterPromote(source)
+  }
+  const removeWithRetries = service.removeWithRetries.bind(service)
+  service.removeWithRetries = async (target, id) => {
+    if (target.endsWith('.moving')) {
+      // The source has been atomically renamed to its transaction tombstone.
+      // Exit before recursive cleanup to exercise fresh-process recovery.
+      process.exit(84)
+    }
+    return removeWithRetries(target, id)
+  }
+  await service.delete(sessionId)
+  process.exit(88)
+}
 
 if (mode === 'crash-delete-before-move') {
   service.moveArtifact = async () => {

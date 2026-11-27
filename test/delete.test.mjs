@@ -3340,6 +3340,62 @@ test('artifact operations stay on the canonical parent when a project symlink is
 })
 
 
+test('process crash after the Trash source becomes a tombstone is recovered by a fresh process', { timeout: 30000 }, async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+  const workerPath = fileURLToPath(new URL('../scripts/fixtures/session-delete-crash-recovery.mjs', import.meta.url))
+
+  const runWorker = (mode) => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [workerPath, mode, store.root, SESSION_ID], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    child.once('error', reject)
+    child.once('close', (code, signal) => resolve({ code, signal, stdout, stderr }))
+  })
+
+  const crashed = await runWorker('crash-delete-after-tombstone')
+  assert.equal(crashed.code, 84, crashed.stderr)
+  assert.equal(await readFile(store.log).catch(() => undefined), undefined, 'the original location must be atomically detached')
+  await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
+
+  const entries = (await readdir(store.trashRoot)).filter((name) => name !== 'audit.jsonl')
+  assert.equal(entries.length, 1)
+  const trashId = entries[0]
+  const entry = trashEntry(store, trashId)
+  const tombstone = join(store.project, `.session-delete-${trashId}.moving`)
+  const manifest = JSON.parse(await readFile(join(entry, 'meta.json'), 'utf8'))
+  assert.equal(manifest.moveState, 'moving')
+  assert.ok((await stat(join(entry, '.copying'))).isFile())
+  assert.ok((await stat(join(entry, 'artifact'))).isDirectory())
+  assert.ok((await stat(tombstone)).isDirectory(), 'the interrupted source tombstone must survive the crash')
+  assert.equal(
+    await readFile(join(entry, 'artifact', 'session.4.jsonl'), 'utf8'),
+    '{"seq":0}\n',
+  )
+
+  const recovered = await runWorker('recover-delete')
+  assert.equal(recovered.code, 0, recovered.stderr)
+  const report = JSON.parse(recovered.stdout.trim())
+  assert.deepEqual(report.result, { deleted: 1, restored: 0, preserved: 0 })
+  assert.deepEqual(report.sessionIds, ['session-older'])
+  assert.deepEqual(report.pinned, [])
+  assert.equal(report.trashEntry, true, 'the committed Trash artifact remains restorable')
+  await assert.rejects(stat(tombstone), (error) => error.code === 'ENOENT', 'recovery removes only the transaction tombstone')
+  await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
+  assert.ok((await stat(join(entry, 'artifact'))).isDirectory(), 'the Trash artifact remains intact')
+  assert.equal(
+    await readFile(join(entry, 'artifact', 'session.4.jsonl'), 'utf8'),
+    '{"seq":0}\n',
+  )
+  await assert.rejects(stat(report.lockPath), (error) => error.code === 'ENOENT')
+})
+
 test('process crash after the moving marker but before the Trash move keeps the original authoritative', { timeout: 30000 }, async (t) => {
   const store = await makeStore()
   t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
