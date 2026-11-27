@@ -1,6 +1,6 @@
 {
   "name": "@ybbmm/dsh-session-delete",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "type": "module",
   "description": "Safely delete and manage DeepSeek Harness conversations with a searchable recoverable Trash, restore, typed permanent-delete confirmation, path guards, and audit trail. | 安全删除并管理 DeepSeek Harness 对话：可搜索回收站、恢复、输入会话 ID 二次确认永久删除、路径保护与审计日志。",
   "license": "MIT",
