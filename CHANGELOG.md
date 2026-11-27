@@ -15,6 +15,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Add path-redacted, length-bounded Gateway error messages and details-key metadata to real-Harness RPC diagnostics, preserving privacy while making `gateway/internal` actionable.
 - Unwrap the Connection `server-response` envelope in real-Harness diagnostics so CI captures the nested Remote success flag and Gateway error code rather than only the transport wrapper.
 - Record the real Harness delete-capability RPC's HTTP status and safe error code in UI integration failures; assert that the description endpoint was reached and accepted.
 - Capture real Harness UI screenshots before browser teardown and include bounded dialog/live-region evidence plus the failing stage in CI logs; wait for the final localized dialog title after the Host capability query settles.

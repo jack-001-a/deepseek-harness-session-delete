@@ -79,6 +79,8 @@ interface RemoteRpcEvidence {
   readonly errorCode?: string
   readonly envelopeKeys?: readonly string[]
   readonly resultKeys?: readonly string[]
+  readonly errorMessage?: string
+  readonly detailsKeys?: readonly string[]
 }
 
 /** Reduce an RPC response to transport and machine-readable failure metadata. */
@@ -90,6 +92,8 @@ async function inspectRemoteResponse(response: Response): Promise<RemoteRpcEvide
     errorCode?: string
     envelopeKeys?: string[]
     resultKeys?: string[]
+    errorMessage?: string
+    detailsKeys?: string[]
   } = { path: new URL(response.url()).pathname, status: response.status() }
   try {
     const body: unknown = await response.json()
@@ -104,8 +108,21 @@ async function inspectRemoteResponse(response: Response): Promise<RemoteRpcEvide
         if (typeof remoteResult.ok === 'boolean') evidence.ok = remoteResult.ok
         const error = remoteResult.error
         if (error !== null && typeof error === 'object' && !Array.isArray(error)) {
-          const code = (error as Record<string, unknown>).code
+          const remoteFailure = error as Record<string, unknown>
+          const code = remoteFailure.code
           if (typeof code === 'string') evidence.errorCode = code
+          if (typeof remoteFailure.message === 'string') {
+            // Gateway/internal keeps Error.message on the wire. Scrub absolute
+            // paths and cap the output so CI evidence cannot leak store paths.
+            evidence.errorMessage = remoteFailure.message
+              .replace(/(?:[A-Za-z]:[\\/]|\/)(?:[^\s"'<>]+[\\/])*[^\s"'<>]+/g, '[path]')
+              .replace(/[\r\n\t]+/g, ' ')
+              .slice(0, 240)
+          }
+          const details = remoteFailure.details
+          if (details !== null && typeof details === 'object' && !Array.isArray(details)) {
+            evidence.detailsKeys = Object.keys(details as Record<string, unknown>).sort()
+          }
         }
       } else {
         // Retain compatibility with a bare RemoteResult carrier in local tests.
