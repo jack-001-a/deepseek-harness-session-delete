@@ -2040,8 +2040,8 @@ window.__ModuleLoader__.load({
            * announces it; the workspace projection follows the Host's own
            * domain stream. The session catalog is refreshed as well, because a
            * summary that is missing from it would leave the row unrenderable
-           * even with the membership restored. The refresh runs after the
-           * answer, so a slow list read never delays the dialog.
+           * even with the membership restored. Await the list refresh so
+           * the row is present before the restored action settles.
            * @param sessionId - the conversation to restore.
            * @returns the restore outcome.
            * @throws the Host failure, for the dialog to localize.
@@ -2051,11 +2051,14 @@ window.__ModuleLoader__.load({
               const outcome = await callRemote(ctx, 'restore', { sessionId })
               const sessions = optionalService(ctx, 'sessions')
               if (typeof sessions?.refresh === 'function') {
-                Promise.resolve()
-                  .then(() => sessions.refresh())
-                  .catch((failure) => {
-                    logWarning(ctx, 'could not refresh the session list after a restore:', failure)
-                  })
+                try {
+                  await sessions.refresh()
+                } catch (failure) {
+                  // The Host has restored the durable artifact already. A
+                  // catalog read failure must not turn Restore into a retry
+                  // that could race with the completed Host transaction.
+                  logWarning(ctx, 'could not refresh the session list after a restore:', failure)
+                }
               }
               return outcome
             } catch (failure) {

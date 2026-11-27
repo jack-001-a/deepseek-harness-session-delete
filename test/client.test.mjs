@@ -232,7 +232,7 @@ function applyPlugin(plugin, handlers = {}) {
   services.sessions = {
     refresh: () => {
       services.refreshes += 1
-      return Promise.resolve()
+      return Promise.resolve(handlers['sessions/refresh']?.())
     },
   }
   services.refreshes = 0
@@ -900,12 +900,15 @@ test('restore calls the host and reports the outcome inline', async () => {
   assert.deepEqual(labels, ['Close'], 'a restored conversation offers nothing but Close')
 })
 
-test('restore refreshes the session catalog and treats an older host as a full success', async () => {
+test('restore waits for the session catalog refresh and treats an older host as a full success', async () => {
   const { plugin, React } = await loadPlugin()
+  let finishRefresh
+  const refreshGate = new Promise((resolve) => { finishRefresh = resolve })
   const { registrations, dictionaries, services } = applyPlugin(plugin, {
     // A host older than 0.4.0 knows nothing about reattachment and says so by
     // leaving the field out; that must read as a completed restore.
     'sessionDelete/restore': () => ({ ok: true, value: { sessionId: 'session-a', restored: true, mode: 'trash' } }),
+    'sessions/refresh': () => refreshGate,
   })
   const { form } = renderDialog(registrations, dictionaries, React, 'en', {
     describeDeletion: async () => DESCRIBE_TRASH,
@@ -922,6 +925,15 @@ test('restore refreshes the session catalog and treats an older host as a full s
   await settle()
 
   assert.equal(services.refreshes, 1, 'the session catalog must be re-pulled after a restore')
+  const pendingStatuses = []
+  walk(form.tree, (node) => {
+    if (node.props?.role === 'status') pendingStatuses.push(text(node))
+  })
+  assert.equal(pendingStatuses.includes('The conversation was restored.'), false,
+    'Restore must remain pending until the catalog refresh settles')
+  finishRefresh()
+  await settle()
+  await settle()
   const statuses = []
   walk(form.tree, (node) => {
     if (node.props?.role === 'status') statuses.push(text(node))

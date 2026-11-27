@@ -65,6 +65,9 @@ async function inspectUi(page: Page): Promise<string> {
       heading: element.querySelector('h1, h2, h3')?.textContent?.trim() ?? '',
       text: element.innerText.slice(0, 1_000),
     })),
+    sessionRows: [...document.querySelectorAll<HTMLElement>('[role="treeitem"]')]
+      .slice(0, 30)
+      .map((element) => element.innerText.trim().slice(0, 160)),
     liveRegions: [...document.querySelectorAll<HTMLElement>('[role="alert"], [role="status"]')]
       .map((element) => element.innerText.trim().slice(0, 500)),
   }))
@@ -81,6 +84,8 @@ interface RemoteRpcEvidence {
   readonly resultKeys?: readonly string[]
   readonly errorMessage?: string
   readonly detailsKeys?: readonly string[]
+  readonly announced?: boolean
+  readonly reattached?: boolean
 }
 
 /** Reduce an RPC response to transport and machine-readable failure metadata. */
@@ -94,6 +99,8 @@ async function inspectRemoteResponse(response: Response): Promise<RemoteRpcEvide
     resultKeys?: string[]
     errorMessage?: string
     detailsKeys?: string[]
+    announced?: boolean
+    reattached?: boolean
   } = { path: new URL(response.url()).pathname, status: response.status() }
   try {
     const body: unknown = await response.json()
@@ -106,6 +113,12 @@ async function inspectRemoteResponse(response: Response): Promise<RemoteRpcEvide
         const remoteResult = result as Record<string, unknown>
         evidence.resultKeys = Object.keys(remoteResult).sort()
         if (typeof remoteResult.ok === 'boolean') evidence.ok = remoteResult.ok
+        const value = remoteResult.value
+        if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+          const restoreOutcome = value as Record<string, unknown>
+          if (typeof restoreOutcome.announced === 'boolean') evidence.announced = restoreOutcome.announced
+          if (typeof restoreOutcome.reattached === 'boolean') evidence.reattached = restoreOutcome.reattached
+        }
         const error = remoteResult.error
         if (error !== null && typeof error === 'object' && !Array.isArray(error)) {
           const remoteFailure = error as Record<string, unknown>
@@ -250,6 +263,10 @@ it('deletes from the real session menu, then restores through the real Trash man
     }, { timeout: 15_000 }).toBe(sessionId)
     await expect.poll(() => workspace.record.sessionIds.includes(sessionId)).toBe(true)
     await expectCount(row, 1, 20_000)
+
+    const restoreResponse = remoteResponses.find((item) => item.path.endsWith('/api/sessionDelete/restore'))
+    expect(restoreResponse?.ok).toBe(true)
+    expect(restoreResponse?.announced).toBe(true)
 
     expect(remoteResponses.some((item) => item.path.endsWith('/api/sessionDelete/describe'))).toBe(true)
     expect(remoteResponses.find((item) => item.path.endsWith('/api/sessionDelete/describe'))?.ok).toBe(true)
