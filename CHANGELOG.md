@@ -6,6 +6,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## Unreleased
 
+## [0.7.1] — 2026-11-27
+
 ### Added
 
 - Add real Harness Web/Chromium coverage for both sidebar delete entry points, the Host confirmation Modal, Trash listing and Restore; CI boots the pinned Web frontend and captures failure screenshots.
@@ -53,7 +55,6 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Handle synchronous exceptions from Host adapters through the same localized, retryable error path as rejected promises.
 - Keep the confirmation open when a close or Escape action arrives before React has committed the in-flight state.
 - Render an explicit fallback for malformed Trash timestamps instead of exposing the raw manifest value.
-
 ## [0.7.0] — 2026-11-27
 
 ### Added
