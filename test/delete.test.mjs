@@ -65,8 +65,9 @@ function harness(options = {}) {
     sessionPersistence: persistence,
     fileUploads: extra.fileUploads,
     waterfall: async (_name, _payload, base) => (options.activity ? options.activity : base()),
-    parallel: async (_name, payload) => {
+    parallel: async (name, payload) => {
       calls.stopped.push(payload.sessionId)
+      await options.parallel?.(name, payload, { calls, registry })
     },
     emit: (name, payload) => {
       calls.emitted.push([name, payload])
@@ -326,6 +327,62 @@ test('stored session: moves the log into the trash, then releases accounting and
   assert.equal(cache.has(SESSION_ID), false)
   assert.deepEqual(h.calls.emitted, [['api-session/removed', SESSION_ID]])
   assert.deepEqual(h.calls.stopped, [SESSION_ID])
+})
+
+test('Trash captures the latest workspace accounting after stop hooks settle', async () => {
+  const store = await makeStore()
+  const registryOptions = {
+    pinned: true,
+    archived: false,
+    sessionIds: [SESSION_ID, 'session-before', 'session-after'],
+  }
+  const registry = accountingRegistry(store, registryOptions)
+  const h = harness({
+    ...storedTarget(store),
+    registry,
+    parallel: async (name, payload) => {
+      assert.equal(name, 'workspace/session-stop')
+      assert.equal(payload.sessionId, SESSION_ID)
+      // Model a pin/archive/order update that commits while the stop hook is
+      // awaited. The Trash manifest must capture the state at the move, not
+      // the stale snapshot taken before these asynchronous Host callbacks.
+      registryOptions.pinned = false
+      registryOptions.archived = true
+      registry.workspace.record.sessionIds = [
+        'session-before',
+        SESSION_ID,
+        'session-after',
+      ]
+    },
+  })
+
+  const deleted = await h.service.delete(SESSION_ID)
+  const entryPath = trashEntry(store, deleted.trashId)
+  const manifest = JSON.parse(await readFile(join(entryPath, 'meta.json'), 'utf8'))
+
+  assert.deepEqual(manifest.accounting, {
+    member: true,
+    pinned: false,
+    archived: true,
+    workspaceId: 'ws-1',
+    beforeSessionId: 'session-after',
+  })
+
+  const restored = await h.service.restore(SESSION_ID)
+  assert.equal(restored.restored, true)
+  assert.ok(
+    registry.calls.some((call) => call[0] === 'insert' && call[1] === SESSION_ID && call[2] === 'session-after'),
+    'Restore must use the updated display-order anchor',
+  )
+  assert.ok(
+    registry.calls.some((call) => call[0] === 'archive' && call[1] === SESSION_ID),
+    'Restore must replay the latest committed archive state',
+  )
+  assert.equal(
+    registry.calls.some((call) => call[0] === 'pin' && call[1] === SESSION_ID),
+    false,
+    'an archive committed while stopping must not be restored as a stale pin',
+  )
 })
 
 test('permanent mode: removes the artifact outright', async () => {
