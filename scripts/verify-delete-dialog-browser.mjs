@@ -195,6 +195,14 @@ try {
   assert.ok(mobileBounds, 'the mobile dialog must be visible')
   assert.ok(Math.abs(mobileBounds.width - 363) <= 1, 'mobile card should retain six-pixel outer gutters')
   assert.ok(Math.abs(mobileBounds.x - 6) <= 1, 'mobile card should remain centered')
+  const mobileHeader = await mobileDialog.locator('.hostModalHeader').boundingBox()
+  const mobileTitleBounds = await mobileDialog.locator('h2').boundingBox()
+  const mobileCloseBounds = await mobileDialog.locator('.hostModalClose').boundingBox()
+  assert.ok(mobileHeader && mobileTitleBounds && mobileCloseBounds)
+  assert.ok(
+    mobileCloseBounds.y <= mobileTitleBounds.y + 4,
+    'the close control must stay aligned with the first title line on narrow screens',
+  )
   const mobileOverflow = await mobile.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)
   assert.equal(mobileOverflow, false, 'long localized titles must not create horizontal page overflow')
   await mobile.screenshot({ path: resolve(artifacts, 'session-delete-dialog-mobile.png'), fullPage: true })
@@ -210,7 +218,7 @@ try {
       'keyboard focus order and visible focus ring',
       'reduced-motion preference',
       'dark theme surface',
-      'mobile 375px viewport and long-title overflow',
+      'mobile 375px viewport, long-title wrapping and top-aligned close control',
     ],
     styles,
     screenshots: [

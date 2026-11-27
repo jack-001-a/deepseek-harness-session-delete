@@ -12,6 +12,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Keep the close control aligned to the first title line when long chat titles wrap on narrow screens.
 - Fail closed when Host deletion capabilities cannot be verified or the Session cannot be safely located; no destructive action is rendered or dispatched.
 - Link the Host Modal's portaled dialog root to its actual heading and description for screen-reader context.
 - Align the npm package description with the explicit permanent-delete confirmation now shipped.

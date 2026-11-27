@@ -540,13 +540,16 @@ window.__ModuleLoader__.load({
 .dshSessionDelete_header,
 .dshSessionDelete_modalContent > div:first-child {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
   padding: 18px 20px 0;
 }
 .dshSessionDelete_title,
 .dshSessionDelete_modalCard h2 {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
   margin: 0;
   color: var(--dsw-alias-label-primary);
   font-size: 20px;
@@ -557,6 +560,7 @@ window.__ModuleLoader__.load({
 .dshSessionDelete_close,
 .dshSessionDelete_modalContent > div:first-child > button {
   display: inline-flex;
+  margin-top: 2px;
   flex: none;
   align-items: center;
   justify-content: center;
