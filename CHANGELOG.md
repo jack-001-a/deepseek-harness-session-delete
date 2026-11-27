@@ -27,6 +27,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Treat Windows `EPERM` from a competing atomic lock-directory `mkdir` as contention only after `lstat` verifies the existing target is a real directory; permission failures and unsafe paths remain fail-closed.
 - Preserve the plugin's injected Host-service Context separately from the Gateway's per-call `ctx` shadow, so Remote methods retain access to scoped dependencies without losing invocation context.
 - Register Cordis's root `invocation` accessor required by the Typert source-mode Gateway, while preserving an accessor already installed by another Remote provider.
 - Keep the close control aligned to the first title line when long chat titles wrap on narrow screens.

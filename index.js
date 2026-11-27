@@ -871,11 +871,33 @@ class SessionDeleteService {
       }
     }
 
+    /**
+     * Windows can report EPERM, rather than EEXIST, when another process
+     * creates the same directory concurrently. Treat it as contention only
+     * after lstat proves the target is already a real directory.
+     */
+    const isWindowsDirectoryCollision = async (error) => {
+      if (process.platform !== 'win32' || error?.code !== 'EPERM') return false
+      const current = await lstat(lockPath).catch((statError) => {
+        if (statError?.code === 'ENOENT') return undefined
+        throw statError
+      })
+      if (current === undefined) return false
+      if (!current.isDirectory() || current.isSymbolicLink()) {
+        throw new SessionDeleteError(
+          'session-delete/unsafe-path',
+          'sessionDelete: the operation lock path is not a real directory; refusing to follow it',
+          { path: lockPath, reason: 'non-directory-lock-path' },
+        )
+      }
+      return true
+    }
+
     while (true) {
       try {
         return await claim()
       } catch (error) {
-        if (error?.code !== 'EEXIST') throw error
+        if (error?.code !== 'EEXIST' && !(await isWindowsDirectoryCollision(error))) throw error
       }
 
       const owner = await this.readProcessLockOwner(lockPath)
