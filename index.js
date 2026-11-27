@@ -1605,9 +1605,14 @@ class SessionDeleteService {
     // Resolve existing components before any destructive operation.
     let canonicalRoot
     let canonicalTarget
+    let canonicalParent
     try {
       canonicalRoot = await realpath(root)
       canonicalTarget = await resolveThroughExistingAncestors(target)
+      // Resolve the parent separately so the final component remains a
+      // symlink (if it is one) and can be unlinked as a link. Operations must
+      // not later traverse a replaceable alias in an ancestor directory.
+      canonicalParent = await resolveThroughExistingAncestors(dirname(target))
     } catch (error) {
       throw new SessionDeleteError(
         'session-delete/unsafe-path',
@@ -1615,7 +1620,10 @@ class SessionDeleteService {
         { sessionId, kind, path: target, root, reason: 'unverifiable-path', causeCode: error?.code },
       )
     }
-    if (!isInside(canonicalRoot, canonicalTarget)) {
+    if (
+      !isInside(canonicalRoot, canonicalTarget) ||
+      (!samePath(canonicalRoot, canonicalParent) && !isInside(canonicalRoot, canonicalParent))
+    ) {
       throw new SessionDeleteError(
         'session-delete/unsafe-path',
         `sessionDelete: the artifact of "${sessionId}" resolves outside the session store; nothing was removed`,
@@ -1636,10 +1644,11 @@ class SessionDeleteService {
         { sessionId, kind, path: canonicalTarget, root: canonicalRoot, reason: 'unexpected-layout' },
       )
     }
-    // Keep the normalized locator path for the filesystem operation. In
-    // particular, rm() removes a final symlink itself instead of following
-    // it; the canonical path above is only the security-check target.
-    return { target, root: canonicalRoot, kind }
+    // Use the canonical parent for filesystem operations while preserving
+    // the final path component. rename()/rm() then operate on a final symlink
+    // itself rather than following it, and cannot be redirected by swapping
+    // the locator's intermediate symlink aliases after this check.
+    return { target: join(canonicalParent, basename(target)), root: canonicalRoot, kind }
   }
 
   /**
@@ -2268,7 +2277,7 @@ class SessionDeleteService {
         { sessionId },
       )
     }
-    const target = entry.originalPath
+    let target = entry.originalPath
     const root = this.storeRoot()
     if (typeof target !== 'string' || target.length === 0) {
       throw new SessionDeleteError(
@@ -2302,7 +2311,11 @@ class SessionDeleteService {
       try {
         const canonicalRoot = await realpath(root)
         const canonicalTarget = await resolveThroughExistingAncestors(target)
-        if (!isInside(canonicalRoot, canonicalTarget)) {
+        const canonicalParent = await resolveThroughExistingAncestors(dirname(target))
+        if (
+          !isInside(canonicalRoot, canonicalTarget) ||
+          !isInside(canonicalRoot, canonicalParent)
+        ) {
           throw new SessionDeleteError(
             'session-delete/unsafe-path',
             `sessionDelete: the original location of session "${sessionId}" resolves outside the session store; nothing was restored`,
@@ -2316,6 +2329,9 @@ class SessionDeleteService {
             { sessionId, path: canonicalTarget, root: canonicalRoot, reason: 'unexpected-layout' },
           )
         }
+        // The manifest may contain an old locator alias. Restore through the
+        // canonical parent and preserve the final component as a link.
+        target = join(canonicalParent, basename(target))
       } catch (error) {
         if (error instanceof SessionDeleteError) throw error
         throw new SessionDeleteError(
