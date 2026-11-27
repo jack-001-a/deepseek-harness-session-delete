@@ -78,6 +78,7 @@ interface RemoteRpcEvidence {
   readonly ok?: boolean
   readonly errorCode?: string
   readonly envelopeKeys?: readonly string[]
+  readonly resultKeys?: readonly string[]
 }
 
 /** Reduce an RPC response to transport and machine-readable failure metadata. */
@@ -88,17 +89,32 @@ async function inspectRemoteResponse(response: Response): Promise<RemoteRpcEvide
     ok?: boolean
     errorCode?: string
     envelopeKeys?: string[]
+    resultKeys?: string[]
   } = { path: new URL(response.url()).pathname, status: response.status() }
   try {
     const body: unknown = await response.json()
     if (body !== null && typeof body === 'object' && !Array.isArray(body)) {
       const envelope = body as Record<string, unknown>
-      if (typeof envelope.ok === 'boolean') evidence.ok = envelope.ok
       evidence.envelopeKeys = Object.keys(envelope).sort()
-      const error = envelope.error
-      if (error !== null && typeof error === 'object' && !Array.isArray(error)) {
-        const code = (error as Record<string, unknown>).code
-        if (typeof code === 'string') evidence.errorCode = code
+      // Connection wraps the RemoteResult in { type, rpcId, result }.
+      const result = envelope.result
+      if (result !== null && typeof result === 'object' && !Array.isArray(result)) {
+        const remoteResult = result as Record<string, unknown>
+        evidence.resultKeys = Object.keys(remoteResult).sort()
+        if (typeof remoteResult.ok === 'boolean') evidence.ok = remoteResult.ok
+        const error = remoteResult.error
+        if (error !== null && typeof error === 'object' && !Array.isArray(error)) {
+          const code = (error as Record<string, unknown>).code
+          if (typeof code === 'string') evidence.errorCode = code
+        }
+      } else {
+        // Retain compatibility with a bare RemoteResult carrier in local tests.
+        if (typeof envelope.ok === 'boolean') evidence.ok = envelope.ok
+        const error = envelope.error
+        if (error !== null && typeof error === 'object' && !Array.isArray(error)) {
+          const code = (error as Record<string, unknown>).code
+          if (typeof code === 'string') evidence.errorCode = code
+        }
       }
     }
   } catch {

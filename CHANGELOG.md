@@ -15,6 +15,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Unwrap the Connection `server-response` envelope in real-Harness diagnostics so CI captures the nested Remote success flag and Gateway error code rather than only the transport wrapper.
 - Record the real Harness delete-capability RPC's HTTP status and safe error code in UI integration failures; assert that the description endpoint was reached and accepted.
 - Capture real Harness UI screenshots before browser teardown and include bounded dialog/live-region evidence plus the failing stage in CI logs; wait for the final localized dialog title after the Host capability query settles.
 - Preserve in-progress main-branch CI runs so expensive pinned Harness builds and two-process compatibility tests can finish; superseded pull-request runs remain cancellable.
