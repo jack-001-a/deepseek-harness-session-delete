@@ -2255,7 +2255,10 @@ test('Remote Host methods retain their injected owner context when the Gateway b
   assert.equal(result.supported, true)
   assert.equal(result.canLocate, true)
   assert.equal(result.mode, 'trash')
-  assert.strictEqual(h.service.ownerCtx, h.ctx)
+  const owner = h.service[Symbol.for('ybbmm.dsh-session-delete.owner-services')]
+  assert.strictEqual(owner.sessionPersistence, h.ctx.sessionPersistence)
+  assert.strictEqual(owner.sessions, h.ctx.sessions)
+  assert.strictEqual(owner.workspaceRegistry, h.ctx.get('workspaceRegistry'))
   assert.strictEqual(h.service.ctx, gatewayCallContext)
 })
 

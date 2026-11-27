@@ -40,6 +40,8 @@ const NAMESPACE = 'sessionDelete'
 const REMOTE_METHODS = '@deepseek-ai/dsh-typert-protocol/remote-methods'
 /** Shared symbol Cordis uses to bind a service value to its owning context. */
 const TRACKER = Symbol.for('cordis.tracker')
+/** Captured owner-scope dependencies; Symbol keys bypass Cordis service re-tracing. */
+const OWNER_SERVICES = Symbol.for('ybbmm.dsh-session-delete.owner-services')
 /** Bounded retries for a removal a closing writer may still be holding open. */
 const REMOVE_ATTEMPTS = 8
 /** First back-off delay; doubled per attempt up to the ceiling. */
@@ -645,6 +647,49 @@ function reducedHeader(header) {
   return kept
 }
 
+/**
+ * Capture the dependencies admitted by the plugin's inject scope before the
+ * API Gateway replaces the Service's public ctx with a per-call context.
+ *
+ * Reflect.get(name) bypasses the inject check but still resolves from the
+ * plugin context at construction time. The resulting service references are
+ * stored under a Symbol so Cordis's traceable Service proxy does not rebind
+ * them when a Remote method is invoked.
+ * @param ctx - the plugin context passed to apply().
+ * @returns a plain, stable dependency facade.
+ */
+function captureOwnerServices(ctx) {
+  const services = Object.create(null)
+  const names = [
+    'sessionPersistence',
+    'sessions',
+    'workspaceRegistry',
+    'sessionController',
+    'fileUploads',
+    'storageDomain',
+  ]
+  for (const name of names) {
+    let value
+    try {
+      value = typeof ctx?.get === 'function' ? ctx.get(name) : undefined
+    } catch {
+      value = undefined
+    }
+    if (value === undefined) {
+      try {
+        value = ctx?.[name]
+      } catch {
+        value = undefined
+      }
+    }
+    services[name] = value
+  }
+  try { services.logger = ctx?.logger } catch { services.logger = undefined }
+  try { services.emit = ctx?.emit } catch { services.emit = undefined }
+  services.get = (name) => services[name]
+  return Object.freeze(services)
+}
+
 class SessionDeleteService {
   /**
    * @param ctx - the owning plugin context.
@@ -652,8 +697,8 @@ class SessionDeleteService {
    */
   constructor(ctx, config = {}) {
     this.ctx = ctx
-    // Keep plugin-scoped Host injections stable; `ctx` remains the Gateway's per-call shadow.
-    this.ownerCtx = ctx
+    // Snapshot injected services before a Gateway call can shadow this.ctx.
+    this[OWNER_SERVICES] = captureOwnerServices(ctx)
     this.name = SERVICE_KEY
     /** Deletions in flight, so two clicks cannot interleave their steps. */
     this.inflight = new Map()
@@ -700,12 +745,12 @@ class SessionDeleteService {
    * @returns whether a provider accepted the owner-release notification.
    */
   async releaseAttachmentOwnersAfterPurge(sessionId) {
-    const fileUploads = this.ownerCtx.fileUploads
+    const fileUploads = this[OWNER_SERVICES].fileUploads
     if (typeof fileUploads?.onSessionPermanentlyPurged !== 'function') return false
     try {
       return await fileUploads.onSessionPermanentlyPurged(sessionId) === true
     } catch (error) {
-      this.ownerCtx.logger?.warn(
+      this[OWNER_SERVICES].logger?.warn(
         `sessionDelete: session "${sessionId}" was purged, but attachment-owner release failed; references remain retained: ${String(error)}`,
       )
       return false
@@ -847,7 +892,7 @@ class SessionDeleteService {
         // between mkdir and this failure, recursive removal could erase a
         // different process's newly-claimed lock. An ownerless directory is
         // deliberately fail-closed and can be inspected by an operator.
-        this.ownerCtx.logger?.warn(
+        this[OWNER_SERVICES].logger?.warn(
           `sessionDelete: writing lock ownership for "${label}" failed; the lock directory was preserved for inspection: ${String(error)}`,
         )
         throw error
@@ -858,13 +903,13 @@ class SessionDeleteService {
       return async () => {
         const current = await this.readProcessLockOwner(lockPath)
         if (current?.token !== owner.token || current.pid !== process.pid || current.host !== owner.host) {
-          this.ownerCtx.logger?.warn(`sessionDelete: lock ownership changed for "${label}"; the lock was left untouched`)
+          this[OWNER_SERVICES].logger?.warn(`sessionDelete: lock ownership changed for "${label}"; the lock was left untouched`)
           return
         }
         try {
           await rm(lockPath, { recursive: true })
         } catch (error) {
-          this.ownerCtx.logger?.warn(`sessionDelete: releasing the lock for "${label}" failed: ${String(error)}`)
+          this[OWNER_SERVICES].logger?.warn(`sessionDelete: releasing the lock for "${label}" failed: ${String(error)}`)
         } finally {
           if (this.processLockTokens.get(lockPath) === owner.token) this.processLockTokens.delete(lockPath)
         }
@@ -944,26 +989,26 @@ class SessionDeleteService {
                 try {
                   const release = await claim()
                   await rm(quarantine, { recursive: true, force: true }).catch((error) => {
-                    this.ownerCtx.logger?.warn('sessionDelete: removing stale lock quarantine "' + quarantine + '" failed: ' + String(error))
+                    this[OWNER_SERVICES].logger?.warn('sessionDelete: removing stale lock quarantine "' + quarantine + '" failed: ' + String(error))
                   })
                   return release
                 } catch (error) {
                   if (error?.code !== 'EEXIST') throw error
                 }
               } else {
-                this.ownerCtx.logger?.warn('sessionDelete: stale lock metadata changed for "' + label + '"; preserved "' + quarantine + '"')
+                this[OWNER_SERVICES].logger?.warn('sessionDelete: stale lock metadata changed for "' + label + '"; preserved "' + quarantine + '"')
               }
             }
           } catch (error) {
             if (error?.code !== 'ENOENT' && error?.code !== 'EEXIST') {
-              this.ownerCtx.logger?.warn('sessionDelete: reclaiming a dead lock for "' + label + '" failed: ' + String(error))
+              this[OWNER_SERVICES].logger?.warn('sessionDelete: reclaiming a dead lock for "' + label + '" failed: ' + String(error))
             }
           } finally {
             const markerPath = join(reclaimDirectory, PROCESS_LOCK_RECLAIM_FILE)
             const markerContents = await readFile(markerPath, 'utf8').catch(() => undefined)
             if (markerContents === reclaimContents) {
               await rm(markerPath, { force: true }).catch((error) => {
-                this.ownerCtx.logger?.warn('sessionDelete: removing stale-lock reclaim marker "' + markerPath + '" failed: ' + String(error))
+                this[OWNER_SERVICES].logger?.warn('sessionDelete: removing stale-lock reclaim marker "' + markerPath + '" failed: ' + String(error))
               })
             }
           }
@@ -1019,7 +1064,7 @@ class SessionDeleteService {
    *   an unmaterialized live session.
    */
   async acquireHostWriteHandle(sessionId, { allowMissing = false, retryOwned = false } = {}) {
-    const persistence = this.ownerCtx.sessionPersistence
+    const persistence = this[OWNER_SERVICES].sessionPersistence
     if (typeof persistence?.open !== 'function') return undefined
 
     for (let attempt = 0; attempt < (retryOwned ? REMOVE_ATTEMPTS : 1); attempt += 1) {
@@ -1078,7 +1123,7 @@ class SessionDeleteService {
       // The artifact is already detached from the store path. A close failure
       // is logged, not allowed to turn a committed deletion into a false
       // "nothing changed" result.
-      this.ownerCtx.logger?.warn(
+      this[OWNER_SERVICES].logger?.warn(
         `sessionDelete: closing the Host write handle for "${sessionId}" failed: ${String(error)}`,
       )
     }
@@ -1124,7 +1169,7 @@ class SessionDeleteService {
    * @returns the deletion outcome.
    */
   async runDelete(sessionId) {
-    const ctx = this.ownerCtx
+    const ctx = this[OWNER_SERVICES]
 
     // 0. A conversation that already sits in the trash is not an error:
     //    deleting it again reports the entry that already holds it, so a
@@ -1290,7 +1335,7 @@ class SessionDeleteService {
    * @param sessionId - durable Session identity.
    */
   detach(sessionId) {
-    const ctx = this.ownerCtx
+    const ctx = this[OWNER_SERVICES]
     const sessions = optionalService(ctx, 'sessions')
     const entry = sessions?.store?.get(sessionId)
     if (entry && typeof sessions.detachEntered === 'function') {
@@ -1319,7 +1364,7 @@ class SessionDeleteService {
    * @param sessionId - durable Session identity.
    */
   async releaseWorkspaceAccounting(sessionId) {
-    const ctx = this.ownerCtx
+    const ctx = this[OWNER_SERVICES]
     const registry = optionalService(ctx, 'workspaceRegistry')
     if (!registry) return true
     let complete = true
@@ -1364,7 +1409,7 @@ class SessionDeleteService {
    * @returns the recorded accounting, presence marks included.
    */
   captureAccounting(sessionId) {
-    const registry = optionalService(this.ownerCtx, 'workspaceRegistry')
+    const registry = optionalService(this[OWNER_SERVICES], 'workspaceRegistry')
     // The empty record is not a missing one: its presence tells a future
     // restore that the accounting was captured, so nothing is inferred.
     const accounting = { member: false, pinned: false, archived: false }
@@ -1384,7 +1429,7 @@ class SessionDeleteService {
         break
       }
     } catch (error) {
-      this.ownerCtx.logger?.warn(`sessionDelete: capturing workspace membership of "${sessionId}" failed: ${String(error)}`)
+      this[OWNER_SERVICES].logger?.warn(`sessionDelete: capturing workspace membership of "${sessionId}" failed: ${String(error)}`)
     }
     try {
       const pinned = registry.pinnedSessionIds
@@ -1419,7 +1464,7 @@ class SessionDeleteService {
    * @returns the reattachment result, or undefined when there is nothing to attempt.
    */
   async reattachAccounting(manifest, sessionId) {
-    const registry = optionalService(this.ownerCtx, 'workspaceRegistry')
+    const registry = optionalService(this[OWNER_SERVICES], 'workspaceRegistry')
     if (!registry) return undefined
     const accounting = manifest?.accounting
     const recorded = accounting !== undefined && accounting !== null && typeof accounting === 'object'
@@ -1445,7 +1490,7 @@ class SessionDeleteService {
               typeof accounting.beforeSessionId === 'string' ? accounting.beforeSessionId : undefined,
             )
           } catch (error) {
-            this.ownerCtx.logger?.warn(
+            this[OWNER_SERVICES].logger?.warn(
               `sessionDelete: reattaching session "${sessionId}" to its workspace failed: ${String(error)}`,
             )
             result.failures.push('workspace')
@@ -1459,14 +1504,14 @@ class SessionDeleteService {
         try {
           await registry.archiveSession?.(sessionId)
         } catch (error) {
-          this.ownerCtx.logger?.warn(`sessionDelete: re-archiving session "${sessionId}" failed: ${String(error)}`)
+          this[OWNER_SERVICES].logger?.warn(`sessionDelete: re-archiving session "${sessionId}" failed: ${String(error)}`)
           result.failures.push('archive')
         }
       } else if (pinned) {
         try {
           await registry.pinSession?.(sessionId)
         } catch (error) {
-          this.ownerCtx.logger?.warn(`sessionDelete: re-pinning session "${sessionId}" failed: ${String(error)}`)
+          this[OWNER_SERVICES].logger?.warn(`sessionDelete: re-pinning session "${sessionId}" failed: ${String(error)}`)
           result.failures.push('pin')
         }
       }
@@ -1485,7 +1530,7 @@ class SessionDeleteService {
     } catch (error) {
       // The cwd directory itself is unreadable: nothing can be attached, and
       // only the restart bootstrap can decide later.
-      this.ownerCtx.logger?.warn(`sessionDelete: resolving the workspace of "${sessionId}" failed: ${String(error)}`)
+      this[OWNER_SERVICES].logger?.warn(`sessionDelete: resolving the workspace of "${sessionId}" failed: ${String(error)}`)
       result.failures.push('workspace-unresolved')
       result.reattached = false
       return result
@@ -1498,7 +1543,7 @@ class SessionDeleteService {
     try {
       await workspace.attachSession(sessionId)
     } catch (error) {
-      this.ownerCtx.logger?.warn(`sessionDelete: reattaching session "${sessionId}" by its cwd failed: ${String(error)}`)
+      this[OWNER_SERVICES].logger?.warn(`sessionDelete: reattaching session "${sessionId}" by its cwd failed: ${String(error)}`)
       result.failures.push('workspace')
       result.reattached = false
     }
@@ -1528,7 +1573,7 @@ class SessionDeleteService {
     } catch (error) {
       // The anchor may have been detached between the check and the write; the
       // conversation is still accounted, so this is only a lost position.
-      this.ownerCtx.logger?.warn(
+      this[OWNER_SERVICES].logger?.warn(
         `sessionDelete: restoring the display slot of "${sessionId}" failed: ${String(error)}`,
       )
       return false
@@ -1548,13 +1593,13 @@ class SessionDeleteService {
    * @returns whether the addition was announced.
    */
   announceRestored(manifest) {
-    const controller = optionalService(this.ownerCtx, 'sessionController')
+    const controller = optionalService(this[OWNER_SERVICES], 'sessionController')
     const listState = controller?.listState
     const header = manifest?.header
     if (!listState || typeof header?.id !== 'string') return false
     let summary
     try {
-      const live = optionalService(this.ownerCtx, 'sessions')?.get?.(header.id)
+      const live = optionalService(this[OWNER_SERVICES], 'sessions')?.get?.(header.id)
       if (live !== undefined && typeof listState.summaryFor === 'function') summary = listState.summaryFor(live)
     } catch {
       // Fall through to the stored-header summary.
@@ -1563,15 +1608,15 @@ class SessionDeleteService {
       try {
         summary = listState.summarizeCold({ header })
       } catch (error) {
-        this.ownerCtx.logger?.warn(`sessionDelete: summarizing the restored session "${header.id}" failed: ${String(error)}`)
+        this[OWNER_SERVICES].logger?.warn(`sessionDelete: summarizing the restored session "${header.id}" failed: ${String(error)}`)
       }
     }
     if (summary === undefined) return false
     try {
-      this.ownerCtx.emit('api-session/added', summary)
+      this[OWNER_SERVICES].emit('api-session/added', summary)
       return true
     } catch (error) {
-      this.ownerCtx.logger?.warn(`sessionDelete: announcing the restored session "${header.id}" failed: ${String(error)}`)
+      this[OWNER_SERVICES].logger?.warn(`sessionDelete: announcing the restored session "${header.id}" failed: ${String(error)}`)
       return false
     }
   }
@@ -1605,7 +1650,7 @@ class SessionDeleteService {
    * @returns the removal target, or undefined when the store names no artifact.
    */
   async resolveArtifact(header, sessionId) {
-    const persistence = this.ownerCtx.sessionPersistence
+    const persistence = this[OWNER_SERVICES].sessionPersistence
     const locate = persistence?.locate
     if (typeof locate !== 'function') {
       throw new SessionDeleteError(
@@ -1730,7 +1775,7 @@ class SessionDeleteService {
    * @returns the absolute store root, or undefined when the store exposes none.
    */
   storeRoot() {
-    const persistence = this.ownerCtx.sessionPersistence
+    const persistence = this[OWNER_SERVICES].sessionPersistence
     let exposed
     try {
       exposed = persistence?.root
@@ -1993,7 +2038,7 @@ class SessionDeleteService {
       if (copiedArtifact) {
         // The destination was atomically promoted before a later step failed.
         // Keep the marker and both paths so the next refresh can finish safely.
-        this.ownerCtx.logger?.warn(
+        this[OWNER_SERVICES].logger?.warn(
           `sessionDelete: the trash move of "${sessionId}" needs recovery; its source and destination were preserved`,
         )
       } else {
@@ -2014,7 +2059,7 @@ class SessionDeleteService {
       try {
         await this.removeWithRetries(artifact.target, sessionId)
       } catch (error) {
-        this.ownerCtx.logger?.warn(
+        this[OWNER_SERVICES].logger?.warn(
           `sessionDelete: the artifact of session "${sessionId}" is still at "${artifact.target}" after the move; a copy also sits in the trash`,
         )
         throw error
@@ -2151,7 +2196,7 @@ class SessionDeleteService {
    * @param sessionId - durable Session identity.
    */
   async removeProjectionCache(sessionId) {
-    const storageDomain = optionalService(this.ownerCtx, 'storageDomain')
+    const storageDomain = optionalService(this[OWNER_SERVICES], 'storageDomain')
     if (!storageDomain || typeof storageDomain.get !== 'function') return true
     let table
     try {
@@ -2159,7 +2204,7 @@ class SessionDeleteService {
       if (!domain || typeof domain.table !== 'function') return true
       table = domain.table('sessions')
     } catch (error) {
-      this.ownerCtx.logger?.warn(
+      this[OWNER_SERVICES].logger?.warn(
         `sessionDelete: opening the projection cache for "${sessionId}" failed: ${String(error)}`,
       )
       return false
@@ -2169,7 +2214,7 @@ class SessionDeleteService {
         if (table.get(sessionId) === undefined) return true
         await table.delete(sessionId)
       } catch (error) {
-        this.ownerCtx.logger?.warn(
+        this[OWNER_SERVICES].logger?.warn(
           `sessionDelete: dropping the projection cache of "${sessionId}" failed: ${String(error)}`,
         )
         return false
@@ -2178,7 +2223,7 @@ class SessionDeleteService {
     }
     try {
       if (table.get(sessionId) !== undefined) {
-        this.ownerCtx.logger?.warn(
+        this[OWNER_SERVICES].logger?.warn(
           `sessionDelete: projection cache row for "${sessionId}" survived deletion; it is re-validated on the next read`,
         )
         return false
@@ -2200,7 +2245,7 @@ class SessionDeleteService {
    * @returns the capped child ids and their true count.
    */
   async listChildren(sessionId) {
-    const persistence = this.ownerCtx.sessionPersistence
+    const persistence = this[OWNER_SERVICES].sessionPersistence
     if (!persistence || typeof persistence.list !== 'function') return { ids: [], count: 0 }
     try {
       const snapshots = await persistence.list()
@@ -2222,7 +2267,7 @@ class SessionDeleteService {
    * @returns the capability description.
    */
   async describe() {
-    const persistence = this.ownerCtx.sessionPersistence
+    const persistence = this[OWNER_SERVICES].sessionPersistence
     const canLocate = typeof persistence?.locate === 'function'
     const trashRoot = this.trashRoot()
     // Without a store that can name its artifacts the plugin can offer no
@@ -2511,7 +2556,7 @@ class SessionDeleteService {
     // fields the manifest kept.
     let header = entry.header
     try {
-      const snapshot = await this.ownerCtx.sessionPersistence.stat(sessionId)
+      const snapshot = await this[OWNER_SERVICES].sessionPersistence.stat(sessionId)
       if (snapshot?.header) header = snapshot.header
     } catch {
       // The manifest header is the recorded truth when the store cannot read.
@@ -2547,7 +2592,7 @@ class SessionDeleteService {
     try {
       await this.removeWithRetries(entry.path, sessionId)
     } catch (error) {
-      this.ownerCtx.logger?.warn(
+      this[OWNER_SERVICES].logger?.warn(
         `sessionDelete: removing the trash entry of session "${sessionId}" failed: ${String(error)}`,
       )
     }
@@ -2575,7 +2620,7 @@ class SessionDeleteService {
     const manifestPath = join(entry.path, MANIFEST_FILE_NAME)
     const manifest = await this.readManifest(entry.path)
     if (manifest === undefined && await this.pathExists(manifestPath)) {
-      this.ownerCtx.logger?.warn(
+      this[OWNER_SERVICES].logger?.warn(
         'sessionDelete: refusing to replace an unreadable trash manifest for session "' + entry.sessionId + '"',
       )
       return false
@@ -2599,7 +2644,7 @@ class SessionDeleteService {
       entry.restoreState = RESTORE_PENDING
       return true
     } catch (error) {
-      this.ownerCtx.logger?.warn(
+      this[OWNER_SERVICES].logger?.warn(
         `sessionDelete: marking the trash entry of session "${entry.sessionId}" as pending failed: ${String(error)}`,
       )
       return false
@@ -2683,7 +2728,7 @@ class SessionDeleteService {
     try {
       identity = JSON.parse(await readBoundedTransactionFile(markerPath, TRASH_MARKER_MAX_BYTES, 'trash move marker'))
     } catch {
-      this.ownerCtx.logger?.warn(`sessionDelete: the recovery marker in "${path}" is unreadable; both copies were preserved`)
+      this[OWNER_SERVICES].logger?.warn(`sessionDelete: the recovery marker in "${path}" is unreadable; both copies were preserved`)
       return false
     }
 
@@ -2692,13 +2737,13 @@ class SessionDeleteService {
     const staging = `${artifact}${COPY_STAGE_SUFFIX}`
     const artifactExists = await this.pathExists(artifact)
     if (typeof sourcePath !== 'string' || sourcePath.length === 0) {
-      this.ownerCtx.logger?.warn(`sessionDelete: the interrupted move in "${path}" has no verifiable source path; both copies were preserved`)
+      this[OWNER_SERVICES].logger?.warn(`sessionDelete: the interrupted move in "${path}" has no verifiable source path; both copies were preserved`)
       return false
     }
 
     const root = this.storeRoot()
     if (root === undefined) {
-      this.ownerCtx.logger?.warn(`sessionDelete: cannot recover "${path}" without a verifiable session-store root`)
+      this[OWNER_SERVICES].logger?.warn(`sessionDelete: cannot recover "${path}" without a verifiable session-store root`)
       return false
     }
 
@@ -2716,7 +2761,7 @@ class SessionDeleteService {
         !isInside(canonicalRoot, canonicalParent) ||
         samePath(canonicalParent, canonicalRoot)
       ) {
-        this.ownerCtx.logger?.warn(`sessionDelete: the source of interrupted move "${path}" is outside its session store; both copies were preserved`)
+        this[OWNER_SERVICES].logger?.warn(`sessionDelete: the source of interrupted move "${path}" is outside its session store; both copies were preserved`)
         return false
       }
       source = join(canonicalParent, name)
@@ -2725,7 +2770,7 @@ class SessionDeleteService {
         throw error
       })
     } catch (error) {
-      this.ownerCtx.logger?.warn(`sessionDelete: cannot verify the source of interrupted move "${path}": ${String(error)}`)
+      this[OWNER_SERVICES].logger?.warn(`sessionDelete: cannot verify the source of interrupted move "${path}": ${String(error)}`)
       return false
     }
 
@@ -2737,7 +2782,7 @@ class SessionDeleteService {
         await this.discardTrashEntry(path)
         return false
       }
-      this.ownerCtx.logger?.warn(`sessionDelete: the interrupted move in "${path}" has no surviving source or artifact`)
+      this[OWNER_SERVICES].logger?.warn(`sessionDelete: the interrupted move in "${path}" has no surviving source or artifact`)
       return false
     }
 
@@ -2745,7 +2790,7 @@ class SessionDeleteService {
       sourceExists &&
       (!matchesTrashMoveSnapshot(identity, sourceStat) || !(await this.artifactsMatch(source, artifact)))
     ) {
-      this.ownerCtx.logger?.warn(
+      this[OWNER_SERVICES].logger?.warn(
         `sessionDelete: the source of interrupted move "${path}" changed; both copies were preserved for manual recovery`,
       )
       return false
@@ -2760,11 +2805,11 @@ class SessionDeleteService {
       throw error
     })
     if (sourceExists && tombstoneStat !== undefined) {
-      this.ownerCtx.logger?.warn(`sessionDelete: both source and tombstone exist for interrupted move "${path}"`)
+      this[OWNER_SERVICES].logger?.warn(`sessionDelete: both source and tombstone exist for interrupted move "${path}"`)
       return false
     }
     if (!sourceExists && tombstoneStat !== undefined && !matchesTrashMoveSnapshot(identity, tombstoneStat)) {
-      this.ownerCtx.logger?.warn(
+      this[OWNER_SERVICES].logger?.warn(
         `sessionDelete: the tombstone of interrupted move "${path}" no longer matches its recorded source; it was preserved`,
       )
       return false
@@ -2786,7 +2831,7 @@ class SessionDeleteService {
     }
     if (tombstoneStat !== undefined) {
       if (!matchesTrashMoveSnapshot(identity, tombstoneStat)) {
-        this.ownerCtx.logger?.warn(
+        this[OWNER_SERVICES].logger?.warn(
           `sessionDelete: the tombstone of interrupted move "${path}" changed before removal; it was preserved`,
         )
         return false
@@ -2819,7 +2864,7 @@ class SessionDeleteService {
       }
     } catch (error) {
       if (error?.code === 'ENOENT') return []
-      this.ownerCtx.logger?.warn(`sessionDelete: reading the trash directory failed: ${String(error)}`)
+      this[OWNER_SERVICES].logger?.warn(`sessionDelete: reading the trash directory failed: ${String(error)}`)
       return []
     }
     const entries = []
@@ -2995,7 +3040,7 @@ class SessionDeleteService {
 
           if (restorePending || restoreMarkerExists || (!artifactExists && targetExists)) {
             if (!targetExists) {
-              this.ownerCtx.logger?.warn(
+              this[OWNER_SERVICES].logger?.warn(
                 `sessionDelete: startup recovery preserved "${current.trashId}": the restore target is missing`,
               )
               return 'preserved'
@@ -3019,7 +3064,7 @@ class SessionDeleteService {
             return accountingComplete && cacheComplete ? 'deleted' : 'preserved'
           }
 
-          this.ownerCtx.logger?.warn(
+          this[OWNER_SERVICES].logger?.warn(
             `sessionDelete: startup recovery preserved "${current.trashId}": artifact and original path are in an ambiguous state`,
           )
           return 'preserved'
@@ -3030,14 +3075,14 @@ class SessionDeleteService {
         else if (outcome === 'preserved') preserved += 1
       } catch (error) {
         preserved += 1
-        this.ownerCtx.logger?.warn(
+        this[OWNER_SERVICES].logger?.warn(
           `sessionDelete: startup recovery of "${snapshot.trashId}" failed; the entry was preserved: ${String(error)}`,
         )
       }
     }
 
     if (entries.length > examined) {
-      this.ownerCtx.logger?.warn(
+      this[OWNER_SERVICES].logger?.warn(
         `sessionDelete: startup recovery processed ${examined} entries; ${entries.length - examined} remain for a later launch`,
       )
     }
@@ -3093,7 +3138,7 @@ class SessionDeleteService {
         })
         if (didPurge) purged.push(entry.sessionId)
       } catch (error) {
-        this.ownerCtx.logger?.warn(
+        this[OWNER_SERVICES].logger?.warn(
           `sessionDelete: purging the expired trash entry "${entry.trashId}" failed: ${String(error)}`,
         )
       }
@@ -3112,7 +3157,7 @@ class SessionDeleteService {
     try {
       await rm(path, { recursive: true, force: true })
     } catch (error) {
-      this.ownerCtx.logger?.warn(`sessionDelete: removing the half-written trash entry failed: ${String(error)}`)
+      this[OWNER_SERVICES].logger?.warn(`sessionDelete: removing the half-written trash entry failed: ${String(error)}`)
     }
   }
 
@@ -3170,7 +3215,7 @@ class SessionDeleteService {
         await this.trimAudit(file)
       })
     } catch (error) {
-      this.ownerCtx.logger?.warn('sessionDelete: writing the audit trail failed: ' + String(error))
+      this[OWNER_SERVICES].logger?.warn('sessionDelete: writing the audit trail failed: ' + String(error))
     }
   }
 
@@ -3206,7 +3251,7 @@ class SessionDeleteService {
       await rename(temporary, file)
       this.auditRecords = kept.length
     } catch (error) {
-      this.ownerCtx.logger?.warn('sessionDelete: trimming the audit trail failed: ' + String(error))
+      this[OWNER_SERVICES].logger?.warn('sessionDelete: trimming the audit trail failed: ' + String(error))
     } finally {
       await rm(temporary, { force: true }).catch(() => {})
     }
