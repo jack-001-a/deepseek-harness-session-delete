@@ -2645,13 +2645,20 @@ test('independent plugin instances serialize delete and restore for the same ses
     return originalMove(...args)
   }
 
+  const originalAcquire = restoring.service.acquireProcessLock.bind(restoring.service)
+  let announceLockAttempt
+  const lockAttempt = new Promise((resolve) => { announceLockAttempt = resolve })
+  restoring.service.acquireProcessLock = async (...args) => {
+    announceLockAttempt()
+    return originalAcquire(...args)
+  }
+
   const deletePromise = deleting.service.delete(SESSION_ID)
   await moveStarted
   const restorePromise = restoring.service.restore(SESSION_ID)
-
-  // The second service has a distinct in-memory queue; only the shared
-  // filesystem lock can keep its restore behind the delete transaction.
-  await new Promise((resolve) => setTimeout(resolve, 120))
+  // Do not release delete until the other service has actually attempted
+  // to acquire the shared filesystem lock.
+  await lockAttempt
   releaseMove()
 
   const [deleted, restored] = await Promise.all([deletePromise, restorePromise])
