@@ -11,7 +11,7 @@ const marker = 'const css = ' + String.fromCharCode(96)
 const start = source.indexOf(marker)
 if (start < 0) throw new Error('Could not find the client CSS declaration.')
 const cssStart = start + marker.length
-const cssEnd = source.indexOf('\n    ' + String.fromCharCode(96), cssStart)
+const cssEnd = source.indexOf('\n' + String.fromCharCode(96), cssStart)
 if (cssEnd < 0) throw new Error('Could not find the end of the client CSS declaration.')
 const pluginCss = source.slice(cssStart, cssEnd)
 assert.match(pluginCss, /\.dshSessionDelete_modalCard/)
