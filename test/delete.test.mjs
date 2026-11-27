@@ -2213,6 +2213,12 @@ test('Remote marker exposes a resources reader that receives the id itself', asy
   )
   assert.ok(descriptor, 'the prototype must carry the Remote method descriptor')
   assert.equal(descriptor.value.version, 1)
+
+  const binding = h.service.typertRemote
+  assert.ok(binding, 'the Host service must expose a Gateway binding')
+  assert.strictEqual(binding.service, h.service, 'the binding must point to the exact provided service instance')
+  assert.equal(binding.serviceKey, 'sessionDelete')
+  assert.equal(binding.namespace, 'sessionDelete')
   const marker = descriptor.value.methods.find((method) => method.method === 'delete')
   assert.ok(marker, 'delete must be marked Remote')
   assert.equal(marker.resources.session(SESSION_ID), SESSION_ID)
