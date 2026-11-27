@@ -15,6 +15,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Capture real Harness UI screenshots before browser teardown and include bounded dialog/live-region evidence plus the failing stage in CI logs; wait for the final localized dialog title after the Host capability query settles.
 - Preserve in-progress main-branch CI runs so expensive pinned Harness builds and two-process compatibility tests can finish; superseded pull-request runs remain cancellable.
 - Rebuild the delete confirmation around the reference card: native Modal skin, compact heading/description, checked file-retention status, and aligned pill actions.
 - Replace permanent-mode title typing with an explicit final confirmation click; keep attachment and workspace-file retention explicit and non-destructive.
