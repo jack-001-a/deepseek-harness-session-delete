@@ -122,10 +122,10 @@ jobs:
           retention-days: 30
 
   harness-session-delete-e2e:
-    name: Harness ${{ matrix.harness.version }} / Linux / Node 24 / Two processes
+    name: Harness ${{ matrix.harness.version }} / Linux / Node 24 / Persistence and Web UI
     needs: test
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -179,6 +179,31 @@ jobs:
           DSH_HARNESS_VERSION: ${{ matrix.harness.version }}
           DSH_E2E_MANIFEST: ${{ github.workspace }}/artifacts/session-delete-harness-e2e.json
         run: node scripts/run-harness-session-delete-e2e.mjs
+
+      - name: Build the real Harness Web frontend
+        if: matrix.harness.version == '0.2.3-alpha.2'
+        working-directory: deepseek-harness
+        run: pnpm run build:web
+
+      - name: Install Chromium for the real Harness Web UI
+        if: matrix.harness.version == '0.2.3-alpha.2'
+        working-directory: deepseek-harness
+        run: pnpm --filter @deepseek-ai/dsh-web-frontend exec playwright install --with-deps chromium
+
+      - name: Exercise Session Delete in the real Harness Web UI
+        if: matrix.harness.version == '0.2.3-alpha.2'
+        env:
+          DSH_HARNESS_ROOT: ${{ github.workspace }}/deepseek-harness
+        run: node scripts/run-harness-session-delete-ui-e2e.mjs
+
+      - name: Upload real Harness Web UI failure screenshot
+        if: always() && hashFiles('deepseek-harness/.artifacts/session-delete-real-ui.png') != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: session-delete-real-harness-web-ui
+          path: deepseek-harness/.artifacts/session-delete-real-ui.png
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Upload two-process compatibility evidence
         if: always() && hashFiles('artifacts/session-delete-harness-e2e.json') != ''

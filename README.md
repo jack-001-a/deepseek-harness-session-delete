@@ -176,6 +176,16 @@ These tests exercise the Cordis/persistence integration; they are not a full
 Desktop/Web application startup or UI test. See the
 [CI run and uploaded evidence](https://github.com/jack-001-a/deepseek-harness-session-delete/actions/runs/45018367280).
 
+### Real Harness Web UI test
+
+The latest pinned Harness lane also boots the real Web frontend and Host,
+installs this package as a local Profile layer, and drives Chromium through
+both Session sidebar delete entry points, the Host confirmation Modal, the
+Trash manager and Restore. It verifies the durable session file and workspace
+membership before and after each mutation. A failure uploads a browser
+screenshot; this test complements rather than replaces the fast CSS/DOM visual
+contract below.
+
 **Restore has a remaining race boundary.** The persistence API cannot open a
 write handle for a missing destination, and `create()` does not reserve an
 unmaterialized session id across processes. The two-process test verifies the
@@ -485,7 +495,7 @@ DeepSeek Harness 只能归档会话、无法真正删除，日志会一直堆积
 
 **审计**：每次删除、还原、彻底删除都会向回收站旁的 `audit.jsonl` 追加一条记录（动作、会话 ID、结果、时间），**不写入任何对话内容**。
 
-**兼容性**：桌面/Web UI 在 DeepSeek Harness `0.2.1-rc.2`（Windows，中英文界面）上验证；此外，宿主原生 JSONL 写租约已通过针对 Harness `0.2.2-rc.4`、`0.2.2-rc.5` 和 `0.2.3-alpha.2` 的双 Node 进程 CI（Linux / Node 24，真实 Cordis 与 JSONL 持久化服务），这不等同于完整 Desktop/Web 启动测试。零运行时依赖。实现依赖少量宿主内部机制（会话存储/持久化服务、工作区注册表的重新挂接与置顶/归档集合、会话列表状态与 `api-session/added` 事件、投影缓存域、以及 API Gateway 对带 `typertRemote` 绑定的服务的运行时派发），宿主大版本变更时可能需要跟进更新；这些能力都是防御式读取，缺失时只会降级并如实报告。
+**兼容性**：桌面/Web UI 在 DeepSeek Harness `0.2.1-rc.2`（Windows，中英文界面）上验证；真实 Chromium Web UI 测试在 Harness `0.2.3-alpha.2` 的本地 Profile、真实 Host 和 Web 前端中执行；宿主原生 JSONL 写租约已通过针对 Harness `0.2.2-rc.4`、`0.2.2-rc.5` 和 `0.2.3-alpha.2` 的双 Node 进程 CI（Linux / Node 24）。零运行时依赖。实现依赖少量宿主内部机制（会话存储/持久化服务、工作区注册表的重新挂接与置顶/归档集合、会话列表状态与 `api-session/added` 事件、投影缓存域、以及 API Gateway 对带 `typertRemote` 绑定的服务的运行时派发），宿主大版本变更时可能需要跟进更新；这些能力都是防御式读取，缺失时只会降级并如实报告。
 
 **已知限制**：没有全局 toast（插件无法使用该槽位），确认框内的原地提示即反馈；界面文案仅中英文；旧版 Harness 没有 `sessionPersistence.open()` 时仍只有插件实例间的协作锁；restore 的目标路径尚无宿主级预留接口，因此仍不能阻止另一个 Harness 创建同 ID 会话。双进程测试已验证对端在 Restore 原子提升前创建目标时，双方文件都会保留，但这属于冲突保护而非 ID 预留，冲突仍需后续解决。POSIX 永久删除后会保留空目录中的 `session.lock` 稳定锁文件（不会被会话列表视为有效会话）；从未落盘的空白会话删除后，宿主内存里的 pending 条目可能要等重启才彻底消失。还原的精确程度受宿主 API 限制：显示位置只在锚点仍存在时恢复，否则排到最前；置顶只能前置、无法还原其在置顶集合中的旧顺序；记账恢复失败时需重启后由启动引导重新接管。
 

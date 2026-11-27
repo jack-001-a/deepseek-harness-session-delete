@@ -33,6 +33,15 @@ themes. To run it locally:
 This is a CSS/DOM layout contract, not a full Harness Desktop/Web end-to-end
 test.
 
+The real Harness Web UI lane is also run in CI against the pinned
+0.2.3-alpha.2 checkout. It installs this package into a temporary real Profile
+and drives Chromium through the sidebar delete action, the Host confirmation
+Modal, Trash listing and Restore. To run it locally, prepare that Harness
+checkout (install dependencies, build the native system addon and Host
+libraries, build the Web frontend, and install Chromium), then run:
+
+    DSH_HARNESS_ROOT=/path/to/deepseek-harness node scripts/run-harness-session-delete-ui-e2e.mjs
+
 ## Pull request checklist
 
 Before opening a pull request:
