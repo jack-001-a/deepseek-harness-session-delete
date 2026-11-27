@@ -8,7 +8,7 @@
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
-import { chromium, type Browser, type Locator, type Page } from 'playwright'
+import { chromium, type Browser, type Locator, type Page, type Response } from 'playwright'
 import { expect, it } from 'vitest'
 import {
   launchWebScaffold,
@@ -71,6 +71,42 @@ async function inspectUi(page: Page): Promise<string> {
   return JSON.stringify(snapshot, null, 2)
 }
 
+/** Record only stable RPC envelope fields, never arguments or result payloads. */
+interface RemoteRpcEvidence {
+  readonly path: string
+  readonly status: number
+  readonly ok?: boolean
+  readonly errorCode?: string
+  readonly envelopeKeys?: readonly string[]
+}
+
+/** Reduce an RPC response to transport and machine-readable failure metadata. */
+async function inspectRemoteResponse(response: Response): Promise<RemoteRpcEvidence> {
+  const evidence: {
+    path: string
+    status: number
+    ok?: boolean
+    errorCode?: string
+    envelopeKeys?: string[]
+  } = { path: new URL(response.url()).pathname, status: response.status() }
+  try {
+    const body: unknown = await response.json()
+    if (body !== null && typeof body === 'object' && !Array.isArray(body)) {
+      const envelope = body as Record<string, unknown>
+      if (typeof envelope.ok === 'boolean') evidence.ok = envelope.ok
+      evidence.envelopeKeys = Object.keys(envelope).sort()
+      const error = envelope.error
+      if (error !== null && typeof error === 'object' && !Array.isArray(error)) {
+        const code = (error as Record<string, unknown>).code
+        if (typeof code === 'string') evidence.errorCode = code
+      }
+    }
+  } catch {
+    // Status and path still distinguish an absent route from an RPC failure.
+  }
+  return evidence
+}
+
 it('deletes from the real session menu, then restores through the real Trash manager', async () => {
   const scaffold = await launchWebScaffold({
     extraInstallAnchors: [pluginManifest],
@@ -80,6 +116,8 @@ it('deletes from the real session menu, then restores through the real Trash man
   let page: Page | undefined
   let stage = 'creating the test workspace'
   let tripwire: ReturnType<typeof watchConsole> | undefined
+  const remoteResponses: RemoteRpcEvidence[] = []
+  const remoteResponseTasks: Promise<void>[] = []
   try {
     const workspace = await scaffold.ctx.workspaceRegistry.create(scaffold.workspaceCwd)
     const sessionId = await seedSession(
@@ -96,6 +134,11 @@ it('deletes from the real session menu, then restores through the real Trash man
     browser = await chromium.launch()
     page = await newEnglishPage(browser)
     tripwire = watchConsole(page)
+    page.on('response', (response) => {
+      if (!new URL(response.url()).pathname.includes('/api/sessionDelete/')) return
+      const task = inspectRemoteResponse(response).then((item) => { remoteResponses.push(item) })
+      remoteResponseTasks.push(task)
+    })
 
     stage = 'loading the real Harness Web UI'
     await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
@@ -175,12 +218,15 @@ it('deletes from the real session menu, then restores through the real Trash man
     await expect.poll(() => workspace.record.sessionIds.includes(sessionId)).toBe(true)
     await expectCount(row, 1, 20_000)
 
+    expect(remoteResponses.some((item) => item.path.endsWith('/api/sessionDelete/describe'))).toBe(true)
+    expect(remoteResponses.find((item) => item.path.endsWith('/api/sessionDelete/describe'))?.ok).toBe(true)
     expect(tripwire?.pageErrors ?? []).toEqual([])
     expect(tripwire?.warnings ?? []).toEqual([])
   } catch (error) {
     // Capture while Chromium is still alive. Vitest failure hooks run after
     // this test's finally block, when the page has already been closed.
     let evidence = 'Browser evidence unavailable.'
+    await Promise.allSettled(remoteResponseTasks)
     if (page !== undefined && !page.isClosed()) {
       await saveFailureShot(page, 'session-delete-real-ui')
       try {
@@ -197,7 +243,7 @@ it('deletes from the real session menu, then restores through the real Trash man
       })}`
     const failure = error instanceof Error ? error.stack ?? error.message : String(error)
     throw new Error(
-      `Real Harness UI E2E failed during "${stage}".\n${failure}\nDialog/live-region evidence:\n${evidence}${consoleEvidence}`,
+      `Real Harness UI E2E failed during "${stage}".\n${failure}\nDialog/live-region evidence:\n${evidence}\nRemote RPC evidence:\n${JSON.stringify(remoteResponses)}${consoleEvidence}`,
       { cause: error },
     )
   } finally {
