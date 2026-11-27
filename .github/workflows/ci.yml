@@ -44,8 +44,47 @@ jobs:
         run: |
           node -e "const p=require('./package.json'); if (p.private) throw new Error('package.json must not be private'); if (!p.repository?.url) throw new Error('repository.url is required for trusted publishing'); if (!p.engines?.node) throw new Error('engines.node is required'); if (!p.engines?.dsh) throw new Error('engines.dsh is required'); console.log(p.name, p.version)"
 
-      - name: Inspect the tarball contents
-        run: npm pack --dry-run
+      - name: Verify the published npm archive
+        shell: bash
+        run: |
+          npm pack --dry-run --json > npm-pack.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const report = JSON.parse(fs.readFileSync('npm-pack.json', 'utf8'));
+          if (!Array.isArray(report) || !Array.isArray(report[0]?.files)) {
+            throw new Error('npm pack did not return a valid file manifest');
+          }
+          const paths = new Set(report[0].files.map((file) => file.path));
+          const required = [
+            'index.js',
+            'client.js',
+            'cordis.patch.yml',
+            'locale/en.json',
+            'locale/zh.json',
+            'icon.svg',
+            'README.md',
+            'CHANGELOG.md',
+            'LICENSE',
+            'CONTRIBUTING.md',
+            'SECURITY.md',
+            'docs/architecture.md',
+            'docs/attachment-lifecycle.md',
+            'docs/attachment-reference-conformance.md',
+            'docs/attachment-gc-rfc.md',
+            'docs/host-attachment-reference-api-proposal.md',
+          ];
+          const missing = required.filter((path) => !paths.has(path));
+          if (missing.length) {
+            throw new Error('npm archive is missing required runtime or documentation files: ' + missing.join(', '));
+          }
+          const unexpected = [...paths].filter((path) =>
+            path.startsWith('.github/') || path.startsWith('test/') || path.startsWith('scripts/'),
+          );
+          if (unexpected.length) {
+            throw new Error('npm archive contains development-only files: ' + unexpected.join(', '));
+          }
+          console.log('npm archive content check passed (' + paths.size + ' files)');
+          NODE
 
   harness-session-delete-e2e:
     name: Harness ${{ matrix.harness.version }} / Linux / Node 24 / Two processes
@@ -114,4 +153,3 @@ jobs:
           path: artifacts/session-delete-harness-e2e.json
           if-no-files-found: error
           retention-days: 30
-
