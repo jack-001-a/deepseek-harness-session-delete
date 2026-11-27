@@ -3340,6 +3340,57 @@ test('artifact operations stay on the canonical parent when a project symlink is
 })
 
 
+test('process crash after the moving marker but before the Trash move keeps the original authoritative', { timeout: 30000 }, async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+  const workerPath = fileURLToPath(new URL('../scripts/fixtures/session-delete-crash-recovery.mjs', import.meta.url))
+
+  const runWorker = (mode) => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [workerPath, mode, store.root, SESSION_ID], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    child.once('error', reject)
+    child.once('close', (code, signal) => resolve({ code, signal, stdout, stderr }))
+  })
+
+  const crashed = await runWorker('crash-delete-before-move')
+  assert.equal(crashed.code, 85, crashed.stderr)
+  assert.equal(await readFile(store.log, 'utf8'), '{"seq":0}\n', 'the process stopped before touching the source artifact')
+  assert.ok((await stat(store.dir)).isDirectory(), 'the original session directory remains in place')
+
+  const entries = (await readdir(store.trashRoot)).filter((name) => name !== 'audit.jsonl')
+  assert.equal(entries.length, 1)
+  const entry = trashEntry(store, entries[0])
+  const manifest = JSON.parse(await readFile(join(entry, 'meta.json'), 'utf8'))
+  assert.equal(manifest.moveState, 'moving')
+  assert.ok((await stat(join(entry, '.copying'))).isFile())
+  await assert.rejects(stat(join(entry, 'artifact')), (error) => error.code === 'ENOENT')
+
+  const recovered = await runWorker('recover-delete')
+  assert.equal(recovered.code, 0, recovered.stderr)
+  const report = JSON.parse(recovered.stdout.trim())
+  assert.deepEqual(report.result, { deleted: 0, restored: 0, preserved: 0 })
+  assert.deepEqual(report.sessionIds, [SESSION_ID, 'session-older'], 'workspace membership must not be released')
+  assert.deepEqual(report.pinned, [SESSION_ID], 'pin state must not be released')
+  assert.equal(report.trashEntry, false, 'the uncommitted Trash entry must be discarded')
+  await assert.rejects(stat(entry), (error) => error.code === 'ENOENT')
+  assert.equal(await readFile(store.log, 'utf8'), '{"seq":0}\n', 'the original artifact remains authoritative')
+  await assert.rejects(stat(report.lockPath), (error) => error.code === 'ENOENT')
+
+  // A retry in the live process must now perform a fresh, real Trash move.
+  const h = harness(storedTarget(store))
+  const retried = await h.service.delete(SESSION_ID)
+  assert.equal(retried.trashed, true)
+  assert.ok((await stat(join(trashEntry(store, retried.trashId), 'artifact'))).isDirectory())
+  await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
+})
+
 test('process crash after the Trash move is recovered by a fresh process', { timeout: 30000 }, async (t) => {
   const store = await makeStore()
   t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))

@@ -9,7 +9,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Added
 
 - Add real Harness Web/Chromium coverage for both sidebar delete entry points, the Host confirmation Modal, Trash listing and Restore; CI boots the pinned Web frontend and captures failure screenshots.
-- Add real subprocess crash/recovery coverage for both the Trash commit point and the Restore move/reattachment window.
+- Add real subprocess crash/recovery coverage before the Trash artifact move, after the Trash commit point, and across the Restore move/reattachment window.
 
 - Add an isolated Chromium visual-contract job that exercises the injected delete-dialog CSS against the Host Modal DOM structure and publishes desktop, dark-theme and mobile screenshots.
 

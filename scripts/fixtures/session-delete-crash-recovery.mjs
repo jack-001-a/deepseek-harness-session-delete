@@ -11,7 +11,7 @@ import { apply } from '../../index.js'
 import { join } from 'node:path'
 
 const [mode, root, sessionId] = process.argv.slice(2)
-const validModes = ['crash-delete', 'recover-delete', 'crash-restore', 'recover-restore']
+const validModes = ['crash-delete-before-move', 'crash-delete', 'recover-delete', 'crash-restore', 'recover-restore']
 if (!validModes.includes(mode) || !root || !sessionId) {
   throw new Error('Expected a supported mode, session root and session id.')
 }
@@ -89,6 +89,16 @@ const ctx = {
 apply(ctx, {})
 const service = provided.get('sessionDelete')
 if (!service) throw new Error('Session Delete service was not registered.')
+
+if (mode === 'crash-delete-before-move') {
+  service.moveArtifact = async () => {
+    // moveToTrash has durably written .copying and advanced the manifest to
+    // "moving", but no source/destination artifact operation has started.
+    process.exit(85)
+  }
+  await service.delete(sessionId)
+  process.exit(88)
+}
 
 if (mode === 'crash-delete') {
   service.releaseWorkspaceAccounting = async () => {
