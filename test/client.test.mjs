@@ -293,6 +293,7 @@ function renderDialog(registrations, dictionaries, React, locale, options = {}) 
     useDeleteRequest: (select) => select(pending.getSnapshot()),
     useTrashManagerOpen: (select) => select(trashOpen.getSnapshot()),
     settleDelete: options.settleDelete ?? (() => {}),
+    settleTrashManager: options.settleTrashManager ?? (() => {}),
     confirmDelete: options.confirmDelete ?? injected.confirmDelete,
     restoreSession: options.restoreSession ?? injected.restoreSession,
     purgeSession: options.purgeSession ?? injected.purgeSession,
