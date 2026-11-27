@@ -189,6 +189,8 @@ try {
   const longTitle = '删除聊天记录与项目文件整理讨论记录 '.repeat(8)
   await mobile.setContent(documentFor('light', longTitle), { waitUntil: 'load' })
   const mobileDialog = mobile.getByRole('dialog')
+  await mobileDialog.waitFor()
+  await mobileDialog.evaluate((element) => Promise.all(element.getAnimations().map((animation) => animation.finished)))
   const mobileBounds = await mobileDialog.boundingBox()
   assert.ok(mobileBounds, 'the mobile dialog must be visible')
   assert.ok(Math.abs(mobileBounds.width - 363) <= 1, 'mobile card should retain six-pixel outer gutters')
