@@ -1133,13 +1133,14 @@ test('restore recovery compares large artifact files in bounded chunks', async (
 test('the trash entry holds the artifact and a manifest of the identifying fields', async () => {
   const store = await makeStore()
   const h = harness({ ...storedTarget(store) })
+  const canonicalDir = await realpath(store.dir)
 
   const outcome = await h.service.delete(SESSION_ID)
 
   const entry = trashEntry(store, outcome.trashId)
   const manifest = JSON.parse(await readFile(join(entry, 'meta.json'), 'utf8'))
   assert.equal(manifest.sessionId, SESSION_ID)
-  assert.equal(manifest.originalPath, await realpath(store.dir))
+  assert.equal(manifest.originalPath, canonicalDir)
   assert.equal(typeof manifest.deletedAt, 'string')
   assert.equal(manifest.mode, 'trash')
   assert.deepEqual(manifest.header, { id: SESSION_ID, cwd: store.dir })
@@ -1455,7 +1456,7 @@ test('restoring onto an occupied path fails with conflict', async () => {
 
   await assert.rejects(h.service.restore(SESSION_ID), (error) => {
     assert.equal(error.code, 'session-delete/conflict')
-    assert.equal(error.details.path, store.dir)
+    assert.equal(error.details.path, await realpath(store.dir))
     return true
   })
   assert.equal((await stat(join(store.dir, 'session.4.jsonl'))).isFile(), true)
@@ -1578,6 +1579,7 @@ test('the trash listing reports every entry, newest first', async () => {
   const store = await makeStore()
   const second = await addSecondSession(store)
   const h = harness({ ...twoSessionTarget(store) })
+  const canonicalSecondDir = await realpath(join(store.project, second.id))
 
   const first = await h.service.delete(SESSION_ID)
   const other = await h.service.delete(second.id)
@@ -1587,7 +1589,7 @@ test('the trash listing reports every entry, newest first', async () => {
   assert.equal(listed.entries[0].trashId, other.trashId)
   assert.equal(listed.entries[1].trashId, first.trashId)
   assert.equal(listed.entries[0].sessionId, second.id)
-  assert.equal(listed.entries[0].originalPath, await realpath(join(store.project, second.id)))
+  assert.equal(listed.entries[0].originalPath, canonicalSecondDir)
   assert.equal(typeof listed.entries[0].deletedAt, 'string')
 })
 
