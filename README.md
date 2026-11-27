@@ -440,11 +440,17 @@ Restart the Harness if your profile does not hot-reload plugin bundles.
 ## Development
 
 ```bash
-npm test        # node --test: host ordering/retry/trash tests + browser dialog tests
+npm test            # Node tests: Host ordering/retry/Trash and client dialog behavior
+npm run test:browser # Chromium checks for the injected delete-dialog CSS contract
 ```
 
-The tests run against the real modules with fake Cordis contexts and a minimal
-React stand-in; they need no Harness installation.
+The Node tests run against the real modules with fake Cordis contexts and a
+minimal React stand-in; they need no Harness installation. The optional browser
+job installs a pinned Playwright runtime in CI only, reads the CSS directly
+from `client.js`, and checks the native Host Modal DOM contract at desktop and
+mobile viewports in light and dark themes. CI uploads desktop, dark-theme and
+mobile screenshots as reviewable artifacts; this is a browser layout contract,
+not a pixel-diff against a platform-dependent reference image.
 
 ## 中文说明
 

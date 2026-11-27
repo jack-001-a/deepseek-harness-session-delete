@@ -6,6 +6,10 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## Unreleased
 
+### Added
+
+- Add an isolated Chromium visual-contract job that exercises the injected delete-dialog CSS against the Host Modal DOM structure and publishes desktop, dark-theme and mobile screenshots.
+
 ### Fixed
 
 - Fail closed when Host deletion capabilities cannot be verified or the Session cannot be safely located; no destructive action is rendered or dispatched.
