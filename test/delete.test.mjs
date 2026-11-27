@@ -1790,6 +1790,33 @@ test('deleting a trashed session again reports the same trash entry', async () =
   assert.deepEqual(h.calls.emitted, [['api-session/removed', SESSION_ID]], 'the removal is announced once')
 })
 
+test('trash listing enforces an aggregate manifest-byte budget', { timeout: 30000 }, async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+  await mkdir(store.trashRoot, { recursive: true })
+
+  // Each individual manifest remains below the 256 KiB per-file limit, while
+  // the collection exceeds the 16 MiB aggregate scan budget.
+  const padding = 'x'.repeat(240 * 1024)
+  for (let index = 0; index < 70; index += 1) {
+    const entryPath = join(store.trashRoot, 'budget-entry-' + String(index).padStart(3, '0'))
+    await mkdir(entryPath)
+    await writeFile(join(entryPath, 'meta.json'), JSON.stringify({
+      sessionId: 'budget-session-' + index,
+      originalPath: store.dir,
+      deletedAt: new Date().toISOString(),
+      padding,
+    }))
+  }
+
+  const h = harness({ ...storedTarget(store) })
+  await assert.rejects(
+    h.service.readTrashEntries({ recoverMoves: false }),
+    (error) => error?.code === 'session-delete/trash-unavailable' &&
+      error.details?.reason === 'trash-scan-byte-limit',
+  )
+})
+
 test('trash listing examines at most its bounded number of raw directory entries', { timeout: 15000 }, async (t) => {
   const store = await makeStore()
   t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))

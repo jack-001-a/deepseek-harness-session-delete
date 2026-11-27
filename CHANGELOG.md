@@ -33,6 +33,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Bound each Trash directory scan to 16 MiB of aggregate manifest data and abort on budget exhaustion or a manifest replacement, avoiding large metadata bursts and falsely complete partial listings.
 - Keep original session filesystem paths inside the Host; the Trash-list RPC now returns only the session identifier, deletion timestamp and optional recovery state needed by the browser.
 - Serialize Trash-manager Restore and Purge synchronously, preventing rapid duplicate clicks from dispatching multiple Host mutations or closing the manager before the request settles.
 - Reject incomplete or malformed Host outcomes in the Trash manager; Restore and Purge are only announced as successful when the Host explicitly confirms the corresponding mutation.

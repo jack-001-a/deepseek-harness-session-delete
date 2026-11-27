@@ -86,6 +86,8 @@ const AUDIT_FILE_NAME = 'audit.jsonl'
 /** Name of the manifest written beside every trashed artifact. */
 const MANIFEST_FILE_NAME = 'meta.json'
 const TRASH_MANIFEST_MAX_BYTES = 256 * 1024
+/** Aggregate manifest budget for one bounded Trash directory scan. */
+const TRASH_SCAN_MAX_BYTES = 16 * 1024 * 1024
 const TRASH_MARKER_MAX_BYTES = 16 * 1024
 /** Name of the subdirectory that holds the moved artifact in a trash entry. */
 const ARTIFACT_DIR_NAME = 'artifact'
@@ -3002,10 +3004,58 @@ class SessionDeleteService {
       return []
     }
     const entries = []
+    let manifestBytes = 0
     for (const item of candidates) {
       if (!item.isDirectory()) continue
       const path = join(root, item.name)
+      const manifestPath = join(path, MANIFEST_FILE_NAME)
+      let manifestStat
+      try {
+        manifestStat = await lstat(manifestPath)
+      } catch (error) {
+        if (error?.code !== 'ENOENT') {
+          this[OWNER_SERVICES].logger?.warn(
+            `sessionDelete: inspecting the manifest for "${item.name}" failed: ${String(error)}`,
+          )
+        }
+        continue
+      }
+      // A symlink or non-file manifest is rejected by readManifest below and
+      // never followed. Count only regular files toward the scan's byte budget.
+      const regularManifest = manifestStat.isFile() && !manifestStat.isSymbolicLink()
+      if (regularManifest && manifestStat.size > TRASH_SCAN_MAX_BYTES - manifestBytes) {
+        throw new SessionDeleteError(
+          'session-delete/trash-unavailable',
+          'sessionDelete: Trash metadata exceeds the safe aggregate scan budget; the listing was aborted rather than returning an incomplete inventory',
+          { reason: 'trash-scan-byte-limit', limit: TRASH_SCAN_MAX_BYTES },
+        )
+      }
       const manifest = await this.readManifest(path)
+      if (regularManifest) {
+        // readManifest independently verifies the opened file's identity.
+        // Recheck the path snapshot as well, so a replacement between this
+        // budget check and the read cannot bypass the aggregate accounting.
+        const after = await lstat(manifestPath).catch((error) => {
+          if (error?.code === 'ENOENT') return undefined
+          throw error
+        })
+        if (
+          !after ||
+          !after.isFile() ||
+          after.isSymbolicLink() ||
+          !sameFileIdentity(manifestStat, after) ||
+          manifestStat.size !== after.size ||
+          manifestStat.mtimeMs !== after.mtimeMs ||
+          manifestStat.ctimeMs !== after.ctimeMs
+        ) {
+          throw new SessionDeleteError(
+            'session-delete/trash-unavailable',
+            'sessionDelete: a Trash manifest changed during the bounded scan; the listing was aborted',
+            { reason: 'trash-manifest-changed' },
+          )
+        }
+        manifestBytes += manifestStat.size
+      }
       if (manifest === undefined) continue
       if (recoverMoves && (await this.pathExists(join(path, COPYING_MARKER_FILE_NAME)))) {
         const sessionId = typeof manifest.sessionId === 'string' ? manifest.sessionId : ''
