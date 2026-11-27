@@ -61,13 +61,16 @@ attachment reference contract](docs/attachment-reference-conformance.md).
 
 The default mode is `trash`:
 
-1. The conversation's artifact is **moved** into a trash area next to the
-   session store, together with a small manifest recording the original path,
-   the deletion time, the child conversations, and the workspace accounting the
-   deletion is about to release — owning workspace, its display-slot anchor,
-   pin and archive marks.
-2. The row leaves the sidebar, the workspace accounting is released and the
-   projection cache is dropped — exactly as before.
+1. Running work is stopped and, when supported, the Host-native
+   persistence write lease is acquired.
+2. The artifact is **moved** into a Trash area next to the session store. Its
+   manifest records the original path, deletion time, surviving child
+   conversations, and a fresh snapshot of workspace accounting — owning
+   workspace, display-slot anchor, pin and archive marks. That snapshot is
+   taken after the stop/lease steps, immediately before the manifest is written,
+   so registry changes that finish while the Host is stopping are included.
+3. The row leaves the sidebar, workspace accounting is released and the
+   projection cache is dropped.
 3. **Restore** moves the artifact back, **reattaches the conversation to the
    workspace accounting recorded in the manifest**, puts it back in its
    recorded display slot, replays a pin or archive mark, and announces the row
@@ -130,7 +133,12 @@ operation is running.
 This lock coordinates cooperating instances of this plugin on the same host
 and a local filesystem. It does not serialize the Host's workspace-registry
 writes (native archive, pin, unpin and membership changes), and its activity
-check / stop request remain scoped to the current Host instance.
+check / stop request remain scoped to the current Host instance. The Trash
+manifest samples workspace accounting after stop hooks and Host write-lease
+acquisition to reduce the stale-snapshot window, but the Host exposes no
+transaction that spans that snapshot and the later membership/pin/archive
+release. An in-flight registry write or a mutation from another Harness
+process can still race the snapshot; the plugin lock is not a Registry lock.
 
 ### Host-native session write leases
 
