@@ -1183,12 +1183,6 @@ class SessionDeleteService {
       // 3. Children survive their parent: name them so the browser can say so.
       const { ids: children, count: childrenCount } = await this.listChildren(sessionId)
 
-      // 3b. Capture the workspace accounting this deletion is about to release.
-      //     The trash manifest is the only place the restore can learn from, so
-      //     the membership, its display anchor, the pin and the archive mark are
-      //     read here, before step 6 clears them.
-      const accounting = this.mode === 'trash' ? this.captureAccounting(sessionId) : undefined
-
       // 4. Stop what is left, then let a live session leave the stores so its
       //    writer closes. The writer itself removes its handle on
       //    `session/disposed`; the removal below retries through that delay.
@@ -1215,7 +1209,6 @@ class SessionDeleteService {
         sessionId,
         children,
         childrenCount,
-        accounting,
         hostWriteHandle,
       )
       // The artifact has left its original path. Release the Host lease now;
@@ -1758,7 +1751,7 @@ class SessionDeleteService {
    * @param accounting - the workspace accounting captured before the release.
    * @returns what happened to the artifact.
    */
-  async removeStoredLog(header, sessionId, children = [], childrenCount = children.length, accounting, hostWriteHandle) {
+  async removeStoredLog(header, sessionId, children = [], childrenCount = children.length, hostWriteHandle) {
     const artifact = await this.resolveArtifact(header, sessionId)
     if (artifact === undefined) {
       return { removed: false, trashed: false, purged: false }
@@ -1780,7 +1773,7 @@ class SessionDeleteService {
       )
     }
     if (this.mode === 'trash') {
-      const entry = await this.moveToTrash(artifact, sessionId, header, children, childrenCount, accounting)
+      const entry = await this.moveToTrash(artifact, sessionId, header, children, childrenCount)
       return { removed: true, trashed: true, trashId: entry.trashId, purged: false }
     }
     if (hostWriteHandle !== undefined && process.platform !== 'win32') {
@@ -1891,7 +1884,7 @@ class SessionDeleteService {
    * @param accounting - the captured workspace accounting, when there is any.
    * @returns the trash entry that now holds the artifact.
    */
-  async moveToTrash(artifact, sessionId, header, children, childrenCount, accounting) {
+  async moveToTrash(artifact, sessionId, header, children, childrenCount) {
     const root = this.trashRoot()
     if (root === undefined) {
       throw new SessionDeleteError(
@@ -1921,6 +1914,10 @@ class SessionDeleteService {
     const stamp = this.nextStamp()
     const entry = await this.createTrashEntry(safeRoot, sessionId, stamp)
     const { trashId, path: entryPath } = entry
+    // Capture after stop/detach and Host write-lease acquisition, as close to
+    // the durable artifact move as possible. Capturing before those awaits can
+    // miss a pin/archive/order change that the Host committed while stopping.
+    const accounting = this.mode === 'trash' ? this.captureAccounting(sessionId) : undefined
     const manifest = {
       sessionId,
       originalPath: artifact.target,
