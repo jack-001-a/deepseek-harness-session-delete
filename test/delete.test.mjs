@@ -1676,6 +1676,33 @@ test('the audit trail refuses a symbolic-link file without modifying its target'
   assert.ok(h.calls.warnings.some((message) => message.includes('writing the audit trail failed')))
 })
 
+test('deletion refuses a symbolic-link Trash root before moving the artifact', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const outside = join(store.base, 'outside-trash-root')
+  await mkdir(outside)
+  try {
+    await symlink(outside, store.trashRoot, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP', 'EOPNOTSUPP'].includes(error?.code)) {
+      t.skip('the current platform does not permit directory symbolic links')
+      return
+    }
+    throw error
+  }
+
+  const h = harness({ ...storedTarget(store), config: { trashRoot: store.trashRoot } })
+  const original = await readFile(store.log, 'utf8')
+  await assert.rejects(
+    h.service.delete(SESSION_ID),
+    (error) => error.code === 'session-delete/trash-unavailable',
+  )
+
+  assert.deepEqual(await readdir(outside), [], 'the linked Trash target must remain untouched')
+  assert.equal(await readFile(store.log, 'utf8'), original, 'the source artifact must remain in the store')
+  assert.equal(await readlink(store.trashRoot), outside)
+})
+
 test('the audit trail refuses a symbolic-link Trash root without writing into its target', async (t) => {
   const store = await makeStore()
   t.after(() => rm(store.base, { recursive: true, force: true }))
