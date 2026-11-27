@@ -3062,7 +3062,6 @@ class SessionDeleteService {
       ...(typeof extra.mode === 'string' ? { mode: extra.mode } : {}),
       ...(extra.partial === true ? { partial: true } : {}),
     }
-    const file = join(root, AUDIT_FILE_NAME)
     const line = JSON.stringify(record) + '\n'
     const recordBytes = Buffer.byteLength(line, 'utf8')
     try {
@@ -3070,8 +3069,9 @@ class SessionDeleteService {
         if (recordBytes > AUDIT_MAX_RECORD_BYTES) {
           throw new Error('Refusing an audit record larger than 8 KiB.')
         }
-        await mkdir(root, { recursive: true })
-        await assertSafeAuditPath(root, file)
+        const safeRoot = await prepareSafeTrashRoot(root)
+        const file = join(safeRoot, AUDIT_FILE_NAME)
+        await assertSafeAuditPath(safeRoot, file)
         const flags = fsConstants.O_WRONLY | fsConstants.O_APPEND |
           fsConstants.O_CREAT | AUDIT_NOFOLLOW
         const handle = await open(file, flags, 0o600)
