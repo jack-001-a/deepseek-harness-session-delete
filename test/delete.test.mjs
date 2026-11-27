@@ -1232,6 +1232,7 @@ test('restoring a session that is not in the trash fails with not-found', async 
   const store = await makeStore()
   const h = harness({ ...storedTarget(store) })
 
+  const canonicalDir = await realpath(store.dir)
   await assert.rejects(h.service.restore(SESSION_ID), (error) => {
     assert.equal(error.code, 'session-delete/not-found')
     return true
@@ -1456,7 +1457,7 @@ test('restoring onto an occupied path fails with conflict', async () => {
 
   await assert.rejects(h.service.restore(SESSION_ID), (error) => {
     assert.equal(error.code, 'session-delete/conflict')
-    assert.equal(error.details.path, await realpath(store.dir))
+    assert.equal(error.details.path, canonicalDir)
     return true
   })
   assert.equal((await stat(join(store.dir, 'session.4.jsonl'))).isFile(), true)
