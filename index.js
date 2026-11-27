@@ -667,6 +667,7 @@ function captureOwnerServices(ctx) {
     'sessionController',
     'fileUploads',
     'storageDomain',
+    'agents',
   ]
   for (const name of names) {
     let value
@@ -685,7 +686,14 @@ function captureOwnerServices(ctx) {
     services[name] = value
   }
   try { services.logger = ctx?.logger } catch { services.logger = undefined }
-  try { services.emit = ctx?.emit } catch { services.emit = undefined }
+  for (const name of ['waterfall', 'parallel', 'emit']) {
+    try {
+      const method = ctx?.[name]
+      services[name] = typeof method === 'function' ? method.bind(ctx) : undefined
+    } catch {
+      services[name] = undefined
+    }
+  }
   services.get = (name) => services[name]
   return Object.freeze(services)
 }

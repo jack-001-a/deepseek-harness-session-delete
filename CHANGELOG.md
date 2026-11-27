@@ -15,6 +15,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Preserve the owner Context's bound `waterfall`, `parallel` and `emit` operations alongside captured Host services, so lifecycle hooks keep their original receiver after Gateway rebinding.
 - Add path-redacted, length-bounded Gateway error messages and details-key metadata to real-Harness RPC diagnostics, preserving privacy while making `gateway/internal` actionable.
 - Unwrap the Connection `server-response` envelope in real-Harness diagnostics so CI captures the nested Remote success flag and Gateway error code rather than only the transport wrapper.
 - Record the real Harness delete-capability RPC's HTTP status and safe error code in UI integration failures; assert that the description endpoint was reached and accepted.

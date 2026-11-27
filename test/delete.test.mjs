@@ -2259,6 +2259,9 @@ test('Remote Host methods retain their injected owner context when the Gateway b
   assert.strictEqual(owner.sessionPersistence, h.ctx.sessionPersistence)
   assert.strictEqual(owner.sessions, h.ctx.sessions)
   assert.strictEqual(owner.workspaceRegistry, h.ctx.get('workspaceRegistry'))
+  assert.equal(typeof owner.waterfall, 'function')
+  assert.equal(typeof owner.parallel, 'function')
+  assert.equal(typeof owner.emit, 'function')
   assert.strictEqual(h.service.ctx, gatewayCallContext)
 })
 
