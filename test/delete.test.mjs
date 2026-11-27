@@ -1139,7 +1139,7 @@ test('the trash entry holds the artifact and a manifest of the identifying field
   const entry = trashEntry(store, outcome.trashId)
   const manifest = JSON.parse(await readFile(join(entry, 'meta.json'), 'utf8'))
   assert.equal(manifest.sessionId, SESSION_ID)
-  assert.equal(manifest.originalPath, store.dir)
+  assert.equal(manifest.originalPath, await realpath(store.dir))
   assert.equal(typeof manifest.deletedAt, 'string')
   assert.equal(manifest.mode, 'trash')
   assert.deepEqual(manifest.header, { id: SESSION_ID, cwd: store.dir })
@@ -1587,7 +1587,7 @@ test('the trash listing reports every entry, newest first', async () => {
   assert.equal(listed.entries[0].trashId, other.trashId)
   assert.equal(listed.entries[1].trashId, first.trashId)
   assert.equal(listed.entries[0].sessionId, second.id)
-  assert.equal(listed.entries[0].originalPath, join(store.project, second.id))
+  assert.equal(listed.entries[0].originalPath, await realpath(join(store.project, second.id)))
   assert.equal(typeof listed.entries[0].deletedAt, 'string')
 })
 
