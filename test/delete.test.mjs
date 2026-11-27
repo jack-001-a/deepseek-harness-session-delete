@@ -2241,6 +2241,24 @@ test('Remote binding preserves an invocation accessor already owned by another p
   assert.equal(rootContext.reflect.props.invocation.get(), 'other-provider')
 })
 
+test('Remote Host methods retain their injected owner context when the Gateway binds a call context', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+  const h = harness(storedTarget(store))
+  const gatewayCallContext = {}
+
+  // Cordis presents a call-scoped ctx to a Remote method. Host dependencies
+  // injected into the plugin still belong to the original owner Context.
+  h.service.ctx = gatewayCallContext
+  const result = await h.service.describe()
+
+  assert.equal(result.supported, true)
+  assert.equal(result.canLocate, true)
+  assert.equal(result.mode, 'trash')
+  assert.strictEqual(h.service.ownerCtx, h.ctx)
+  assert.strictEqual(h.service.ctx, gatewayCallContext)
+})
+
 test('Remote marker exposes a resources reader that receives the id itself', async () => {
   const h = harness()
   const descriptor = Object.getOwnPropertyDescriptor(
