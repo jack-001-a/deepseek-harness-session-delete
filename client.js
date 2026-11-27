@@ -38,7 +38,6 @@ window.__ModuleLoader__.load({
     const FOCUSABLE_SELECTOR =
       'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
     /** The confirmation token used when a conversation has no usable title. */
-    const FALLBACK_CONFIRM_TOKEN = 'DELETE'
 
     /**
      * Every Host failure code, mapped onto the key of its localized copy.
@@ -80,23 +79,20 @@ window.__ModuleLoader__.load({
     })
 
     const en = {
-      'menu.delete': 'Delete conversation',
-      'actions.delete': 'Delete conversation',
-      'dialog.title': 'Delete conversation?',
-      'dialog.title.trash': 'Move conversation to Trash?',
-      'dialog.title.permanent': 'Delete conversation permanently?',
+      'menu.delete': 'Delete chat',
+      'actions.delete': 'Delete chat',
+      'dialog.title': 'Delete chat?',
+      'dialog.title.trash': 'Move chat to Trash?',
+      'dialog.title.permanent': 'Delete chat?',
       'dialog.description':
-        '“{title}” will be permanently deleted. Its messages cannot be recovered.',
+        'This will permanently delete “{title}”. This action cannot be undone.',
       'dialog.description.trash':
-        '“{title}” will be moved to the Trash. You can restore it from here for the next {days} days.',
+        'This will move “{title}” to Trash. You can restore it for the next {days} days.',
       'dialog.description.permanent':
-        '“{title}” will be deleted permanently. Its messages cannot be recovered, and this cannot be undone.',
-      'dialog.confirm': 'Delete',
+        'This will permanently delete “{title}”. This action cannot be undone.',
+      'dialog.confirm': 'Delete chat',
       'dialog.confirm.trash': 'Move to Trash',
-      'dialog.confirm.permanent': 'Delete permanently',
-      'dialog.confirmLabel': 'Type “{title}” to confirm',
-      'dialog.confirmHint':
-        'The title must match. Extra spaces around it are ignored.',
+      'dialog.confirm.permanent': 'Delete chat',
       'dialog.cancel': 'Cancel',
       'dialog.close': 'Close',
       'dialog.checking': 'Checking how this conversation can be deleted…',
@@ -110,10 +106,8 @@ window.__ModuleLoader__.load({
         '{count} conversation(s) forked from this one remain and still point at the deleted parent.',
       'dialog.unsupported':
         'This build cannot locate the files of this conversation, so it cannot be deleted from here.',
-      'dialog.permanentWarning':
-        'This is permanent. The conversation and its messages cannot be recovered.',
       'dialog.trashNotice': 'It stays in the Trash for {days} days.',
-      'dialog.filesRetained': 'Uploaded attachments and files created in your workspace are kept. Only this conversation record is removed.',
+      'dialog.filesRetained': 'Also keep files uploaded or created in this chat',
       'trash.open': 'Open Trash',
       'trash.openCount': 'Open Trash ({count})',
       'trash.title': 'Trash',
@@ -163,19 +157,17 @@ window.__ModuleLoader__.load({
       'error.unknown': 'The conversation could not be deleted.',
     }
     const zh = {
-      'menu.delete': '删除对话',
-      'actions.delete': '删除对话',
-      'dialog.title': '删除对话？',
-      'dialog.title.trash': '将对话移入回收站？',
-      'dialog.title.permanent': '永久删除对话？',
-      'dialog.description': '“{title}” 将被永久删除，其中的消息无法恢复。',
-      'dialog.description.trash': '“{title}” 将被移入回收站，你可以在此将它恢复，回收站会保留 {days} 天。',
-      'dialog.description.permanent': '“{title}” 将被永久删除，其中的消息无法恢复，且此操作无法撤销。',
-      'dialog.confirm': '删除',
+      'menu.delete': '删除聊天',
+      'actions.delete': '删除聊天',
+      'dialog.title': '删除聊天？',
+      'dialog.title.trash': '将聊天移入回收站？',
+      'dialog.title.permanent': '删除聊天？',
+      'dialog.description': '这将永久删除“{title}”。此操作无法撤销。',
+      'dialog.description.trash': '这将把“{title}”移入回收站，你可以在 {days} 天内恢复。',
+      'dialog.description.permanent': '这将永久删除“{title}”。此操作无法撤销。',
+      'dialog.confirm': '删除聊天',
       'dialog.confirm.trash': '移入回收站',
-      'dialog.confirm.permanent': '永久删除',
-      'dialog.confirmLabel': '输入“{title}”以确认',
-      'dialog.confirmHint': '标题必须完全一致，首尾多余的空格会被忽略。',
+      'dialog.confirm.permanent': '删除聊天',
       'dialog.cancel': '取消',
       'dialog.close': '关闭',
       'dialog.checking': '正在确认该对话可以如何删除…',
@@ -187,9 +179,8 @@ window.__ModuleLoader__.load({
       'dialog.done.permanent': '已永久删除，该对话已从本机移除。',
       'dialog.children': '由该对话分叉出的 {count} 个会话会保留，并仍指向一个已删除的父对话。',
       'dialog.unsupported': '当前版本无法定位该对话的文件，因此无法在此删除它。',
-      'dialog.permanentWarning': '此操作不可撤销，该对话及其消息都无法恢复。',
       'dialog.trashNotice': '它会在回收站中保留 {days} 天。',
-      'dialog.filesRetained': '上传的附件和工作区中创建的文件都会保留；此操作只处理当前对话记录。',
+      'dialog.filesRetained': '同时保留在此聊天中上传或创建的文件',
       'trash.open': '打开回收站',
       'trash.openCount': '回收站（{count}）',
       'trash.title': '回收站',
@@ -489,93 +480,207 @@ window.__ModuleLoader__.load({
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  padding: 12px 6px;
   background: var(--dsw-alias-bg-mask-1);
   -webkit-backdrop-filter: blur(3px);
   backdrop-filter: blur(3px);
 }
-.dshSessionDelete_dialog {
+.dshSessionDelete_dialog,
+.dshSessionDelete_modalCard {
   box-sizing: border-box;
-  width: min(100%, 440px);
-  max-height: min(80vh, 720px);
-  max-height: min(80dvh, 720px);
-  overflow: auto;
-  overscroll-behavior: contain;
-  padding: 24px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: var(--dsw-radius-lg);
-  background: var(--dsw-alias-bg-layer-3);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: min(420px, calc(100vw - 12px));
+  max-height: min(calc(100vh - 24px), 720px);
+  max-height: min(calc(100dvh - 24px), 720px);
+  overflow: hidden;
+  padding: 0 0 18px;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-border-l2) 65%, transparent);
+  border-radius: 24px;
+  background: var(--dsw-alias-bg-layer-2);
   color: var(--dsw-alias-label-primary);
-  box-shadow: var(--dsw-shadow-lv3);
+  box-shadow: var(--dsw-elevation-prominent, var(--dsw-shadow-lv3));
   animation: dshSessionDelete_dialog-enter 160ms cubic-bezier(.2, .8, .2, 1) both;
 }
+.dshSessionDelete_modalCard {
+  /* The Host Modal's 24px root inset is intentional. Let this one compact
+     confirmation card extend into that inset, matching the reference frame. */
+  flex: none;
+}
 @keyframes dshSessionDelete_dialog-enter {
-  from {
-    opacity: 0;
-    transform: translateY(8px) scale(.985);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
+  from { opacity: 0; transform: translateY(6px) scale(.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 @media (max-width: 520px) {
   .dshSessionDelete_overlay {
-    align-items: flex-end;
-    padding: 12px 12px max(12px, env(safe-area-inset-bottom));
+    padding: 12px 6px max(12px, env(safe-area-inset-bottom));
   }
-  .dshSessionDelete_dialog {
-    width: 100%;
-    max-height: min(85vh, 720px);
-    max-height: min(85dvh, 720px);
-    padding: 20px;
-    border-radius: var(--dsw-radius-lg);
+  .dshSessionDelete_dialog,
+  .dshSessionDelete_modalCard {
+    width: calc(100vw - 12px);
+    max-height: min(calc(100vh - 24px), 720px);
+    max-height: min(calc(100dvh - 24px), 720px);
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .dshSessionDelete_dialog {
-    animation: none;
-  }
+  .dshSessionDelete_dialog,
+  .dshSessionDelete_modalCard { animation: none; }
 }
-.dshSessionDelete_header {
+.dshSessionDelete_header,
+.dshSessionDelete_modalContent > div:first-child {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
+  padding: 18px 20px 0;
 }
-.dshSessionDelete_title {
+.dshSessionDelete_title,
+.dshSessionDelete_modalCard h2 {
   margin: 0;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
-.dshSessionDelete_close {
-  border: none;
-  background: 0 0;
-  color: var(--dsw-alias-label-tertiary);
-  cursor: pointer;
-  width: 24px;
-  height: 24px;
-  border-radius: var(--dsw-radius-xs);
+.dshSessionDelete_close,
+.dshSessionDelete_modalContent > div:first-child > button {
   display: inline-flex;
+  flex: none;
   align-items: center;
   justify-content: center;
-  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--dsw-radius-xs);
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
 }
-.dshSessionDelete_close:hover {
+.dshSessionDelete_close:hover,
+.dshSessionDelete_modalContent > div:first-child > button:hover {
   color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-interactive-bg-hover);
 }
-.dshSessionDelete_close:focus-visible {
+.dshSessionDelete_close:focus-visible,
+.dshSessionDelete_modalContent > div:first-child > button:focus-visible {
   outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color);
   outline-offset: 1px;
 }
+.dshSessionDelete_description,
+.dshSessionDelete_modalContent > p {
+  margin: 4px 0 0;
+  padding: 0 20px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 400;
+}
+.dshSessionDelete_body {
+  margin-top: 12px;
+  padding: 0 20px;
+}
+.dshSessionDelete_modalContent {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  width: 100%;
+}
+.dshSessionDelete_modalContent > div:last-child {
+  min-height: 0;
+  margin-top: 12px;
+  padding: 0 20px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.dshSessionDelete_modalContent > div:last-child > .dshSessionDelete_body {
+  margin: 0;
+  padding: 0;
+}
+.dshSessionDelete_fileRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  line-height: 20px;
+  user-select: none;
+}
+.dshSessionDelete_fileCheck {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-label-primary-foreground, var(--dsw-alias-bg-layer-1));
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 700;
+}
 .dshSessionDelete_footer {
-  margin-top: 20px;
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  flex-wrap: wrap;
+  margin-top: 24px;
+  padding: 0 20px;
+}
+.dshSessionDelete_modalCard > div:last-child {
+  flex: none;
+  margin: 24px 0 0;
+  padding: 0 20px;
+}
+.dshSessionDelete_modalActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  width: 100%;
+}
+.dshSessionDelete_modalActions button {
+  box-sizing: border-box;
+  min-width: 66px;
+  height: 32px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  font-family: var(--dsw-font-family);
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, opacity 120ms ease;
+}
+.dshSessionDelete_modalCard .dshSessionDelete_modalActions .dshSessionDelete_cancelButton,
+.dshSessionDelete_dialog .dshSessionDelete_modalActions .dshSessionDelete_cancelButton {
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-primary);
+}
+.dshSessionDelete_modalCard .dshSessionDelete_modalActions .dshSessionDelete_cancelButton:hover,
+.dshSessionDelete_dialog .dshSessionDelete_modalActions .dshSessionDelete_cancelButton:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.dshSessionDelete_modalCard .dshSessionDelete_modalActions .dshSessionDelete_confirmButton,
+.dshSessionDelete_dialog .dshSessionDelete_modalActions .dshSessionDelete_confirmButton {
+  min-width: 98px;
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 13%, var(--dsw-alias-bg-layer-2));
+  color: var(--dsw-alias-state-error-primary);
+}
+.dshSessionDelete_modalCard .dshSessionDelete_modalActions .dshSessionDelete_confirmButton:hover:not(:disabled),
+.dshSessionDelete_dialog .dshSessionDelete_modalActions .dshSessionDelete_confirmButton:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 19%, var(--dsw-alias-bg-layer-2));
+}
+.dshSessionDelete_modalActions button:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color);
+  outline-offset: 2px;
+}
+.dshSessionDelete_modalActions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 .dshSessionDelete_button {
   border-radius: var(--dsw-radius-sm);
@@ -812,6 +917,8 @@ window.__ModuleLoader__.load({
         onClose,
         closeLabel,
         title,
+        className: 'dshSessionDelete_modalCard',
+        contentClassName: 'dshSessionDelete_modalContent',
         description: description === undefined ? undefined : h('span', { id: descriptionId }, description),
         footer,
         onKeyDownCapture,
@@ -1030,32 +1137,6 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The text a user has to type before a permanent deletion is allowed.
-     *
-     * An untitled conversation has nothing to type, so a fixed token stands
-     * in for it; the dialog always shows which one it expects.
-     * @param displayTitle - the conversation's title.
-     * @returns the expected text.
-     */
-    function confirmationToken(displayTitle) {
-      const title = typeof displayTitle === 'string' ? displayTitle.trim() : ''
-      return title.length > 0 ? title : FALLBACK_CONFIRM_TOKEN
-    }
-
-    /**
-     * Normalize typed text for the comparison against the expected title.
-     *
-     * Whitespace is forgiving — leading, trailing and repeated spaces do not
-     * count — because the point of the check is to prove the user read the
-     * title, not to test their keyboard.
-     * @param value - the typed text.
-     * @returns the normalized text.
-     */
-    function normalizeTyped(value) {
-      return String(value ?? '').trim().replace(/\s+/g, ' ')
-    }
-
-    /**
      * The number of conversations that survive their deleted parent.
      *
      * The Host caps the list of child ids it returns, so the count it sends
@@ -1162,12 +1243,9 @@ window.__ModuleLoader__.load({
       const [deleting, setDeleting] = React.useState(false)
       const [error, setError] = React.useState(undefined)
       const [outcome, setOutcome] = React.useState(undefined)
-      const [typed, setTyped] = React.useState('')
       const [pendingAction, setPendingAction] = React.useState(undefined)
       const [actionResult, setActionResult] = React.useState(undefined)
       const [restored, setRestored] = React.useState(false)
-      const inputRef = React.useRef(null)
-      const confirmRef = React.useRef(null)
       // State updates render asynchronously. This ref closes the gap between
       // the first click and the next render, preventing duplicate mutations
       // and an early dismissal while the Host is already working.
@@ -1205,9 +1283,6 @@ window.__ModuleLoader__.load({
       const mode = loading ? 'unknown' : resolveMode(info)
       const unsupported = !loading && info.supported === false
       const busy = deleting || pendingAction !== undefined || actionInFlightRef.current
-      const expected = confirmationToken(request.displayTitle)
-      const typedMatches = normalizeTyped(typed) === normalizeTyped(expected)
-
       // The element ids the dialog wires its text with; they are unique per
       // request so two dialogs can never point at each other's text.
       const idBase = `${NS}-${String(request.sessionId).replace(/[^A-Za-z0-9_-]/g, '-')}`
@@ -1215,8 +1290,6 @@ window.__ModuleLoader__.load({
       const descriptionId = `${idBase}-description`
       const errorId = `${idBase}-error`
       const childrenId = `${idBase}-children`
-      const hintId = `${idBase}-hint`
-      const inputId = `${idBase}-input`
       const describedBy = [
         loading ? undefined : descriptionId,
         error !== undefined ? errorId : undefined,
@@ -1224,31 +1297,6 @@ window.__ModuleLoader__.load({
       ]
         .filter(Boolean)
         .join(' ')
-
-      // The focus belongs on the control that starts the action. In Trash
-      // mode that is the confirm button, which only moves a conversation out
-      // of the way. In permanent mode the destructive button is left alone
-      // and the typed confirmation takes the focus instead, so a stray Enter
-      // cannot destroy anything.
-      const focusKey = unsupported
-        ? 'none'
-        : outcome !== undefined || loading
-          ? 'none'
-          : mode === 'permanent'
-            ? 'input'
-            : 'confirm'
-
-      React.useEffect(() => {
-        if (focusKey === 'input') {
-          if (inputRef.current && typeof inputRef.current.focus === 'function') inputRef.current.focus()
-          return
-        }
-        if (focusKey !== 'confirm') return
-        const holder = confirmRef.current
-        if (!holder || typeof holder.querySelector !== 'function') return
-        const target = holder.querySelector('[data-session-delete-autofocus]')
-        if (target && typeof target.focus === 'function') target.focus()
-      }, [focusKey])
 
       const close = () => {
         // A request in flight must not be abandoned: the Host may already
@@ -1271,7 +1319,6 @@ window.__ModuleLoader__.load({
       const confirm = () => {
         if (busy || actionInFlightRef.current || outcome !== undefined) return
         if (typeof confirmDelete !== 'function') return
-        if (mode === 'permanent' && !typedMatches) return
         actionInFlightRef.current = true
         setDeleting(true)
         setError(undefined)
@@ -1377,36 +1424,16 @@ window.__ModuleLoader__.load({
       if (mode === 'trash' && !unsupported && outcome === undefined) {
         body.push(h('div', { className: 'dshSessionDelete_note', key: 'trashNotice' }, t('dialog.trashNotice', { days: info.retentionDays })))
       }
-      if (mode === 'permanent' && !unsupported && outcome === undefined) {
-        body.push(h('p', { className: 'dshSessionDelete_warning', key: 'warning' }, t('dialog.permanentWarning')))
-        body.push(
-          h(
-            'label',
-            { className: 'dshSessionDelete_label', htmlFor: inputId, key: 'label' },
-            t('dialog.confirmLabel', { title: expected }),
-          ),
-        )
-        body.push(
-          h('input', {
-            id: inputId,
-            key: 'input',
-            ref: inputRef,
-            className: 'dshSessionDelete_input',
-            type: 'text',
-            value: typed,
-            disabled: busy,
-            'aria-describedby': hintId,
-            onChange: (event) => setTyped(event.target.value),
-          }),
-        )
-        body.push(h('p', { id: hintId, className: 'dshSessionDelete_note', key: 'hint' }, t('dialog.confirmHint')))
-      }
-      // Be explicit about what this operation does not remove. Harness attachments
-      // are shared content-addressed objects, so deleting one session must not
-      // unlink files that another session may still reference.
+      // A checked, non-interactive status mirrors the reference's checkbox
+      // row without claiming that this build can physically delete shared files.
       if (!loading && !unsupported && outcome === undefined) {
         body.push(
-          h('p', { role: 'note', className: 'dshSessionDelete_fileNote', key: 'filesRetained' }, t('dialog.filesRetained')),
+          h(
+            'div',
+            { role: 'note', className: 'dshSessionDelete_fileRow', key: 'filesRetained' },
+            h('span', { className: 'dshSessionDelete_fileCheck', 'aria-hidden': 'true' }, '✓'),
+            h('span', null, t('dialog.filesRetained')),
+          ),
         )
       }
       if (deleting) {
@@ -1460,33 +1487,33 @@ window.__ModuleLoader__.load({
           footer.push(h(adapter.Button, { variant: 'outline', onClick: close }, t('dialog.close')))
         } else {
           footer.push(
-            h(adapter.Button, { variant: 'outline', disabled: busy, onClick: close }, t('dialog.cancel')),
+            h(
+              adapter.Button,
+              {
+                variant: 'ghost',
+                className: 'dshSessionDelete_cancelButton',
+                disabled: busy,
+                'data-modal-autofocus': 'true',
+                'data-session-delete-autofocus': 'true',
+                onClick: close,
+              },
+              t('dialog.cancel'),
+            ),
           )
           if (!loading) {
-            // The destructive control only appears once the mode is known:
-            // its label and its confirmation step depend on it.
-            const confirmDisabled = busy || (mode === 'permanent' && !typedMatches)
+            // Trash is reversible; permanent mode is labelled as irreversible
+            // in the description and on the explicit final action.
             footer.push(
               h(
-                'span',
-                { ref: confirmRef, className: 'dshSessionDelete_control', key: 'confirmHolder' },
-                h(
-                  adapter.Button,
-                  {
-                    variant: 'outline',
-                    className: [
-                      'dshSessionDelete_deleteAction',
-                      mode === 'permanent' ? 'dshSessionDelete_deleteAction--permanent' : undefined,
-                    ]
-                      .filter(Boolean)
-                      .join(' '),
-                    disabled: confirmDisabled,
-                    'aria-describedby': describedBy,
-                    'data-session-delete-autofocus': 'true',
-                    onClick: confirm,
-                  },
-                  t(confirmKey),
-                ),
+                adapter.Button,
+                {
+                  variant: 'ghost',
+                  className: 'dshSessionDelete_deleteAction dshSessionDelete_confirmButton',
+                  disabled: busy,
+                  'aria-describedby': describedBy,
+                  onClick: confirm,
+                },
+                t(confirmKey),
               ),
             )
           }
@@ -1542,7 +1569,7 @@ window.__ModuleLoader__.load({
           },
           body,
         ),
-        footer: footer.length === 1 ? footer[0] : h(React.Fragment, null, footer),
+        footer: h('div', { className: 'dshSessionDelete_modalActions' }, footer),
       }
 
       return h(adapter.Modal === undefined ? PlainDialog : HostDialog, dialogProps)

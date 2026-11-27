@@ -8,6 +8,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Rebuild the delete confirmation around the reference card: native Modal skin, compact heading/description, checked file-retention status, and aligned pill actions.
+- Replace permanent-mode title typing with an explicit final confirmation click; keep attachment and workspace-file retention explicit and non-destructive.
+
 - Refine the plain-element delete confirmation into a responsive, theme-aware card with safe-area spacing, bounded scrolling and reduced-motion support.
 - Make delete, restore and purge actions single-flight at the UI boundary so rapid repeated clicks cannot dispatch duplicate Host mutations.
 

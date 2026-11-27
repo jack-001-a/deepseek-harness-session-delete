@@ -24,7 +24,7 @@ also makes clear that shared attachments and workspace files are retained.
 |---|---|
 | Session **"…" menu** | A red **Delete conversation** row, after the shipped pin / rename / fork / archive rows |
 | Session **row hover** | A trash button beside the shipped archive and pin buttons |
-| **Confirmation dialog** | Names the conversation, explains recovery and file-retention behavior, and — in permanent mode — asks for the title before it unlocks |
+| **Confirmation dialog** | Uses a compact confirmation card, explains recovery and file-retention behavior, and requires an explicit final click for permanent deletion |
 | **After deletion** | Reports what happened, and offers **Restore** and **Delete permanently** on the same dialog |
 | Sidebar **Trash manager** | A count badge opens the searchable Trash list; restore entries later or permanently delete one after typing its full session ID |
 
@@ -42,9 +42,10 @@ may be referenced by more than one conversation, including resumed or forked
 sessions. Removing an object because one conversation was deleted could break
 another conversation.
 
-The checkbox in the reference design therefore cannot safely mean “unlink all
-files used by this conversation.” This plugin still does not unlink attachments
-or offer a file-cleanup checkbox. The plugin now recognizes an
+The checked row in the reference design is therefore informational: it confirms
+that files uploaded or created in the chat are kept. It is not a file-cleanup
+toggle. This plugin still does not unlink attachments or workspace files. The
+plugin now recognizes an
 optional Host callback, `fileUploads.onSessionPermanentlyPurged(sessionId)`,
 which is invoked only after a Session artifact has been irreversibly removed
 (permanent mode, explicit Trash purge, or retention sweep). Moving an artifact
@@ -187,9 +188,10 @@ and crash-recovery tests. The plugin lock is also not a distributed lock:
 shared network filesystems, multiple hosts and PID-namespace mismatches are
 outside its guarantee.
 
-Setting `mode: permanent` in the plugin config removes the intermediate step
-and deletes outright — the dialog then requires the conversation title to be
-typed before the destructive action unlocks.
+Setting `mode: permanent` in the plugin config removes the intermediate Trash
+step and deletes outright. The dialog presents the conversation title and an
+explicit destructive action; the final click is the confirmation. The checked
+file-retention row also makes clear that attachments and workspace files remain.
 
 ## What exactly is removed
 
@@ -448,7 +450,7 @@ React stand-in; they need no Harness installation.
 
 DeepSeek Harness 只能归档会话、无法真正删除，日志会一直堆积在磁盘上。这个插件补上了缺失的删除能力，并且按桌面产品的做法来做：**先进回收站，可还原、可彻底删除、有审计记录。**
 
-**新增内容**：会话「…」菜单里的**红色「删除对话」**、会话行悬停时的垃圾桶按钮，以及一个显示对话标题、写明"是否可恢复"的确认框；永久删除模式下还需要手动输入会话标题才会解锁按钮。删除后确认框会原地显示结果，并提供**还原**与**彻底删除**两个后续操作。删除当前正在看的对话后，会在同一工作区重新打开一个新会话。侧边栏「设置」上方新增**回收站管理入口**，显示回收站数量，可按会话 ID 搜索；随时恢复会话，或输入完整会话 ID 后永久删除。列表只显示会话 ID 与删除时间，不保存也不展示对话标题或原始文件路径。
+**新增内容**：会话「…」菜单里的**红色「删除聊天」**、会话行悬停时的垃圾桶按钮，以及一个参考原生桌面体验的确认卡片，显示聊天标题、是否可恢复和文件保留状态；永久删除通过明确的二次确认按钮执行。删除后确认框会原地显示结果，并提供**还原**与**彻底删除**两个后续操作。删除当前正在看的对话后，会在同一工作区重新打开一个新会话。侧边栏「设置」上方新增**回收站管理入口**，显示回收站数量，可按会话 ID 搜索；随时恢复会话，或输入完整会话 ID 后永久删除。列表只显示会话 ID 与删除时间，不保存也不展示对话标题或原始文件路径。
 
 **删除顺序是事务式的**：解析目标 → 拒绝运行中的工作 → 停并将活跃会话摘除 → 在支持新式持久化接口的 Harness 上取得宿主原生写租约 → **把日志移出存储**（移出前先把工作区记账写入回收站清单：所属工作区、显示位置锚点、置顶/归档标记）→ 释放宿主租约 → 释放工作区记账 → 删除投影缓存 → 广播移除事件。若另一个 Harness 写入者仍持有会话租约，会返回 `session-delete/locked`，本次不移动文件。
 

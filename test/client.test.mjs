@@ -5,7 +5,7 @@
  * `window.__ModuleLoader__`, a hook-capable React stand-in and primitive
  * components, then exercises the real registration and dialog code: slot
  * specs, dictionaries, the RPC call shape, error-code localization, the
- * describe-driven mode selection, the typed confirmation, the restore and
+ * describe-driven mode selection, the confirmation card, the restore and
  * purge follow-ups, the post-delete acknowledgement, and the degraded path
  * where the host ships no UI primitives at all.
  */
@@ -332,9 +332,9 @@ function flattenFooter(node) {
   if (node === undefined || node === null) return []
   if (Array.isArray(node)) return node.flatMap(flattenFooter)
   if (node.type === 'Fragment') return flattenFooter(node.children)
-  if (node.props?.className === 'dshSessionDelete_footer') return flattenFooter(node.children)
-  // The confirm control sits in a holder that carries the focus marker, so
-  // the tests look at the control itself.
+  if (node.props?.className === 'dshSessionDelete_footer' || node.props?.className === 'dshSessionDelete_modalActions') {
+    return flattenFooter(node.children)
+  }
   if (node.type === 'span') return [node.children[0]]
   return [node]
 }
@@ -801,15 +801,16 @@ test('trash mode offers a reversible action and names the retention window', asy
   const dialog = dialogElement(form)
   assert.match(dialog.props.title, /Trash/)
   assert.match(text(dialog.props.description), /7 days/)
-  assert.match(text(findByRole(form, 'note')), /attachments and files created.*kept/i)
+  assert.match(text(findByRole(form, 'note')), /keep files uploaded or created.*chat/i)
   const [cancel, confirm] = footerButtons(form)
   assert.equal(text(cancel), 'Cancel')
   assert.equal(text(confirm), 'Move to Trash')
   assert.equal(confirm.props.disabled, false)
-  assert.equal(confirm.props['data-session-delete-autofocus'], 'true', 'the confirm control takes the focus')
+  assert.equal(cancel.props['data-modal-autofocus'], 'true', 'the cancel control receives initial focus')
+  assert.equal(cancel.props['data-session-delete-autofocus'], 'true', 'the plain dialog focuses the cancel control')
 })
 
-test('permanent mode requires the typed title before the destructive action', async () => {
+test('permanent mode matches the one-step reference confirmation card', async () => {
   const { plugin, React } = await loadPlugin()
   const { registrations, dictionaries } = applyPlugin(plugin)
   const { form } = renderDialog(registrations, dictionaries, React, 'en', {
@@ -818,48 +819,18 @@ test('permanent mode requires the typed title before the destructive action', as
   await settle()
 
   const dialog = dialogElement(form)
-  assert.match(dialog.props.title, /permanently/)
-  assert.match(text(dialog.props.description), /cannot be undone/)
-  assert.match(text(findByRole(form, 'note')), /Uploaded attachments and files created.*kept/i)
-  const confirm = footerButtons(form)[1]
-  assert.equal(text(confirm), 'Delete permanently')
-  assert.equal(confirm.props.disabled, true, 'the destructive action waits for the typed title')
-
-  const input = findByType(form, 'input')
-  assert.ok(input, 'the permanent mode asks for a typed confirmation')
-  assert.equal(input.props['aria-describedby'], `${form.tree.props.descriptionId.replace(/-description$/, '-hint')}`)
-  input.props.onChange({ target: { value: 'Deploy notes' } })
-  await settle()
-
-  assert.equal(footerButtons(form)[1].props.disabled, false, 'the typed title enables the action')
+  assert.equal(dialog.props.title, 'Delete chat?')
+  assert.match(text(dialog.props.description), /This action cannot be undone/)
+  assert.match(text(findByRole(form, 'note')), /keep files uploaded or created in this chat/i)
+  const [cancel, confirm] = footerButtons(form)
+  assert.equal(text(cancel), 'Cancel')
+  assert.equal(text(confirm), 'Delete chat')
+  assert.equal(confirm.props.disabled, false, 'the final confirmation is a single explicit click')
+  assert.equal(findByType(form, 'input'), undefined, 'the reference card does not ask users to type the title')
+  assert.match(dialog.props.className, /dshSessionDelete_modalCard/)
 })
 
-test('the file retention notice is localized in Chinese', async () => {
-  const { plugin, React } = await loadPlugin()
-  const { registrations, dictionaries } = applyPlugin(plugin)
-  const { form } = renderDialog(registrations, dictionaries, React, 'zh', {
-    describeDeletion: async () => DESCRIBE_TRASH,
-  })
-  await settle()
-
-  assert.match(text(findByRole(form, 'note')), /上传的附件和工作区中创建的文件都会保留/)
-})
-
-test('the typed confirmation forgives surrounding and repeated whitespace', async () => {
-  const { plugin, React } = await loadPlugin()
-  const { registrations, dictionaries } = applyPlugin(plugin)
-  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
-    describeDeletion: async () => DESCRIBE_PERMANENT,
-  })
-  await settle()
-
-  const input = findByType(form, 'input')
-  input.props.onChange({ target: { value: '  Deploy   notes  ' } })
-  await settle()
-  assert.equal(footerButtons(form)[1].props.disabled, false)
-})
-
-test('a wrong title keeps the destructive action disabled', async () => {
+test('the file-retention status is localized in Chinese and uses a static check mark', async () => {
   const { plugin, React } = await loadPlugin()
   const { registrations, dictionaries } = applyPlugin(plugin)
   const { form } = renderDialog(registrations, dictionaries, React, 'zh', {
@@ -867,10 +838,10 @@ test('a wrong title keeps the destructive action disabled', async () => {
   })
   await settle()
 
-  const input = findByType(form, 'input')
-  input.props.onChange({ target: { value: 'something else' } })
-  await settle()
-  assert.equal(footerButtons(form)[1].props.disabled, true)
+  const note = findByRole(form, 'note')
+  assert.match(text(note), /同时保留在此聊天中上传或创建的文件/)
+  assert.equal(note.children[0].props.className, 'dshSessionDelete_fileCheck')
+  assert.equal(note.children[0].props['aria-hidden'], 'true')
 })
 
 test('a trashed conversation is acknowledged and offers restore and purge', async () => {
@@ -1088,9 +1059,6 @@ test('a permanently deleted conversation is reported as permanent', async () => 
     describeDeletion: async () => DESCRIBE_PERMANENT,
     confirmDelete: async () => ({ mode: 'permanent', trashed: false, purged: true, children: [], childrenCount: 0 }),
   })
-  await settle()
-  const input = findByType(form, 'input')
-  input.props.onChange({ target: { value: 'Deploy notes' } })
   await settle()
   footerButtons(form)[1].props.onClick()
   await settle()
