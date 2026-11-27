@@ -2626,3 +2626,38 @@ test('a dead same-host lock owner is reclaimed after process exit', async () => 
   })
   assert.deepEqual((await readFile(marker, 'utf8')).trim().split('\n'), ['held', 'reclaimed'])
 })
+
+
+test('independent plugin instances serialize delete and restore for the same session', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const deleting = harness({ ...storedTarget(store) })
+  const restoring = harness({ ...storedTarget(store) })
+
+  const originalMove = deleting.service.moveArtifact.bind(deleting.service)
+  let announceMove
+  const moveStarted = new Promise((resolve) => { announceMove = resolve })
+  let releaseMove
+  const moveGate = new Promise((resolve) => { releaseMove = resolve })
+  deleting.service.moveArtifact = async (...args) => {
+    announceMove()
+    await moveGate
+    return originalMove(...args)
+  }
+
+  const deletePromise = deleting.service.delete(SESSION_ID)
+  await moveStarted
+  const restorePromise = restoring.service.restore(SESSION_ID)
+
+  // The second service has a distinct in-memory queue; only the shared
+  // filesystem lock can keep its restore behind the delete transaction.
+  await new Promise((resolve) => setTimeout(resolve, 120))
+  releaseMove()
+
+  const [deleted, restored] = await Promise.all([deletePromise, restorePromise])
+  assert.equal(deleted.trashed, true)
+  assert.equal(restored.restored, true)
+  assert.equal((await stat(store.dir)).isDirectory(), true)
+  await assert.rejects(stat(trashEntry(store, deleted.trashId)), (error) => error.code === 'ENOENT')
+  assert.deepEqual((await restoring.service.listTrash()).entries, [])
+})
