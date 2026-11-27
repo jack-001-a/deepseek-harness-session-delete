@@ -1185,6 +1185,161 @@ test('trash refresh completes a promoted cross-device copy after a simulated cra
   await assert.rejects(stat(join(entryPath, '.copying')), (error) => error.code === 'ENOENT')
 })
 
+
+test('trash recovery preserves a same-content replacement source with a different inode', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const entryPath = join(store.trashRoot, 'interrupted-replaced-source')
+  const artifactPath = join(entryPath, 'artifact')
+  await mkdir(artifactPath, { recursive: true })
+  const original = await readFile(store.log, 'utf8')
+  await writeFile(join(artifactPath, 'session.4.jsonl'), original)
+  const sourceStat = await stat(store.dir)
+  const manifest = {
+    sessionId: SESSION_ID,
+    originalPath: store.dir,
+    deletedAt: new Date().toISOString(),
+    header: { id: SESSION_ID, cwd: store.dir },
+    children: [],
+    childrenCount: 0,
+    mode: 'trash',
+  }
+  await writeFile(join(entryPath, 'meta.json'), JSON.stringify(manifest))
+  await writeFile(join(entryPath, '.copying'), JSON.stringify({
+    dev: sourceStat.dev,
+    ino: sourceStat.ino,
+    isDirectory: sourceStat.isDirectory(),
+    size: sourceStat.size,
+    mtimeMs: sourceStat.mtimeMs,
+  }))
+
+  const displacedOriginal = join(store.base, 'displaced-original-session')
+  await rename(store.dir, displacedOriginal)
+  await mkdir(store.dir, { recursive: true })
+  await writeFile(join(store.dir, 'session.4.jsonl'), original)
+  assert.notEqual(
+    (await stat(store.dir)).ino,
+    sourceStat.ino,
+    'the replacement directory must have a different filesystem identity',
+  )
+
+  const h = harness({ ...storedTarget(store) })
+  const recovered = await h.service.recoverTrashMove(entryPath, manifest)
+
+  assert.equal(recovered, false, 'recovery must not delete a replacement based only on equal file contents')
+  assert.equal(await readFile(store.log, 'utf8'), original, 'the replacement session must remain intact')
+  assert.equal(await readFile(join(displacedOriginal, 'session.4.jsonl'), 'utf8'), original)
+  assert.equal(await readFile(join(artifactPath, 'session.4.jsonl'), 'utf8'), original)
+  assert.ok((await stat(join(entryPath, '.copying'))).isFile(), 'the ambiguous transaction marker must be preserved')
+})
+
+test('trash recovery keeps its source anchored when a project alias is replaced after comparison', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const alias = join(store.root, 'project-alias')
+  try {
+    await symlink(store.project, alias, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch {
+    t.skip('the runner does not permit creating directory symlinks')
+    return
+  }
+
+  const outsideProject = join(store.base, 'outside-project')
+  const outsideSession = join(outsideProject, SESSION_ID)
+  await mkdir(outsideSession, { recursive: true })
+  await writeFile(join(outsideSession, 'session.4.jsonl'), 'outside sentinel\\n')
+
+  const entryPath = join(store.trashRoot, 'interrupted-alias-source')
+  const artifactPath = join(entryPath, 'artifact')
+  await mkdir(artifactPath, { recursive: true })
+  const original = await readFile(store.log, 'utf8')
+  await writeFile(join(artifactPath, 'session.4.jsonl'), original)
+  const sourceStat = await stat(join(alias, SESSION_ID))
+  const manifest = {
+    sessionId: SESSION_ID,
+    originalPath: join(alias, SESSION_ID),
+    deletedAt: new Date().toISOString(),
+    header: { id: SESSION_ID, cwd: store.dir },
+    children: [],
+    childrenCount: 0,
+    mode: 'trash',
+  }
+  await writeFile(join(entryPath, 'meta.json'), JSON.stringify(manifest))
+  await writeFile(join(entryPath, '.copying'), JSON.stringify({
+    dev: sourceStat.dev,
+    ino: sourceStat.ino,
+    isDirectory: sourceStat.isDirectory(),
+    size: sourceStat.size,
+    mtimeMs: sourceStat.mtimeMs,
+  }))
+
+  const h = harness({ ...storedTarget(store) })
+  const originalArtifactsMatch = h.service.artifactsMatch.bind(h.service)
+  let aliasReplaced = false
+  h.service.artifactsMatch = async (left, right) => {
+    const matches = await originalArtifactsMatch(left, right)
+    if (!aliasReplaced) {
+      aliasReplaced = true
+      await rm(alias)
+      await symlink(outsideProject, alias, process.platform === 'win32' ? 'junction' : 'dir')
+    }
+    return matches
+  }
+
+  const recovered = await h.service.recoverTrashMove(entryPath, manifest)
+
+  assert.equal(recovered, true)
+  assert.equal(aliasReplaced, true, 'the fixture must replace the alias after artifact comparison')
+  assert.equal(
+    await readFile(join(outsideSession, 'session.4.jsonl'), 'utf8'),
+    'outside sentinel\\n',
+    'recovery must not follow the replaced alias when removing its source',
+  )
+  await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
+  assert.equal(await readFile(join(artifactPath, 'session.4.jsonl'), 'utf8'), original)
+})
+
+test('trash recovery preserves a replacement tombstone whose inode differs from the recorded source', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const entryPath = join(store.trashRoot, 'interrupted-replaced-tombstone')
+  const artifactPath = join(entryPath, 'artifact')
+  await mkdir(artifactPath, { recursive: true })
+  const original = await readFile(store.log, 'utf8')
+  await writeFile(join(artifactPath, 'session.4.jsonl'), original)
+  const sourceStat = await stat(store.dir)
+  const tombstone = join(store.project, `.session-delete-${entryPath.split(/[\\\\/]/).pop()}.moving`)
+  const manifest = {
+    sessionId: SESSION_ID,
+    originalPath: store.dir,
+    deletedAt: new Date().toISOString(),
+    header: { id: SESSION_ID, cwd: store.dir },
+    children: [],
+    childrenCount: 0,
+    mode: 'trash',
+  }
+  await writeFile(join(entryPath, 'meta.json'), JSON.stringify(manifest))
+  await writeFile(join(entryPath, '.copying'), JSON.stringify({
+    dev: sourceStat.dev,
+    ino: sourceStat.ino,
+    isDirectory: sourceStat.isDirectory(),
+    size: sourceStat.size,
+    mtimeMs: sourceStat.mtimeMs,
+  }))
+
+  await rename(store.dir, join(store.base, 'original-tombstone-source'))
+  await mkdir(tombstone, { recursive: true })
+  await writeFile(join(tombstone, 'session.4.jsonl'), original)
+
+  const h = harness({ ...storedTarget(store) })
+  const recovered = await h.service.recoverTrashMove(entryPath, manifest)
+
+  assert.equal(recovered, false)
+  assert.equal(await readFile(join(tombstone, 'session.4.jsonl'), 'utf8'), original)
+  assert.equal(await readFile(join(artifactPath, 'session.4.jsonl'), 'utf8'), original)
+  assert.ok((await stat(join(entryPath, '.copying'))).isFile())
+})
+
 test('trash refresh discards an unpromoted partial copy and preserves its source', async () => {
   const store = await makeStore()
   const entryPath = join(store.trashRoot, 'interrupted-partial')
