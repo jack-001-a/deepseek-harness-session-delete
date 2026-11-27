@@ -2473,7 +2473,7 @@ test('retrying an already-trashed delete completes accounting after an interrupt
   assert.ok((await readdir(store.trashRoot)).some((name) => name !== 'audit.jsonl'))
 
   // A fresh process sees the durable trash entry; retrying delete must replay
-  // cleanup even though the session is no longer live or stored at its path.
+  // workspace accounting even though the session is no longer live or stored at its path.
   h.service.releaseWorkspaceAccounting = release
   const outcome = await h.service.delete(SESSION_ID)
 
@@ -2481,7 +2481,7 @@ test('retrying an already-trashed delete completes accounting after an interrupt
   assert.equal(registry.workspace.record.sessionIds.includes(SESSION_ID), false)
   assert.ok(registry.calls.some(([kind]) => kind === 'unpin'))
   assert.ok(registry.calls.some(([kind]) => kind === 'unarchive'))
-  assert.equal(cache.has(SESSION_ID), false)
+  assert.equal(cache.has(SESSION_ID), true, 'retrying a recoverable Trash delete must preserve its title projection')
 })
 
 test('restore recovers a promoted cross-device copy left beside its trash source', async () => {
@@ -2560,7 +2560,7 @@ test('restore retries after an interrupted partial cross-device copy', async () 
   await assert.rejects(stat(store.dir + '.partial'), (error) => error.code === 'ENOENT')
 })
 
-test('startup recovery releases stale workspace and projection accounting for committed trash entries', async () => {
+test('startup recovery releases stale workspace accounting while retaining the Trash projection', async () => {
   const store = await makeStore()
   const options = { pinned: true, archived: false }
   const registry = accountingRegistry(store, options)
@@ -2574,7 +2574,7 @@ test('startup recovery releases stale workspace and projection accounting for co
   const entry = trashEntry(store, deleted.trashId)
 
   // Simulate a process stop immediately after the artifact reached trash,
-  // before workspace membership, pin/archive or cache cleanup completed.
+  // before workspace membership or pin/archive cleanup completed.
   registry.workspace.record.sessionIds = [SESSION_ID, 'session-older']
   options.pinned = true
   cache.set(SESSION_ID, { rows: { stale: true } })
@@ -2590,7 +2590,7 @@ test('startup recovery releases stale workspace and projection accounting for co
     ['unpin', SESSION_ID],
     ['unarchive', SESSION_ID],
   ])
-  assert.equal(cache.has(SESSION_ID), false)
+  assert.equal(cache.has(SESSION_ID), true, 'startup recovery must preserve the title projection while the artifact remains restorable')
   assert.equal((await stat(join(entry, 'artifact'))).isDirectory(), true)
   assert.deepEqual(h.calls.emitted, [])
 })
