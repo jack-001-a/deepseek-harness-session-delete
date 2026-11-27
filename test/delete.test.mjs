@@ -2568,6 +2568,28 @@ test('filesystem session locks serialize two independent Node processes', async 
   assert.deepEqual(events, ['start', 'end', 'start', 'end'])
 })
 
+test('lock release preserves a directory after its owner token is replaced', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const h = harness({ ...storedTarget(store) })
+  const lockPath = await h.service.processLockPath(SESSION_ID)
+  const release = await h.service.acquireProcessLock(SESSION_ID)
+  const ownerPath = join(lockPath, '.owner.json')
+  const replacement = {
+    pid: process.pid,
+    host: hostname(),
+    token: 'replacement-owner-token',
+    createdAt: Date.now(),
+  }
+
+  await writeFile(ownerPath, JSON.stringify(replacement) + '\n')
+  await release()
+
+  const current = await h.service.readProcessLockOwner(lockPath)
+  assert.equal(current?.token, replacement.token)
+  assert.equal((await stat(lockPath)).isDirectory(), true)
+})
+
 test('a dead same-host lock owner is reclaimed after process exit', async () => {
   const store = await makeStore()
   const marker = join(store.base, 'stale-lock-events.txt')
