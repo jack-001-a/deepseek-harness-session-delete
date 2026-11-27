@@ -86,12 +86,14 @@ operation lock. The operation follows this order:
    busy conversation before changing files or workspace state.
 3. Count forked child sessions. They survive deletion and the UI can tell the
    user how many remain linked to the deleted parent.
-4. In Trash mode, capture the owning workspace, display-slot anchor, pin and
-   archive marks into the Trash manifest.
-5. Stop and flush live work, detach live session/agent state, then acquire the
+4. Stop and flush live work, detach live session/agent state, then acquire the
    Host-native persistence write lease when the current Host exposes it.
-6. Verify the persistence locator against the store's trusted root. Move the
-   session artifact to Trash, or remove its durable log in permanent mode.
+5. Verify the persistence locator against the store's trusted root. In Trash
+   mode, sample the owning workspace, display-slot anchor, pin and archive marks
+   immediately before writing the Trash manifest; this includes Registry
+   changes that complete during the stop/lease steps.
+6. Move the session artifact to Trash, or remove its durable log in permanent
+   mode.
 7. Release the Host write lease, workspace membership/pin/archive state and
    projection-cache entry. Notify the browser when the Host does not already
    emit the live-session removal event.
@@ -154,7 +156,11 @@ Two independent mechanisms protect a destructive operation where supported:
 
 These are not distributed locks. Network filesystems, multiple hosts,
 non-cooperating writers and PID namespace mismatches are outside the plugin
-lock guarantee.
+lock guarantee. The Host's Workspace Registry has its own per-instance write
+queue, but the current public API does not expose a transaction/lock that spans
+the plugin's accounting snapshot and its later detach/unpin/unarchive calls.
+The snapshot is therefore taken as late as possible, but an in-flight Registry
+write or a mutation from another Harness process can still race it.
 
 Restore has a separate known race boundary: the current persistence API
 cannot reserve a missing destination session id. If another process creates

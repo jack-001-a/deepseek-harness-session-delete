@@ -10,7 +10,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { appendFile, link, mkdtemp, mkdir, readFile, readlink, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { appendFile, link, mkdtemp, mkdir, readFile, readlink, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -65,8 +65,9 @@ function harness(options = {}) {
     sessionPersistence: persistence,
     fileUploads: extra.fileUploads,
     waterfall: async (_name, _payload, base) => (options.activity ? options.activity : base()),
-    parallel: async (_name, payload) => {
+    parallel: async (name, payload) => {
       calls.stopped.push(payload.sessionId)
+      await options.parallel?.(name, payload, { calls, registry })
     },
     emit: (name, payload) => {
       calls.emitted.push([name, payload])
@@ -326,6 +327,62 @@ test('stored session: moves the log into the trash, then releases accounting and
   assert.equal(cache.has(SESSION_ID), false)
   assert.deepEqual(h.calls.emitted, [['api-session/removed', SESSION_ID]])
   assert.deepEqual(h.calls.stopped, [SESSION_ID])
+})
+
+test('Trash captures the latest workspace accounting after stop hooks settle', async () => {
+  const store = await makeStore()
+  const registryOptions = {
+    pinned: true,
+    archived: false,
+    sessionIds: [SESSION_ID, 'session-before', 'session-after'],
+  }
+  const registry = accountingRegistry(store, registryOptions)
+  const h = harness({
+    ...storedTarget(store),
+    registry,
+    parallel: async (name, payload) => {
+      assert.equal(name, 'workspace/session-stop')
+      assert.equal(payload.sessionId, SESSION_ID)
+      // Model a pin/archive/order update that commits while the stop hook is
+      // awaited. The Trash manifest must capture the state at the move, not
+      // the stale snapshot taken before these asynchronous Host callbacks.
+      registryOptions.pinned = false
+      registryOptions.archived = true
+      registry.workspace.record.sessionIds = [
+        'session-before',
+        SESSION_ID,
+        'session-after',
+      ]
+    },
+  })
+
+  const deleted = await h.service.delete(SESSION_ID)
+  const entryPath = trashEntry(store, deleted.trashId)
+  const manifest = JSON.parse(await readFile(join(entryPath, 'meta.json'), 'utf8'))
+
+  assert.deepEqual(manifest.accounting, {
+    member: true,
+    pinned: false,
+    archived: true,
+    workspaceId: 'ws-1',
+    beforeSessionId: 'session-after',
+  })
+
+  const restored = await h.service.restore(SESSION_ID)
+  assert.equal(restored.restored, true)
+  assert.ok(
+    registry.calls.some((call) => call[0] === 'insert' && call[1] === SESSION_ID && call[2] === 'session-after'),
+    'Restore must use the updated display-order anchor',
+  )
+  assert.ok(
+    registry.calls.some((call) => call[0] === 'archive' && call[1] === SESSION_ID),
+    'Restore must replay the latest committed archive state',
+  )
+  assert.equal(
+    registry.calls.some((call) => call[0] === 'pin' && call[1] === SESSION_ID),
+    false,
+    'an archive committed while stopping must not be restored as a stale pin',
+  )
 })
 
 test('permanent mode: removes the artifact outright', async () => {
@@ -1133,13 +1190,14 @@ test('restore recovery compares large artifact files in bounded chunks', async (
 test('the trash entry holds the artifact and a manifest of the identifying fields', async () => {
   const store = await makeStore()
   const h = harness({ ...storedTarget(store) })
+  const canonicalDir = await realpath(store.dir)
 
   const outcome = await h.service.delete(SESSION_ID)
 
   const entry = trashEntry(store, outcome.trashId)
   const manifest = JSON.parse(await readFile(join(entry, 'meta.json'), 'utf8'))
   assert.equal(manifest.sessionId, SESSION_ID)
-  assert.equal(manifest.originalPath, store.dir)
+  assert.equal(manifest.originalPath, canonicalDir)
   assert.equal(typeof manifest.deletedAt, 'string')
   assert.equal(manifest.mode, 'trash')
   assert.deepEqual(manifest.header, { id: SESSION_ID, cwd: store.dir })
@@ -1182,6 +1240,161 @@ test('trash refresh completes a promoted cross-device copy after a simulated cra
   await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
   assert.equal(await readFile(join(artifactPath, 'session.4.jsonl'), 'utf8'), original)
   await assert.rejects(stat(join(entryPath, '.copying')), (error) => error.code === 'ENOENT')
+})
+
+
+test('trash recovery preserves a same-content replacement source with a different inode', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const entryPath = join(store.trashRoot, 'interrupted-replaced-source')
+  const artifactPath = join(entryPath, 'artifact')
+  await mkdir(artifactPath, { recursive: true })
+  const original = await readFile(store.log, 'utf8')
+  await writeFile(join(artifactPath, 'session.4.jsonl'), original)
+  const sourceStat = await stat(store.dir)
+  const manifest = {
+    sessionId: SESSION_ID,
+    originalPath: store.dir,
+    deletedAt: new Date().toISOString(),
+    header: { id: SESSION_ID, cwd: store.dir },
+    children: [],
+    childrenCount: 0,
+    mode: 'trash',
+  }
+  await writeFile(join(entryPath, 'meta.json'), JSON.stringify(manifest))
+  await writeFile(join(entryPath, '.copying'), JSON.stringify({
+    dev: sourceStat.dev,
+    ino: sourceStat.ino,
+    isDirectory: sourceStat.isDirectory(),
+    size: sourceStat.size,
+    mtimeMs: sourceStat.mtimeMs,
+  }))
+
+  const displacedOriginal = join(store.base, 'displaced-original-session')
+  await rename(store.dir, displacedOriginal)
+  await mkdir(store.dir, { recursive: true })
+  await writeFile(join(store.dir, 'session.4.jsonl'), original)
+  assert.notEqual(
+    (await stat(store.dir)).ino,
+    sourceStat.ino,
+    'the replacement directory must have a different filesystem identity',
+  )
+
+  const h = harness({ ...storedTarget(store) })
+  const recovered = await h.service.recoverTrashMove(entryPath, manifest)
+
+  assert.equal(recovered, false, 'recovery must not delete a replacement based only on equal file contents')
+  assert.equal(await readFile(store.log, 'utf8'), original, 'the replacement session must remain intact')
+  assert.equal(await readFile(join(displacedOriginal, 'session.4.jsonl'), 'utf8'), original)
+  assert.equal(await readFile(join(artifactPath, 'session.4.jsonl'), 'utf8'), original)
+  assert.ok((await stat(join(entryPath, '.copying'))).isFile(), 'the ambiguous transaction marker must be preserved')
+})
+
+test('trash recovery keeps its source anchored when a project alias is replaced after comparison', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const alias = join(store.root, 'project-alias')
+  try {
+    await symlink(store.project, alias, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch {
+    t.skip('the runner does not permit creating directory symlinks')
+    return
+  }
+
+  const outsideProject = join(store.base, 'outside-project')
+  const outsideSession = join(outsideProject, SESSION_ID)
+  await mkdir(outsideSession, { recursive: true })
+  await writeFile(join(outsideSession, 'session.4.jsonl'), 'outside sentinel\\n')
+
+  const entryPath = join(store.trashRoot, 'interrupted-alias-source')
+  const artifactPath = join(entryPath, 'artifact')
+  await mkdir(artifactPath, { recursive: true })
+  const original = await readFile(store.log, 'utf8')
+  await writeFile(join(artifactPath, 'session.4.jsonl'), original)
+  const sourceStat = await stat(join(alias, SESSION_ID))
+  const manifest = {
+    sessionId: SESSION_ID,
+    originalPath: join(alias, SESSION_ID),
+    deletedAt: new Date().toISOString(),
+    header: { id: SESSION_ID, cwd: store.dir },
+    children: [],
+    childrenCount: 0,
+    mode: 'trash',
+  }
+  await writeFile(join(entryPath, 'meta.json'), JSON.stringify(manifest))
+  await writeFile(join(entryPath, '.copying'), JSON.stringify({
+    dev: sourceStat.dev,
+    ino: sourceStat.ino,
+    isDirectory: sourceStat.isDirectory(),
+    size: sourceStat.size,
+    mtimeMs: sourceStat.mtimeMs,
+  }))
+
+  const h = harness({ ...storedTarget(store) })
+  const originalArtifactsMatch = h.service.artifactsMatch.bind(h.service)
+  let aliasReplaced = false
+  h.service.artifactsMatch = async (left, right) => {
+    const matches = await originalArtifactsMatch(left, right)
+    if (!aliasReplaced) {
+      aliasReplaced = true
+      await rm(alias)
+      await symlink(outsideProject, alias, process.platform === 'win32' ? 'junction' : 'dir')
+    }
+    return matches
+  }
+
+  const recovered = await h.service.recoverTrashMove(entryPath, manifest)
+
+  assert.equal(recovered, true)
+  assert.equal(aliasReplaced, true, 'the fixture must replace the alias after artifact comparison')
+  assert.equal(
+    await readFile(join(outsideSession, 'session.4.jsonl'), 'utf8'),
+    'outside sentinel\\n',
+    'recovery must not follow the replaced alias when removing its source',
+  )
+  await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
+  assert.equal(await readFile(join(artifactPath, 'session.4.jsonl'), 'utf8'), original)
+})
+
+test('trash recovery preserves a replacement tombstone whose inode differs from the recorded source', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const entryPath = join(store.trashRoot, 'interrupted-replaced-tombstone')
+  const artifactPath = join(entryPath, 'artifact')
+  await mkdir(artifactPath, { recursive: true })
+  const original = await readFile(store.log, 'utf8')
+  await writeFile(join(artifactPath, 'session.4.jsonl'), original)
+  const sourceStat = await stat(store.dir)
+  const tombstone = join(store.project, `.session-delete-${entryPath.split(/[\\\\/]/).pop()}.moving`)
+  const manifest = {
+    sessionId: SESSION_ID,
+    originalPath: store.dir,
+    deletedAt: new Date().toISOString(),
+    header: { id: SESSION_ID, cwd: store.dir },
+    children: [],
+    childrenCount: 0,
+    mode: 'trash',
+  }
+  await writeFile(join(entryPath, 'meta.json'), JSON.stringify(manifest))
+  await writeFile(join(entryPath, '.copying'), JSON.stringify({
+    dev: sourceStat.dev,
+    ino: sourceStat.ino,
+    isDirectory: sourceStat.isDirectory(),
+    size: sourceStat.size,
+    mtimeMs: sourceStat.mtimeMs,
+  }))
+
+  await rename(store.dir, join(store.base, 'original-tombstone-source'))
+  await mkdir(tombstone, { recursive: true })
+  await writeFile(join(tombstone, 'session.4.jsonl'), original)
+
+  const h = harness({ ...storedTarget(store) })
+  const recovered = await h.service.recoverTrashMove(entryPath, manifest)
+
+  assert.equal(recovered, false)
+  assert.equal(await readFile(join(tombstone, 'session.4.jsonl'), 'utf8'), original)
+  assert.equal(await readFile(join(artifactPath, 'session.4.jsonl'), 'utf8'), original)
+  assert.ok((await stat(join(entryPath, '.copying'))).isFile())
 })
 
 test('trash refresh discards an unpromoted partial copy and preserves its source', async () => {
@@ -1452,10 +1665,11 @@ test('restoring onto an occupied path fails with conflict', async () => {
   await h.service.delete(SESSION_ID)
   await mkdir(store.dir, { recursive: true })
   await writeFile(join(store.dir, 'session.4.jsonl'), '{"seq":9}\n')
+  const canonicalDir = await realpath(store.dir)
 
   await assert.rejects(h.service.restore(SESSION_ID), (error) => {
     assert.equal(error.code, 'session-delete/conflict')
-    assert.equal(error.details.path, store.dir)
+    assert.equal(error.details.path, canonicalDir)
     return true
   })
   assert.equal((await stat(join(store.dir, 'session.4.jsonl'))).isFile(), true)
@@ -1578,6 +1792,7 @@ test('the trash listing reports every entry, newest first', async () => {
   const store = await makeStore()
   const second = await addSecondSession(store)
   const h = harness({ ...twoSessionTarget(store) })
+  const canonicalSecondDir = await realpath(join(store.project, second.id))
 
   const first = await h.service.delete(SESSION_ID)
   const other = await h.service.delete(second.id)
@@ -1587,7 +1802,7 @@ test('the trash listing reports every entry, newest first', async () => {
   assert.equal(listed.entries[0].trashId, other.trashId)
   assert.equal(listed.entries[1].trashId, first.trashId)
   assert.equal(listed.entries[0].sessionId, second.id)
-  assert.equal(listed.entries[0].originalPath, join(store.project, second.id))
+  assert.equal(listed.entries[0].originalPath, canonicalSecondDir)
   assert.equal(typeof listed.entries[0].deletedAt, 'string')
 })
 
@@ -1670,6 +1885,55 @@ test('the audit trail refuses a symbolic-link file without modifying its target'
 
   assert.equal(await readFile(target, 'utf8'), 'preserve this file\n')
   assert.equal(await readlink(file), target)
+  assert.ok(h.calls.warnings.some((message) => message.includes('writing the audit trail failed')))
+})
+
+test('deletion refuses a symbolic-link Trash root before moving the artifact', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const outside = join(store.base, 'outside-trash-root')
+  await mkdir(outside)
+  try {
+    await symlink(outside, store.trashRoot, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP', 'EOPNOTSUPP'].includes(error?.code)) {
+      t.skip('the current platform does not permit directory symbolic links')
+      return
+    }
+    throw error
+  }
+
+  const h = harness({ ...storedTarget(store), config: { trashRoot: store.trashRoot } })
+  const original = await readFile(store.log, 'utf8')
+  await assert.rejects(
+    h.service.delete(SESSION_ID),
+    (error) => error.code === 'session-delete/trash-unavailable',
+  )
+
+  assert.deepEqual(await readdir(outside), [], 'the linked Trash target must remain untouched')
+  assert.equal(await readFile(store.log, 'utf8'), original, 'the source artifact must remain in the store')
+  assert.equal(await readlink(store.trashRoot), outside)
+})
+
+test('the audit trail does not create the target of a symbolic-link Trash root', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const outside = join(store.base, 'missing-outside-trash', 'nested')
+  try {
+    await symlink(outside, store.trashRoot, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP', 'EOPNOTSUPP'].includes(error?.code)) {
+      t.skip('the current platform does not permit directory symbolic links')
+      return
+    }
+    throw error
+  }
+
+  const h = harness({ ...storedTarget(store), config: { trashRoot: store.trashRoot } })
+  await h.service.audit('delete', SESSION_ID, true, { mode: 'trash' })
+
+  await assert.rejects(stat(outside), (error) => error?.code === 'ENOENT')
+  assert.equal(await readlink(store.trashRoot), outside)
   assert.ok(h.calls.warnings.some((message) => message.includes('writing the audit trail failed')))
 })
 
@@ -2568,6 +2832,28 @@ test('filesystem session locks serialize two independent Node processes', async 
   assert.deepEqual(events, ['start', 'end', 'start', 'end'])
 })
 
+test('lock release preserves a directory after its owner token is replaced', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const h = harness({ ...storedTarget(store) })
+  const lockPath = await h.service.processLockPath(SESSION_ID)
+  const release = await h.service.acquireProcessLock(SESSION_ID)
+  const ownerPath = join(lockPath, '.owner.json')
+  const replacement = {
+    pid: process.pid,
+    host: hostname(),
+    token: 'replacement-owner-token',
+    createdAt: Date.now(),
+  }
+
+  await writeFile(ownerPath, JSON.stringify(replacement) + '\n')
+  await release()
+
+  const current = await h.service.readProcessLockOwner(lockPath)
+  assert.equal(current?.token, replacement.token)
+  assert.equal((await stat(lockPath)).isDirectory(), true)
+})
+
 test('a dead same-host lock owner is reclaimed after process exit', async () => {
   const store = await makeStore()
   const marker = join(store.base, 'stale-lock-events.txt')
@@ -2625,4 +2911,124 @@ test('a dead same-host lock owner is reclaimed after process exit', async () => 
     await appendFile(marker, 'reclaimed\n')
   })
   assert.deepEqual((await readFile(marker, 'utf8')).trim().split('\n'), ['held', 'reclaimed'])
+})
+
+
+test('independent plugin instances serialize delete and restore for the same session', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const deleting = harness({ ...storedTarget(store) })
+  const restoring = harness({ ...storedTarget(store) })
+
+  const originalMove = deleting.service.moveArtifact.bind(deleting.service)
+  let announceMove
+  const moveStarted = new Promise((resolve) => { announceMove = resolve })
+  let releaseMove
+  const moveGate = new Promise((resolve) => { releaseMove = resolve })
+  deleting.service.moveArtifact = async (...args) => {
+    announceMove()
+    await moveGate
+    return originalMove(...args)
+  }
+
+  const originalAcquire = restoring.service.acquireProcessLock.bind(restoring.service)
+  let announceLockAttempt
+  const lockAttempt = new Promise((resolve) => { announceLockAttempt = resolve })
+  restoring.service.acquireProcessLock = async (...args) => {
+    announceLockAttempt()
+    return originalAcquire(...args)
+  }
+
+  const deletePromise = deleting.service.delete(SESSION_ID)
+  await moveStarted
+  const restorePromise = restoring.service.restore(SESSION_ID)
+  // Do not release delete until the other service has actually attempted
+  // to acquire the shared filesystem lock.
+  await lockAttempt
+  releaseMove()
+
+  const [deleted, restored] = await Promise.all([deletePromise, restorePromise])
+  assert.equal(deleted.trashed, true)
+  assert.equal(restored.restored, true)
+  assert.equal((await stat(store.dir)).isDirectory(), true)
+  await assert.rejects(stat(trashEntry(store, deleted.trashId)), (error) => error.code === 'ENOENT')
+  assert.deepEqual((await restoring.service.listTrash()).entries, [])
+})
+
+
+test('independent plugin instances serialize restore and purge for the same session', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const initial = harness({ ...storedTarget(store) })
+  const restoring = harness({ ...storedTarget(store) })
+  const purging = harness({ ...storedTarget(store) })
+  await initial.service.delete(SESSION_ID)
+
+  const originalMove = restoring.service.moveArtifact.bind(restoring.service)
+  let announceMove
+  const moveStarted = new Promise((resolve) => { announceMove = resolve })
+  let releaseMove
+  const moveGate = new Promise((resolve) => { releaseMove = resolve })
+  restoring.service.moveArtifact = async (...args) => {
+    announceMove()
+    await moveGate
+    return originalMove(...args)
+  }
+
+  const restorePromise = restoring.service.restore(SESSION_ID)
+  await moveStarted
+
+  const originalAcquire = purging.service.acquireProcessLock.bind(purging.service)
+  let announceLockAttempt
+  const lockAttempt = new Promise((resolve) => { announceLockAttempt = resolve })
+  purging.service.acquireProcessLock = async (...args) => {
+    announceLockAttempt()
+    return originalAcquire(...args)
+  }
+  const purgePromise = purging.service.purge(SESSION_ID).then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  )
+  await lockAttempt
+  releaseMove()
+
+  const restored = await restorePromise
+  const purge = await purgePromise
+  assert.equal(restored.restored, true)
+  assert.equal(purge.error?.code, 'session-delete/not-found')
+  assert.equal((await stat(store.dir)).isDirectory(), true)
+  assert.deepEqual((await purging.service.listTrash()).entries, [])
+});
+
+test('artifact operations stay on the canonical parent when a project symlink is replaced', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+
+  const alias = join(store.root, 'project-alias')
+  await symlink(store.project, alias, 'dir')
+  const outsideProject = join(store.base, 'outside-project')
+  const outsideSession = join(outsideProject, SESSION_ID)
+  await mkdir(outsideSession, { recursive: true })
+  await writeFile(join(outsideSession, 'session.4.jsonl'), 'outside sentinel\\n')
+
+  const h = harness({
+    root: store.root,
+    locate: () => ({ kind: 'jsonl', path: join(alias, SESSION_ID, 'session.4.jsonl') }),
+  })
+  const artifact = await h.service.resolveArtifact({ id: SESSION_ID }, SESSION_ID)
+
+  assert.equal(artifact.target, await realpath(store.dir), 'the operation path must use the canonical project parent')
+
+  // Simulate an attacker replacing the original project alias after the
+  // safety check but before the destructive operation.
+  await rm(alias)
+  await symlink(outsideProject, alias, 'dir')
+  await h.service.removeArtifact(artifact.target)
+
+  assert.equal(
+    await readFile(join(outsideSession, 'session.4.jsonl'), 'utf8'),
+    'outside sentinel\\n',
+    'replacing the locator alias must not redirect removal outside the store',
+  )
+  await assert.rejects(stat(store.dir), (error) => error?.code === 'ENOENT')
 })

@@ -330,6 +330,25 @@ async function compareArtifactTrees(left, right, budget, depth = 0) {
 }
 
 
+/** Match a recovery source or tombstone to the inode recorded before the copy. */
+function matchesTrashMoveSnapshot(identity, current) {
+  return (
+    identity !== null &&
+    typeof identity === 'object' &&
+    !Array.isArray(identity) &&
+    Number.isFinite(identity.dev) &&
+    Number.isFinite(identity.ino) &&
+    typeof identity.isDirectory === 'boolean' &&
+    Number.isFinite(identity.size) &&
+    Number.isFinite(identity.mtimeMs) &&
+    identity.dev === current.dev &&
+    identity.ino === current.ino &&
+    identity.isDirectory === current.isDirectory() &&
+    identity.size === current.size &&
+    identity.mtimeMs === current.mtimeMs
+  )
+}
+
 /** Verify that a Trash entry is a real direct child of its configured root. */
 async function assertSafeTrashEntryDirectory(root, entry) {
   const [rootStat, entryStat] = await Promise.all([lstat(root), lstat(entry)])
@@ -342,6 +361,41 @@ async function assertSafeTrashEntryDirectory(root, entry) {
   if (!child || child === '..' || child.startsWith('..' + sep) || isAbsolute(child) || child.includes(sep)) {
     throw new Error('Refusing a trash entry outside its configured trash root.')
   }
+}
+
+/**
+ * Create or validate the Trash root without following a final symlink.
+ * Resolve its parent first so later operations do not traverse a replaceable
+ * alias in the configured path.
+ */
+async function prepareSafeTrashRoot(root) {
+  const absolute = resolve(root)
+  const name = basename(absolute)
+  if (!name) throw new Error('Refusing to use a filesystem root as the Trash directory.')
+  const requestedParent = dirname(absolute)
+  await mkdir(requestedParent, { recursive: true })
+  const canonicalParent = await realpath(requestedParent)
+  const canonicalRoot = join(canonicalParent, name)
+  try {
+    // A non-recursive mkdir treats an existing symlink as a collision rather
+    // than succeeding by traversing it.
+    await mkdir(canonicalRoot)
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error
+  }
+  const rootStat = await lstat(canonicalRoot)
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error('Refusing to use a non-directory or symbolic-link Trash root.')
+  }
+  const [verifiedParent, verifiedRoot] = await Promise.all([
+    realpath(canonicalParent),
+    realpath(canonicalRoot),
+  ])
+  const expectedRoot = join(verifiedParent, name)
+  if (!samePath(verifiedRoot, expectedRoot)) {
+    throw new Error('The Trash root changed while it was being verified.')
+  }
+  return expectedRoot
 }
 
 /** Atomically replace one bounded metadata file without following its path. */
@@ -1129,12 +1183,6 @@ class SessionDeleteService {
       // 3. Children survive their parent: name them so the browser can say so.
       const { ids: children, count: childrenCount } = await this.listChildren(sessionId)
 
-      // 3b. Capture the workspace accounting this deletion is about to release.
-      //     The trash manifest is the only place the restore can learn from, so
-      //     the membership, its display anchor, the pin and the archive mark are
-      //     read here, before step 6 clears them.
-      const accounting = this.mode === 'trash' ? this.captureAccounting(sessionId) : undefined
-
       // 4. Stop what is left, then let a live session leave the stores so its
       //    writer closes. The writer itself removes its handle on
       //    `session/disposed`; the removal below retries through that delay.
@@ -1161,7 +1209,6 @@ class SessionDeleteService {
         sessionId,
         children,
         childrenCount,
-        accounting,
         hostWriteHandle,
       )
       // The artifact has left its original path. Release the Host lease now;
@@ -1605,9 +1652,14 @@ class SessionDeleteService {
     // Resolve existing components before any destructive operation.
     let canonicalRoot
     let canonicalTarget
+    let canonicalParent
     try {
       canonicalRoot = await realpath(root)
       canonicalTarget = await resolveThroughExistingAncestors(target)
+      // Resolve the parent separately so the final component remains a
+      // symlink (if it is one) and can be unlinked as a link. Operations must
+      // not later traverse a replaceable alias in an ancestor directory.
+      canonicalParent = await resolveThroughExistingAncestors(dirname(target))
     } catch (error) {
       throw new SessionDeleteError(
         'session-delete/unsafe-path',
@@ -1615,7 +1667,10 @@ class SessionDeleteService {
         { sessionId, kind, path: target, root, reason: 'unverifiable-path', causeCode: error?.code },
       )
     }
-    if (!isInside(canonicalRoot, canonicalTarget)) {
+    if (
+      !isInside(canonicalRoot, canonicalTarget) ||
+      (!samePath(canonicalRoot, canonicalParent) && !isInside(canonicalRoot, canonicalParent))
+    ) {
       throw new SessionDeleteError(
         'session-delete/unsafe-path',
         `sessionDelete: the artifact of "${sessionId}" resolves outside the session store; nothing was removed`,
@@ -1636,10 +1691,11 @@ class SessionDeleteService {
         { sessionId, kind, path: canonicalTarget, root: canonicalRoot, reason: 'unexpected-layout' },
       )
     }
-    // Keep the normalized locator path for the filesystem operation. In
-    // particular, rm() removes a final symlink itself instead of following
-    // it; the canonical path above is only the security-check target.
-    return { target, root: canonicalRoot, kind }
+    // Use the canonical parent for filesystem operations while preserving
+    // the final path component. rename()/rm() then operate on a final symlink
+    // itself rather than following it, and cannot be redirected by swapping
+    // the locator's intermediate symlink aliases after this check.
+    return { target: join(canonicalParent, basename(target)), root: canonicalRoot, kind }
   }
 
   /**
@@ -1695,7 +1751,7 @@ class SessionDeleteService {
    * @param accounting - the workspace accounting captured before the release.
    * @returns what happened to the artifact.
    */
-  async removeStoredLog(header, sessionId, children = [], childrenCount = children.length, accounting, hostWriteHandle) {
+  async removeStoredLog(header, sessionId, children = [], childrenCount = children.length, hostWriteHandle) {
     const artifact = await this.resolveArtifact(header, sessionId)
     if (artifact === undefined) {
       return { removed: false, trashed: false, purged: false }
@@ -1717,7 +1773,7 @@ class SessionDeleteService {
       )
     }
     if (this.mode === 'trash') {
-      const entry = await this.moveToTrash(artifact, sessionId, header, children, childrenCount, accounting)
+      const entry = await this.moveToTrash(artifact, sessionId, header, children, childrenCount)
       return { removed: true, trashed: true, trashId: entry.trashId, purged: false }
     }
     if (hostWriteHandle !== undefined && process.platform !== 'win32') {
@@ -1828,7 +1884,7 @@ class SessionDeleteService {
    * @param accounting - the captured workspace accounting, when there is any.
    * @returns the trash entry that now holds the artifact.
    */
-  async moveToTrash(artifact, sessionId, header, children, childrenCount, accounting) {
+  async moveToTrash(artifact, sessionId, header, children, childrenCount) {
     const root = this.trashRoot()
     if (root === undefined) {
       throw new SessionDeleteError(
@@ -1837,12 +1893,13 @@ class SessionDeleteService {
         { sessionId, reason: 'no-trash-root' },
       )
     }
+    let safeRoot
     try {
-      await mkdir(root, { recursive: true })
+      safeRoot = await prepareSafeTrashRoot(root)
     } catch (error) {
       throw new SessionDeleteError(
         'session-delete/trash-unavailable',
-        `sessionDelete: the trash directory "${root}" could not be created; nothing was removed`,
+        `sessionDelete: the trash directory "${root}" could not be created or verified; nothing was removed`,
         { sessionId, path: root, reason: error instanceof Error ? error.message : String(error) },
       )
     }
@@ -1855,8 +1912,12 @@ class SessionDeleteService {
       await this.discardTrashEntry(pending.path)
     }
     const stamp = this.nextStamp()
-    const entry = await this.createTrashEntry(root, sessionId, stamp)
+    const entry = await this.createTrashEntry(safeRoot, sessionId, stamp)
     const { trashId, path: entryPath } = entry
+    // Capture after stop/detach and Host write-lease acquisition, as close to
+    // the durable artifact move as possible. Capturing before those awaits can
+    // miss a pin/archive/order change that the Host committed while stopping.
+    const accounting = this.mode === 'trash' ? this.captureAccounting(sessionId) : undefined
     const manifest = {
       sessionId,
       originalPath: artifact.target,
@@ -1881,7 +1942,7 @@ class SessionDeleteService {
     }
     const markerPath = join(entryPath, COPYING_MARKER_FILE_NAME)
     try {
-      const sourceStat = await stat(artifact.target)
+      const sourceStat = await lstat(artifact.target)
       await writeFile(
         markerPath,
         JSON.stringify({
@@ -2268,7 +2329,7 @@ class SessionDeleteService {
         { sessionId },
       )
     }
-    const target = entry.originalPath
+    let target = entry.originalPath
     const root = this.storeRoot()
     if (typeof target !== 'string' || target.length === 0) {
       throw new SessionDeleteError(
@@ -2284,25 +2345,18 @@ class SessionDeleteService {
         { sessionId, reason: 'no-store-root' },
       )
     }
-    if (!isInside(root, target)) {
-      throw new SessionDeleteError(
-        'session-delete/unsafe-path',
-        `sessionDelete: the trash entry of session "${sessionId}" names a path outside the session store; nothing was restored`,
-        { sessionId, path: target, root, reason: 'outside-store' },
-      )
-    }
-    if (root !== undefined && samePath(dirname(target), root)) {
-      throw new SessionDeleteError(
-        'session-delete/unsafe-path',
-        `sessionDelete: the trash entry of session "${sessionId}" names a path that is not a session directory; nothing was restored`,
-        { sessionId, path: target, root, reason: 'unexpected-layout' },
-      )
-    }
+    // Do not compare the manifest path lexically with the configured root:
+    // either side may use a filesystem alias (for example /var vs /private/var
+    // or a Windows 8.3 path). The canonical checks below are authoritative.
     if (root !== undefined) {
       try {
         const canonicalRoot = await realpath(root)
         const canonicalTarget = await resolveThroughExistingAncestors(target)
-        if (!isInside(canonicalRoot, canonicalTarget)) {
+        const canonicalParent = await resolveThroughExistingAncestors(dirname(target))
+        if (
+          !isInside(canonicalRoot, canonicalTarget) ||
+          !isInside(canonicalRoot, canonicalParent)
+        ) {
           throw new SessionDeleteError(
             'session-delete/unsafe-path',
             `sessionDelete: the original location of session "${sessionId}" resolves outside the session store; nothing was restored`,
@@ -2316,6 +2370,9 @@ class SessionDeleteService {
             { sessionId, path: canonicalTarget, root: canonicalRoot, reason: 'unexpected-layout' },
           )
         }
+        // The manifest may contain an old locator alias. Restore through the
+        // canonical parent and preserve the final component as a link.
+        target = join(canonicalParent, basename(target))
       } catch (error) {
         if (error instanceof SessionDeleteError) throw error
         throw new SessionDeleteError(
@@ -2342,10 +2399,21 @@ class SessionDeleteService {
           { sessionId, path: restoreMarker, reason: 'invalid-restore-marker' },
         )
       }
+      let recordTarget
+      if (typeof record?.target === 'string') {
+        try {
+          recordTarget = join(
+            await resolveThroughExistingAncestors(dirname(record.target)),
+            basename(record.target),
+          )
+        } catch {
+          recordTarget = undefined
+        }
+      }
       if (
         record?.sessionId !== sessionId ||
         typeof record.target !== 'string' ||
-        !samePath(resolve(record.target), resolve(target))
+        !samePath(recordTarget, target)
       ) {
         throw new SessionDeleteError(
           'session-delete/conflict',
@@ -2595,12 +2663,49 @@ class SessionDeleteService {
       return false
     }
 
-    const source = manifest.originalPath
+    const sourcePath = manifest.originalPath
     const artifact = join(path, ARTIFACT_DIR_NAME)
     const staging = `${artifact}${COPY_STAGE_SUFFIX}`
-    const sourceExists = typeof source === 'string' && (await this.pathExists(source))
     const artifactExists = await this.pathExists(artifact)
+    if (typeof sourcePath !== 'string' || sourcePath.length === 0) {
+      this.ctx.logger?.warn(`sessionDelete: the interrupted move in "${path}" has no verifiable source path; both copies were preserved`)
+      return false
+    }
 
+    const root = this.storeRoot()
+    if (root === undefined) {
+      this.ctx.logger?.warn(`sessionDelete: cannot recover "${path}" without a verifiable session-store root`)
+      return false
+    }
+
+    // Resolve the source's parent, not the final component. This keeps a
+    // replaced project-directory symlink from redirecting the later rename,
+    // while preserving a final-component symlink as the artifact itself.
+    let source
+    let sourceStat
+    try {
+      const canonicalRoot = await realpath(root)
+      const canonicalParent = await resolveThroughExistingAncestors(dirname(sourcePath))
+      const name = basename(sourcePath)
+      if (
+        !name ||
+        !isInside(canonicalRoot, canonicalParent) ||
+        samePath(canonicalParent, canonicalRoot)
+      ) {
+        this.ctx.logger?.warn(`sessionDelete: the source of interrupted move "${path}" is outside its session store; both copies were preserved`)
+        return false
+      }
+      source = join(canonicalParent, name)
+      sourceStat = await lstat(source).catch((error) => {
+        if (error?.code === 'ENOENT') return undefined
+        throw error
+      })
+    } catch (error) {
+      this.ctx.logger?.warn(`sessionDelete: cannot verify the source of interrupted move "${path}": ${String(error)}`)
+      return false
+    }
+
+    const sourceExists = sourceStat !== undefined
     if (!artifactExists) {
       if (sourceExists) {
         // The copy was never atomically promoted. The source is untouched and
@@ -2612,43 +2717,35 @@ class SessionDeleteService {
       return false
     }
 
-    if (sourceExists) {
-      const root = this.storeRoot()
-      if (root === undefined) {
-        this.ctx.logger?.warn(`sessionDelete: cannot recover "${path}" without a verifiable session-store root`)
-        return false
-      }
-      let canonicalRoot
-      let canonicalSource
-      try {
-        canonicalRoot = await realpath(root)
-        canonicalSource = await resolveThroughExistingAncestors(source)
-      } catch (error) {
-        this.ctx.logger?.warn(`sessionDelete: cannot verify the source of interrupted move "${path}": ${String(error)}`)
-        return false
-      }
-      if (
-        !isInside(canonicalRoot, canonicalSource) ||
-        samePath(dirname(canonicalSource), canonicalRoot) ||
-        !(await this.artifactsMatch(source, artifact))
-      ) {
-        this.ctx.logger?.warn(
-          `sessionDelete: the source of interrupted move "${path}" changed; both copies were preserved for manual recovery`,
-        )
-        return false
-      }
+    if (
+      sourceExists &&
+      (!matchesTrashMoveSnapshot(identity, sourceStat) || !(await this.artifactsMatch(source, artifact)))
+    ) {
+      this.ctx.logger?.warn(
+        `sessionDelete: the source of interrupted move "${path}" changed; both copies were preserved for manual recovery`,
+      )
+      return false
     }
 
     // Once the complete copy is visible, move the original to a deterministic
     // tombstone on its own volume before recursively removing it. A crash
     // during rm then cannot leave a partial directory at the live session path.
-    if (typeof source !== 'string' || source.length === 0) return false
     const tombstone = join(dirname(source), `.session-delete-${basename(path)}.moving`)
-    const tombstoneExists = await this.pathExists(tombstone)
-    if (sourceExists && tombstoneExists) {
+    let tombstoneStat = await lstat(tombstone).catch((error) => {
+      if (error?.code === 'ENOENT') return undefined
+      throw error
+    })
+    if (sourceExists && tombstoneStat !== undefined) {
       this.ctx.logger?.warn(`sessionDelete: both source and tombstone exist for interrupted move "${path}"`)
       return false
     }
+    if (!sourceExists && tombstoneStat !== undefined && !matchesTrashMoveSnapshot(identity, tombstoneStat)) {
+      this.ctx.logger?.warn(
+        `sessionDelete: the tombstone of interrupted move "${path}" no longer matches its recorded source; it was preserved`,
+      )
+      return false
+    }
+
     if (sourceExists) {
       try {
         await rename(source, tombstone)
@@ -2658,8 +2755,18 @@ class SessionDeleteService {
         // confirming the source is absent; other failures remain actionable.
         if (error?.code !== 'ENOENT' || (await this.pathExists(source))) throw error
       }
+      tombstoneStat = await lstat(tombstone).catch((error) => {
+        if (error?.code === 'ENOENT') return undefined
+        throw error
+      })
     }
-    if (await this.pathExists(tombstone)) {
+    if (tombstoneStat !== undefined) {
+      if (!matchesTrashMoveSnapshot(identity, tombstoneStat)) {
+        this.ctx.logger?.warn(
+          `sessionDelete: the tombstone of interrupted move "${path}" changed before removal; it was preserved`,
+        )
+        return false
+      }
       await this.removeWithRetries(tombstone, manifest.sessionId)
     }
 
@@ -3010,7 +3117,6 @@ class SessionDeleteService {
       ...(typeof extra.mode === 'string' ? { mode: extra.mode } : {}),
       ...(extra.partial === true ? { partial: true } : {}),
     }
-    const file = join(root, AUDIT_FILE_NAME)
     const line = JSON.stringify(record) + '\n'
     const recordBytes = Buffer.byteLength(line, 'utf8')
     try {
@@ -3018,8 +3124,9 @@ class SessionDeleteService {
         if (recordBytes > AUDIT_MAX_RECORD_BYTES) {
           throw new Error('Refusing an audit record larger than 8 KiB.')
         }
-        await mkdir(root, { recursive: true })
-        await assertSafeAuditPath(root, file)
+        const safeRoot = await prepareSafeTrashRoot(root)
+        const file = join(safeRoot, AUDIT_FILE_NAME)
+        await assertSafeAuditPath(safeRoot, file)
         const flags = fsConstants.O_WRONLY | fsConstants.O_APPEND |
           fsConstants.O_CREAT | AUDIT_NOFOLLOW
         const handle = await open(file, flags, 0o600)
