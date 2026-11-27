@@ -33,6 +33,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Serialize Trash-manager Restore and Purge synchronously, preventing rapid duplicate clicks from dispatching multiple Host mutations or closing the manager before the request settles.
 - Reject incomplete or malformed Host outcomes in the Trash manager; Restore and Purge are only announced as successful when the Host explicitly confirms the corresponding mutation.
 - Keep forward as well as reverse keyboard navigation inside the fallback modal when focus is unexpectedly moved outside the dialog, and restore focus to the sidebar trigger when the fallback Trash manager closes.
 - Report permanent deletion as unsupported when the Host has no existing verifiable Session Store directory, matching the runtime path-safety guard instead of showing an action that must fail.

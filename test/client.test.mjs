@@ -615,6 +615,39 @@ test('the Trash manager does not announce restore success for an invalid Host ou
   assert.match(managerText, /session-a/, 'the entry remains available for a safe retry')
 })
 
+test('the Trash manager dispatches Restore only once for rapid repeated clicks', async () => {
+  const { plugin, React } = await loadPlugin()
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  let attempts = 0
+  let resolveRestore
+  const pendingRestore = new Promise((resolve) => { resolveRestore = resolve })
+  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+    request: null,
+    trashManagerOpen: true,
+    listTrash: async () => ({
+      entries: [{ trashId: 'trash-a', sessionId: 'session-a', deletedAt: '2026-11-25T10:00:00.000Z' }],
+    }),
+    restoreSession: () => {
+      attempts += 1
+      return pendingRestore
+    },
+  })
+  await settle()
+
+  let restoreButton
+  walk(form.tree, (node) => {
+    if (restoreButton === undefined && node.type === 'Button' && text(node) === 'Restore') restoreButton = node
+  })
+  assert.ok(restoreButton)
+  restoreButton.props.onClick()
+  restoreButton.props.onClick()
+  await settle()
+
+  assert.equal(attempts, 1, 'the synchronous action lock prevents a second Host request')
+  resolveRestore({ sessionId: 'session-a', restored: true, reattached: true })
+  await settle()
+})
+
 test('the Trash manager restores an entry and reloads its listing', async () => {
   const { plugin, React } = await loadPlugin()
   const { registrations, dictionaries } = applyPlugin(plugin)
@@ -706,6 +739,56 @@ test('permanent purge in the Trash manager requires the exact session id', async
 
   assert.deepEqual(purged, ['session-to-purge'])
   assert.match(trashManagerText(form), /permanently deleted/i)
+})
+
+test('the Trash manager dispatches Purge only once for rapid repeated confirmations', async () => {
+  const { plugin, React } = await loadPlugin()
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  let attempts = 0
+  let resolvePurge
+  const pendingPurge = new Promise((resolve) => { resolvePurge = resolve })
+  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+    request: null,
+    trashManagerOpen: true,
+    listTrash: async () => ({
+      entries: [{ trashId: 'trash-a', sessionId: 'session-to-purge', deletedAt: '2026-11-25T10:00:00.000Z' }],
+    }),
+    purgeSession: () => {
+      attempts += 1
+      return pendingPurge
+    },
+  })
+  await settle()
+
+  let purgeButton
+  walk(form.tree, (node) => {
+    if (purgeButton === undefined && node.type === 'Button' && text(node) === 'Delete permanently') purgeButton = node
+  })
+  assert.ok(purgeButton)
+  purgeButton.props.onClick()
+  await settle()
+
+  let confirmButton
+  let input
+  walk(form.tree, (node) => {
+    if (node.type === 'Button' && text(node) === 'Permanently delete') confirmButton = node
+    if (node.type === 'input' && node.props.className === 'dshSessionDelete_trashConfirmInput') input = node
+  })
+  assert.ok(confirmButton)
+  assert.ok(input)
+  input.props.onChange({ target: { value: 'session-to-purge' } })
+  await settle()
+
+  walk(form.tree, (node) => {
+    if (node.type === 'Button' && text(node) === 'Permanently delete') confirmButton = node
+  })
+  confirmButton.props.onClick()
+  confirmButton.props.onClick()
+  await settle()
+
+  assert.equal(attempts, 1, 'the synchronous action lock prevents duplicate permanent deletion')
+  resolvePurge({ sessionId: 'session-to-purge', purged: true })
+  await settle()
 })
 
 test('the Trash manager does not announce purge success for an invalid Host outcome', async () => {

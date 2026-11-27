@@ -1681,6 +1681,9 @@ window.__ModuleLoader__.load({
       const [busySessionId, setBusySessionId] = React.useState(undefined)
       const [confirmSessionId, setConfirmSessionId] = React.useState(undefined)
       const [typedSessionId, setTypedSessionId] = React.useState('')
+      // State commits on a later render. Lock synchronously so two clicks in
+      // the same event turn cannot dispatch duplicate Restore/Purge mutations.
+      const actionInFlightRef = React.useRef(false)
 
       const refresh = () => {
         setLoading(true)
@@ -1714,11 +1717,13 @@ window.__ModuleLoader__.load({
       }, [])
 
       const close = () => {
-        if (busySessionId !== undefined) return
+        if (actionInFlightRef.current || busySessionId !== undefined) return
         restoreFocus(opener)
         settleTrashManager()
       }
       const runRestore = (entry) => {
+        if (actionInFlightRef.current) return
+        actionInFlightRef.current = true
         setBusySessionId(entry.sessionId)
         setActionError(undefined)
         setNotice(undefined)
@@ -1742,10 +1747,14 @@ window.__ModuleLoader__.load({
           .catch((failure) => {
             setActionError(describeActionFailure(t, failure, 'trash.actionFailed'))
           })
-          .finally(() => setBusySessionId(undefined))
+          .finally(() => {
+            actionInFlightRef.current = false
+            setBusySessionId(undefined)
+          })
       }
       const runPurge = (entry) => {
-        if (typedSessionId !== entry.sessionId) return
+        if (typedSessionId !== entry.sessionId || actionInFlightRef.current) return
+        actionInFlightRef.current = true
         setBusySessionId(entry.sessionId)
         setActionError(undefined)
         setNotice(undefined)
@@ -1764,7 +1773,10 @@ window.__ModuleLoader__.load({
           .catch((failure) => {
             setActionError(describeActionFailure(t, failure, 'trash.actionFailed'))
           })
-          .finally(() => setBusySessionId(undefined))
+          .finally(() => {
+            actionInFlightRef.current = false
+            setBusySessionId(undefined)
+          })
       }
 
       const normalizedQuery = query.trim().toLocaleLowerCase()
