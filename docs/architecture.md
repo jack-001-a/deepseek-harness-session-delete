@@ -135,8 +135,9 @@ A repeated restore finishes the accounting step instead of moving the files a
 second time.
 
 Permanent deletion can be selected in configuration or used as an escalation
-from a trashed item. In permanent mode the UI requires the conversation title
-to be typed before enabling the destructive action. POSIX JSONL deletion
+from a trashed item. In permanent mode the dialog presents an explicit final
+destructive-action click; the Trash manager separately requires the exact
+full session ID to be typed before purging an item. POSIX JSONL deletion
 preserves the empty session.lock inode while a Host write handle owns it;
 this is a persistence-provider invariant, not disposable plugin metadata.
 
@@ -211,10 +212,11 @@ conflicts. The browser maps these codes to both English and Chinese copy.
 Unknown errors use a fallback message rather than hiding the failure.
 
 The confirmation dialog has distinct checking, pending, error, completed,
-restore and purge states. The permanent mode requires typed confirmation. The
-Trash manager has separate loading, empty, filtered-empty, action-pending,
-partial-restore, and failure states; load failures are never presented as an
-empty Trash.
+restore and purge states. Permanent mode requires an explicit final
+destructive-action click. The Trash manager separately requires typing the
+exact full session ID before purge, and has loading, empty, filtered-empty,
+action-pending, partial-restore and failure states; load failures are never
+presented as an empty Trash.
 The fallback dialog must only dismiss on an actual backdrop click; clicks on
 its content must not bubble into a close action.
 

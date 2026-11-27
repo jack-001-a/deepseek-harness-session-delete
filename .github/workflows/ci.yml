@@ -9,9 +9,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Keep main-branch runs alive: the pinned Harness builds and two-process
+# integration jobs are intentionally expensive and should finish with evidence.
+# Pull-request runs may be superseded by newer commits to the same PR.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

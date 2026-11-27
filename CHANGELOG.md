@@ -10,23 +10,20 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 - Add an isolated Chromium visual-contract job that exercises the injected delete-dialog CSS against the Host Modal DOM structure and publishes desktop, dark-theme and mobile screenshots.
 
+### Changed
+
+- Preserve in-progress main-branch CI runs so expensive pinned Harness builds and two-process compatibility tests can finish; superseded pull-request runs remain cancellable.
+- Rebuild the delete confirmation around the reference card: native Modal skin, compact heading/description, checked file-retention status, and aligned pill actions.
+- Replace permanent-mode title typing with an explicit final confirmation click; keep attachment and workspace-file retention explicit and non-destructive.
+- Refine the plain-element delete confirmation into a responsive, theme-aware card with safe-area spacing, bounded scrolling and reduced-motion support.
+- Make delete, restore and purge actions single-flight at the UI boundary so rapid repeated clicks cannot dispatch duplicate Host mutations.
+
 ### Fixed
 
 - Keep the close control aligned to the first title line when long chat titles wrap on narrow screens.
 - Fail closed when Host deletion capabilities cannot be verified or the Session cannot be safely located; no destructive action is rendered or dispatched.
 - Link the Host Modal's portaled dialog root to its actual heading and description for screen-reader context.
 - Align the npm package description with the explicit permanent-delete confirmation now shipped.
-
-### Changed
-
-- Rebuild the delete confirmation around the reference card: native Modal skin, compact heading/description, checked file-retention status, and aligned pill actions.
-- Replace permanent-mode title typing with an explicit final confirmation click; keep attachment and workspace-file retention explicit and non-destructive.
-
-- Refine the plain-element delete confirmation into a responsive, theme-aware card with safe-area spacing, bounded scrolling and reduced-motion support.
-- Make delete, restore and purge actions single-flight at the UI boundary so rapid repeated clicks cannot dispatch duplicate Host mutations.
-
-### Fixed
-
 - Handle synchronous exceptions from Host adapters through the same localized, retryable error path as rejected promises.
 - Keep the confirmation open when a close or Escape action arrives before React has committed the in-flight state.
 - Render an explicit fallback for malformed Trash timestamps instead of exposing the raw manifest value.

@@ -12,15 +12,26 @@ regression test for every behavior change.
 - A local DeepSeek Harness checkout is only needed for the optional real
   persistence integration test; the normal unit suite uses test doubles.
 
-Run:
+Run the dependency-free checks:
 
     npm run check
     npm test
 
-The project uses ESM and node:test. Browser UI tests load the actual client.js
-registration and dialog code with a minimal React stand-in. Host-side tests
-exercise the real service against temporary directories and fake
-Cordis/persistence services.
+The project uses ESM and node:test. Node browser-component tests load the
+actual client.js registration and dialog code with a minimal React stand-in.
+Host-side tests exercise the real service against temporary directories and
+fake Cordis/persistence services.
+
+The optional Chromium visual contract reads the injected CSS from client.js
+and checks the Host Modal layout at desktop and mobile sizes, in light and dark
+themes. To run it locally:
+
+    npm install --no-save --package-lock=false playwright@1.65.1
+    npx playwright install chromium
+    npm run test:browser
+
+This is a CSS/DOM layout contract, not a full Harness Desktop/Web end-to-end
+test.
 
 ## Pull request checklist
 
@@ -35,6 +46,7 @@ Before opening a pull request:
       reference-aware capability; see docs/attachment-lifecycle.md.
 - [ ] Update CHANGELOG.md under Unreleased.
 - [ ] Run npm run check and npm test.
+- [ ] Run npm run test:browser when changing dialog CSS or responsive behavior.
 - [ ] Explain any unverified Harness versions or platform-specific behavior.
 
 ## Persistence and safety changes

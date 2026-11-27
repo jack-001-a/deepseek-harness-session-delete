@@ -36,9 +36,8 @@ The pinned Host baseline treats shared immutable objects as retention-neutral.
 Session Delete now recognizes an optional Host callback and invokes it only
 after the Session artifact has been irreversibly removed. That callback can release the
 Session's durable owner rows; it does not remove any image object, generic-file
-object, alias, or workspace file. The corresponding Harness implementation is
-still has no corresponding provider-ledger/owner-release implementation in
-the inspected Harness upstream baseline. The plugin remains unable to infer
+object, alias, or workspace file. The inspected Harness upstream baseline has no corresponding provider ledger
+or owner-release adapter. The plugin remains unable to infer
 reference ownership or collect provider objects from one Session log.
 
 ## Current Host capability gap
@@ -59,10 +58,14 @@ Harness process. A modification-time rule cannot close either gap.
 
 See [Reference-aware attachment GC RFC](attachment-gc-rfc.md) for the
 source-level findings and [Host Attachment Reference API Proposal](host-attachment-reference-api-proposal.md)
-for the full ledger, reconciliation and cross-process requirements. Session Delete calls the optional Host callback only after successful
-permanent-mode deletion, explicit Trash purge, or retention sweep.
-Trash and Restore preserve owners. The Host-side SQLite ledger is still an
-open PR and is retention-only: no physical collection operation is enabled.
+for the full ledger, reconciliation and cross-process requirements.
+
+Session Delete calls the optional Host callback only after successful
+permanent-mode deletion, explicit Trash purge or retention sweep. Trash and
+Restore preserve owners. The separate Host-side SQLite ledger work is
+retention-only in the inspected baseline; no physical collection operation is
+enabled.
+
 ## Current user-facing contract
 
 | Data | On moving a conversation to Trash | On permanent deletion/purge |

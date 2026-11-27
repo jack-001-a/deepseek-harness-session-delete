@@ -440,23 +440,33 @@ Restart the Harness if your profile does not hot-reload plugin bundles.
 ## Development
 
 ```bash
+npm run check       # Syntax-check Host, client, E2E fixtures and test helpers
 npm test            # Node tests: Host ordering/retry/Trash and client dialog behavior
-npm run test:browser # Chromium checks for the injected delete-dialog CSS contract
+npm run test:browser # Optional Chromium checks for the injected dialog CSS contract
 ```
 
 The Node tests run against the real modules with fake Cordis contexts and a
 minimal React stand-in; they need no Harness installation. The optional browser
-job installs a pinned Playwright runtime in CI only, reads the CSS directly
-from `client.js`, and checks the native Host Modal DOM contract at desktop and
-mobile viewports in light and dark themes. CI uploads desktop, dark-theme and
-mobile screenshots as reviewable artifacts; this is a browser layout contract,
-not a pixel-diff against a platform-dependent reference image.
+job installs a pinned Playwright runtime in CI, reads the CSS directly from
+`client.js`, and checks the Host Modal DOM contract at desktop and mobile
+viewports in light and dark themes. CI uploads desktop, dark-theme and mobile
+screenshots as reviewable artifacts; this is a browser layout contract, not a
+pixel-diff against a platform-dependent reference image.
+
+To run the browser contract locally, install its optional test-only dependency
+and Chromium, then run the script:
+
+```bash
+npm install --no-save --package-lock=false playwright@1.65.1
+npx playwright install chromium
+npm run test:browser
+```
 
 ## 中文说明
 
 DeepSeek Harness 只能归档会话、无法真正删除，日志会一直堆积在磁盘上。这个插件补上了缺失的删除能力，并且按桌面产品的做法来做：**先进回收站，可还原、可彻底删除、有审计记录。**
 
-**新增内容**：会话「…」菜单里的**红色「删除聊天」**、会话行悬停时的垃圾桶按钮，以及一个参考原生桌面体验的确认卡片，显示聊天标题、是否可恢复和文件保留状态；永久删除通过明确的二次确认按钮执行。删除后确认框会原地显示结果，并提供**还原**与**彻底删除**两个后续操作。删除当前正在看的对话后，会在同一工作区重新打开一个新会话。侧边栏「设置」上方新增**回收站管理入口**，显示回收站数量，可按会话 ID 搜索；随时恢复会话，或输入完整会话 ID 后永久删除。列表只显示会话 ID 与删除时间，不保存也不展示对话标题或原始文件路径。
+**新增内容**：会话「…」菜单里的**红色「删除聊天」**、会话行悬停时的垃圾桶按钮，以及一个参考原生桌面体验的确认卡片，显示聊天标题、是否可恢复和文件保留状态；永久删除通过明确的最终确认按钮执行。删除后确认框会原地显示结果，并提供**还原**与**彻底删除**两个后续操作。删除当前正在看的对话后，会在同一工作区重新打开一个新会话。侧边栏「设置」上方新增**回收站管理入口**，显示回收站数量，可按会话 ID 搜索；随时恢复会话，或输入完整会话 ID 后永久删除。列表只显示会话 ID 与删除时间，不保存也不展示对话标题或原始文件路径。
 
 **删除顺序是事务式的**：解析目标 → 拒绝运行中的工作 → 停并将活跃会话摘除 → 在支持新式持久化接口的 Harness 上取得宿主原生写租约 → **把日志移出存储**（移出前先把工作区记账写入回收站清单：所属工作区、显示位置锚点、置顶/归档标记）→ 释放宿主租约 → 释放工作区记账 → 删除投影缓存 → 广播移除事件。若另一个 Harness 写入者仍持有会话租约，会返回 `session-delete/locked`，本次不移动文件。
 
