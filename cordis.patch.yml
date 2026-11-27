@@ -14,7 +14,8 @@
         # 'trash' moves the conversation into a recoverable trash area and
         # purges it after `retentionDays`; 'permanent' removes it at once.
         mode: trash
-        # Days a trashed conversation is kept before it is purged.
+        # Days a trashed conversation is kept before it is purged (0–3650).
+        # Values above ten years are clamped to 3650 days.
         retentionDays: 7
         # Where the trash lives. The default is a sibling of the session
         # store (`~/.dsh/.trash`), never a directory inside it: the store

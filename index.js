@@ -77,6 +77,8 @@ const RETRYABLE_REMOVE_CODES = new Set([
 const REMOVABLE_KINDS = new Set(['dir', 'file', 'jsonl'])
 /** Default number of days a trashed artifact is kept before it is purged. */
 const DEFAULT_RETENTION_DAYS = 7
+/** Longest supported Trash retention window (ten years). */
+const MAX_RETENTION_DAYS = 3650
 /** Name of the trash directory the plugin creates beside the session store. */
 const TRASH_DIR_NAME = '.trash'
 /** Name of the audit trail file inside the trash root. */
@@ -1139,10 +1141,11 @@ class SessionDeleteService {
   }
 
   /**
-   * Read the retention window from the configuration.
+   * Read and bound the retention window from the configuration.
    *
-   * A negative or non-numeric value falls back to the default: an unbounded
-   * retention would let the trash grow without limit.
+   * A negative or non-numeric value falls back to the default. Large finite
+   * values are capped as well: an effectively permanent Trash would otherwise
+   * grow without a practical retention limit.
    * @param value - the configured number of days.
    * @returns the retention window in days.
    */
@@ -1150,7 +1153,14 @@ class SessionDeleteService {
     if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
       return DEFAULT_RETENTION_DAYS
     }
-    return Math.floor(value)
+    const days = Math.floor(value)
+    if (days > MAX_RETENTION_DAYS) {
+      this[OWNER_SERVICES].logger?.warn(
+        `sessionDelete: retentionDays exceeds the maximum of ${MAX_RETENTION_DAYS}; it was clamped to ${MAX_RETENTION_DAYS} days`,
+      )
+      return MAX_RETENTION_DAYS
+    }
+    return days
   }
 
   /**

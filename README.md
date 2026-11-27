@@ -83,8 +83,8 @@ The default mode is `trash`:
    moving anything twice.
 5. **Delete permanently** removes the trashed artifact and its retained
    projection metadata.
-6. Anything still in the trash after `retentionDays` (default 7) is purged
-   automatically, including its projection metadata.
+6. Anything still in the trash after `retentionDays` (default 7, maximum 3650
+   days / ten years) is purged automatically, including its projection metadata.
 
 Restore is idempotent: an entry whose files are already back (a failed
 reattachment, or a process that stopped mid-restore) is completed by the next
@@ -320,14 +320,14 @@ Every key is optional.
   name: '@ybbmm/dsh-session-delete'
   config:
     mode: trash          # 'trash' (recoverable) or 'permanent'
-    retentionDays: 7     # how long a trashed conversation is kept
+    retentionDays: 7     # 0–3650 days; values above ten years are clamped
     # trashRoot: ~/.dsh/.trash
 ```
 
 | Key | Default | Meaning |
 |---|---|---|
 | `mode` | `trash` | `trash` is recoverable, `permanent` deletes at once |
-| `retentionDays` | `7` | How long a trashed conversation is kept |
+| `retentionDays` | `7` | Retention window in days (0–3650; larger values are clamped to ten years) |
 | `trashRoot` | `<parent of the session store>/.trash` | Where the trash and the audit trail live |
 
 The trash deliberately sits **outside** the session store. The shipped
@@ -490,6 +490,8 @@ DeepSeek Harness 只能归档会话、无法真正删除，日志会一直堆积
 **还原是完整的**：文件移回后，插件会按清单重新挂回工作区、回复到原来的显示位置（锚点仍存在时）、重新置顶或归档，并向界面广播 `api-session/added`，所以**不必重启就能在侧边栏重新看到**。重新挂接失败时不会假装成功：结果会给出 `reattached: false` 与 `needsRestart: true`，文件保持在原位，回收站条目保留为 `accounting-pending`，再点一次「恢复」只补做记账、不会重复移动文件。旧版本（0.3.0 及更早）写入的条目没有记账信息，只会尽力按 `cwd` 推断工作区，必要时仍需重启。
 
 **状态变更**：会话日志目录（日志 + 锁文件，移入回收站）、工作区记账（成员关系/排序/置顶/归档标记）；会话列表投影（包含原始标题）在回收站可恢复期间保留，仅在永久删除、手动彻底清除或保留期清扫后删除。
+
+**回收站保留期**：默认 7 天，可配置为 0–3650 天（最长 10 年）；超过上限的值会被限制为 3650 天，避免产生实际无限期的回收站。
 
 **不会删的**：附件目录（按内容寻址、可能被多个会话共享）、工作区中由对话上传或创建的文件、临时 spill 文件、由该对话分叉出的子会话（确认框会提示数量）。当前插件版本支持可选 Host 回调 `fileUploads.onSessionPermanentlyPurged(sessionId)`：仅在永久删除模式、手动永久清除或回收站保留期清理真正移除 Session artifact 后调用；移入回收站和还原都保留附件 owner。回调失败会记录警告并保留过量引用，不会把已经成功的日志删除报告成失败。该回调只释放引用记录，不会 unlink 附件；本次核对的 Harness 上游版本尚未包含 Provider 引用账本或 owner 释放实现，因此该可选回调在该版本中不会实际释放 owner。当前尚未开放物理 GC。详见 [附件生命周期说明](docs/attachment-lifecycle.md)、[安全 GC 设计 RFC](docs/attachment-gc-rfc.md) 和 [Host 附件引用 API 提案](docs/host-attachment-reference-api-proposal.md)。
 

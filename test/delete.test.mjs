@@ -1832,6 +1832,19 @@ test('the trash listing reports every entry, newest first', async () => {
   assert.equal(typeof listed.entries[0].deletedAt, 'string')
 })
 
+test('retentionDays rejects invalid values and caps effectively unbounded values', () => {
+  const capped = harness({ config: { retentionDays: Number.MAX_VALUE } })
+  assert.equal(capped.service.retentionDays, 3650)
+  assert.ok(capped.calls.warnings.some((warning) => warning.includes('maximum of 3650')))
+  const exact = harness({ config: { retentionDays: 3650 } })
+  assert.equal(exact.service.retentionDays, 3650)
+
+  for (const retentionDays of [-1, Number.NaN, Number.POSITIVE_INFINITY, '3650']) {
+    const fallback = harness({ config: { retentionDays } })
+    assert.equal(fallback.service.retentionDays, 7, `invalid retentionDays ${String(retentionDays)} must use the default`)
+  }
+})
+
 test('entries older than the retention window are purged lazily', async () => {
   const store = await makeStore()
   const released = []
