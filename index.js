@@ -2347,10 +2347,21 @@ class SessionDeleteService {
           { sessionId, path: restoreMarker, reason: 'invalid-restore-marker' },
         )
       }
+      let recordTarget
+      if (typeof record?.target === 'string') {
+        try {
+          recordTarget = join(
+            await resolveThroughExistingAncestors(dirname(record.target)),
+            basename(record.target),
+          )
+        } catch {
+          recordTarget = undefined
+        }
+      }
       if (
         record?.sessionId !== sessionId ||
         typeof record.target !== 'string' ||
-        !samePath(resolve(record.target), resolve(target))
+        !samePath(recordTarget, target)
       ) {
         throw new SessionDeleteError(
           'session-delete/conflict',
