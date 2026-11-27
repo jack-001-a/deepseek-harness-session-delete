@@ -563,6 +563,33 @@ test('the Trash manager lists sessions without exposing filesystem paths', async
   assert.match(managerText, /Delete permanently/)
 })
 
+test('the Trash manager does not announce restore success for an invalid Host outcome', async () => {
+  const { plugin, React } = await loadPlugin()
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+    request: null,
+    trashManagerOpen: true,
+    listTrash: async () => ({
+      entries: [{ trashId: 'trash-a', sessionId: 'session-a', deletedAt: '2026-11-25T10:00:00.000Z' }],
+    }),
+    restoreSession: async () => ({ sessionId: 'session-a', restored: false }),
+  })
+  await settle()
+
+  let restoreButton
+  walk(form.tree, (node) => {
+    if (restoreButton === undefined && node.type === 'Button' && text(node) === 'Restore') restoreButton = node
+  })
+  assert.ok(restoreButton)
+  restoreButton.props.onClick()
+  await settle()
+
+  const managerText = trashManagerText(form)
+  assert.match(managerText, /could not be completed/i)
+  assert.doesNotMatch(managerText, /The conversation was restored/)
+  assert.match(managerText, /session-a/, 'the entry remains available for a safe retry')
+})
+
 test('the Trash manager restores an entry and reloads its listing', async () => {
   const { plugin, React } = await loadPlugin()
   const { registrations, dictionaries } = applyPlugin(plugin)
@@ -654,6 +681,50 @@ test('permanent purge in the Trash manager requires the exact session id', async
 
   assert.deepEqual(purged, ['session-to-purge'])
   assert.match(trashManagerText(form), /permanently deleted/i)
+})
+
+test('the Trash manager does not announce purge success for an invalid Host outcome', async () => {
+  const { plugin, React } = await loadPlugin()
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+    request: null,
+    trashManagerOpen: true,
+    listTrash: async () => ({
+      entries: [{ trashId: 'trash-a', sessionId: 'session-to-purge', deletedAt: '2026-11-25T10:00:00.000Z' }],
+    }),
+    purgeSession: async () => ({ sessionId: 'session-to-purge', purged: false }),
+  })
+  await settle()
+
+  let purgeButton
+  walk(form.tree, (node) => {
+    if (purgeButton === undefined && node.type === 'Button' && text(node) === 'Delete permanently') purgeButton = node
+  })
+  assert.ok(purgeButton)
+  purgeButton.props.onClick()
+  await settle()
+
+  let confirmButton
+  let input
+  walk(form.tree, (node) => {
+    if (node.type === 'Button' && text(node) === 'Permanently delete') confirmButton = node
+    if (node.type === 'input' && node.props.className === 'dshSessionDelete_trashConfirmInput') input = node
+  })
+  assert.ok(confirmButton)
+  assert.ok(input)
+  input.props.onChange({ target: { value: 'session-to-purge' } })
+  await settle()
+
+  walk(form.tree, (node) => {
+    if (node.type === 'Button' && text(node) === 'Permanently delete') confirmButton = node
+  })
+  confirmButton.props.onClick()
+  await settle()
+
+  const managerText = trashManagerText(form)
+  assert.match(managerText, /could not be completed/i)
+  assert.doesNotMatch(managerText, /The conversation was permanently deleted/)
+  assert.match(managerText, /session-to-purge/, 'the record remains available for verification or retry')
 })
 
 test('a failed Trash listing is reported instead of shown as empty', async () => {
@@ -1437,6 +1508,46 @@ test('the plain overlay cancels on ESC and traps the focus', async () => {
   })
   assert.equal(prevented, true)
   assert.equal(settled, 1, 'ESC cancels the plain overlay')
+})
+
+test('the plain dialog traps forward and reverse Tab when focus is outside its subtree', async () => {
+  const { plugin, React } = await loadPlugin({ primitives: false })
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+    describeDeletion: async () => DESCRIBE_TRASH,
+  })
+  await settle()
+
+  const dialog = dialogElement(form)
+  let firstFocused = 0
+  let lastFocused = 0
+  const first = { focus: () => { firstFocused += 1 } }
+  const last = { focus: () => { lastFocused += 1 } }
+  const outside = {}
+  const root = {
+    ownerDocument: { activeElement: outside },
+    querySelectorAll: () => [first, last],
+    contains: (target) => target === first || target === last,
+  }
+  dialog.props.ref.current = root
+
+  let forwardPrevented = false
+  dialog.props.onKeyDown({
+    key: 'Tab',
+    shiftKey: false,
+    preventDefault: () => { forwardPrevented = true },
+  })
+  assert.equal(forwardPrevented, true)
+  assert.equal(firstFocused, 1, 'forward Tab returns focus to the first control')
+
+  let reversePrevented = false
+  dialog.props.onKeyDown({
+    key: 'Tab',
+    shiftKey: true,
+    preventDefault: () => { reversePrevented = true },
+  })
+  assert.equal(reversePrevented, true)
+  assert.equal(lastFocused, 1, 'reverse Tab returns focus to the last control')
 })
 
 test('the plain dialog only dismisses when the backdrop itself is clicked', async () => {

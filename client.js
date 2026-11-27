@@ -1002,7 +1002,9 @@ window.__ModuleLoader__.load({
         if (event.shiftKey && (active === first || outside)) {
           event.preventDefault()
           last.focus()
-        } else if (!event.shiftKey && active === last) {
+        } else if (!event.shiftKey && (active === last || outside)) {
+          // If focus was moved outside the modal by browser/host code, bring
+          // forward tab navigation back to the first control as well.
           event.preventDefault()
           first.focus()
         }
@@ -1721,7 +1723,14 @@ window.__ModuleLoader__.load({
         Promise.resolve()
           .then(() => restoreSession(entry.sessionId))
           .then((outcome) => {
-            setNotice(outcome?.needsRestart === true || outcome?.reattached === false
+            // A resolved transport is not proof that the Host completed the
+            // mutation. Match the stricter contract used by the confirmation
+            // dialog so an empty/legacy response is never announced as success.
+            if (outcome?.restored !== true) {
+              setActionError(t('trash.actionFailed'))
+              return
+            }
+            setNotice(outcome.needsRestart === true || outcome.reattached === false
               ? t('trash.restoredPartial')
               : t('trash.restored'))
             setConfirmSessionId(undefined)
@@ -1740,7 +1749,11 @@ window.__ModuleLoader__.load({
         setNotice(undefined)
         Promise.resolve()
           .then(() => purgeSession(entry.sessionId))
-          .then(() => {
+          .then((outcome) => {
+            if (outcome?.purged !== true) {
+              setActionError(t('trash.actionFailed'))
+              return
+            }
             setNotice(t('trash.purged'))
             setConfirmSessionId(undefined)
             setTypedSessionId('')

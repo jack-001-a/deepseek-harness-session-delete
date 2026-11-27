@@ -33,6 +33,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Reject incomplete or malformed Host outcomes in the Trash manager; Restore and Purge are only announced as successful when the Host explicitly confirms the corresponding mutation.
+- Keep forward as well as reverse keyboard navigation inside the fallback modal when focus is unexpectedly moved outside the dialog.
 - Report permanent deletion as unsupported when the Host has no existing verifiable Session Store directory, matching the runtime path-safety guard instead of showing an action that must fail.
 - Reject custom Trash roots that resolve inside the Session Store, including symlinked-parent aliases; validate the Trash root before listing, restoring, purging, sweeping or appending audit records.
 - Keep Session-list projection metadata (including titles) while a conversation is in recoverable Trash; remove it only on permanent deletion, manual Purge, or retention expiry so Restore can rebuild the original sidebar row.
