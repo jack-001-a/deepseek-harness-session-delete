@@ -330,6 +330,25 @@ async function compareArtifactTrees(left, right, budget, depth = 0) {
 }
 
 
+/** Match a recovery source or tombstone to the inode recorded before the copy. */
+function matchesTrashMoveSnapshot(identity, current) {
+  return (
+    identity !== null &&
+    typeof identity === 'object' &&
+    !Array.isArray(identity) &&
+    Number.isFinite(identity.dev) &&
+    Number.isFinite(identity.ino) &&
+    typeof identity.isDirectory === 'boolean' &&
+    Number.isFinite(identity.size) &&
+    Number.isFinite(identity.mtimeMs) &&
+    identity.dev === current.dev &&
+    identity.ino === current.ino &&
+    identity.isDirectory === current.isDirectory() &&
+    identity.size === current.size &&
+    identity.mtimeMs === current.mtimeMs
+  )
+}
+
 /** Verify that a Trash entry is a real direct child of its configured root. */
 async function assertSafeTrashEntryDirectory(root, entry) {
   const [rootStat, entryStat] = await Promise.all([lstat(root), lstat(entry)])
@@ -1926,7 +1945,7 @@ class SessionDeleteService {
     }
     const markerPath = join(entryPath, COPYING_MARKER_FILE_NAME)
     try {
-      const sourceStat = await stat(artifact.target)
+      const sourceStat = await lstat(artifact.target)
       await writeFile(
         markerPath,
         JSON.stringify({
@@ -2647,12 +2666,49 @@ class SessionDeleteService {
       return false
     }
 
-    const source = manifest.originalPath
+    const sourcePath = manifest.originalPath
     const artifact = join(path, ARTIFACT_DIR_NAME)
     const staging = `${artifact}${COPY_STAGE_SUFFIX}`
-    const sourceExists = typeof source === 'string' && (await this.pathExists(source))
     const artifactExists = await this.pathExists(artifact)
+    if (typeof sourcePath !== 'string' || sourcePath.length === 0) {
+      this.ctx.logger?.warn(`sessionDelete: the interrupted move in "${path}" has no verifiable source path; both copies were preserved`)
+      return false
+    }
 
+    const root = this.storeRoot()
+    if (root === undefined) {
+      this.ctx.logger?.warn(`sessionDelete: cannot recover "${path}" without a verifiable session-store root`)
+      return false
+    }
+
+    // Resolve the source's parent, not the final component. This keeps a
+    // replaced project-directory symlink from redirecting the later rename,
+    // while preserving a final-component symlink as the artifact itself.
+    let source
+    let sourceStat
+    try {
+      const canonicalRoot = await realpath(root)
+      const canonicalParent = await resolveThroughExistingAncestors(dirname(sourcePath))
+      const name = basename(sourcePath)
+      if (
+        !name ||
+        !isInside(canonicalRoot, canonicalParent) ||
+        samePath(canonicalParent, canonicalRoot)
+      ) {
+        this.ctx.logger?.warn(`sessionDelete: the source of interrupted move "${path}" is outside its session store; both copies were preserved`)
+        return false
+      }
+      source = join(canonicalParent, name)
+      sourceStat = await lstat(source).catch((error) => {
+        if (error?.code === 'ENOENT') return undefined
+        throw error
+      })
+    } catch (error) {
+      this.ctx.logger?.warn(`sessionDelete: cannot verify the source of interrupted move "${path}": ${String(error)}`)
+      return false
+    }
+
+    const sourceExists = sourceStat !== undefined
     if (!artifactExists) {
       if (sourceExists) {
         // The copy was never atomically promoted. The source is untouched and
@@ -2664,43 +2720,35 @@ class SessionDeleteService {
       return false
     }
 
-    if (sourceExists) {
-      const root = this.storeRoot()
-      if (root === undefined) {
-        this.ctx.logger?.warn(`sessionDelete: cannot recover "${path}" without a verifiable session-store root`)
-        return false
-      }
-      let canonicalRoot
-      let canonicalSource
-      try {
-        canonicalRoot = await realpath(root)
-        canonicalSource = await resolveThroughExistingAncestors(source)
-      } catch (error) {
-        this.ctx.logger?.warn(`sessionDelete: cannot verify the source of interrupted move "${path}": ${String(error)}`)
-        return false
-      }
-      if (
-        !isInside(canonicalRoot, canonicalSource) ||
-        samePath(dirname(canonicalSource), canonicalRoot) ||
-        !(await this.artifactsMatch(source, artifact))
-      ) {
-        this.ctx.logger?.warn(
-          `sessionDelete: the source of interrupted move "${path}" changed; both copies were preserved for manual recovery`,
-        )
-        return false
-      }
+    if (
+      sourceExists &&
+      (!matchesTrashMoveSnapshot(identity, sourceStat) || !(await this.artifactsMatch(source, artifact)))
+    ) {
+      this.ctx.logger?.warn(
+        `sessionDelete: the source of interrupted move "${path}" changed; both copies were preserved for manual recovery`,
+      )
+      return false
     }
 
     // Once the complete copy is visible, move the original to a deterministic
     // tombstone on its own volume before recursively removing it. A crash
     // during rm then cannot leave a partial directory at the live session path.
-    if (typeof source !== 'string' || source.length === 0) return false
     const tombstone = join(dirname(source), `.session-delete-${basename(path)}.moving`)
-    const tombstoneExists = await this.pathExists(tombstone)
-    if (sourceExists && tombstoneExists) {
+    let tombstoneStat = await lstat(tombstone).catch((error) => {
+      if (error?.code === 'ENOENT') return undefined
+      throw error
+    })
+    if (sourceExists && tombstoneStat !== undefined) {
       this.ctx.logger?.warn(`sessionDelete: both source and tombstone exist for interrupted move "${path}"`)
       return false
     }
+    if (!sourceExists && tombstoneStat !== undefined && !matchesTrashMoveSnapshot(identity, tombstoneStat)) {
+      this.ctx.logger?.warn(
+        `sessionDelete: the tombstone of interrupted move "${path}" no longer matches its recorded source; it was preserved`,
+      )
+      return false
+    }
+
     if (sourceExists) {
       try {
         await rename(source, tombstone)
@@ -2710,8 +2758,18 @@ class SessionDeleteService {
         // confirming the source is absent; other failures remain actionable.
         if (error?.code !== 'ENOENT' || (await this.pathExists(source))) throw error
       }
+      tombstoneStat = await lstat(tombstone).catch((error) => {
+        if (error?.code === 'ENOENT') return undefined
+        throw error
+      })
     }
-    if (await this.pathExists(tombstone)) {
+    if (tombstoneStat !== undefined) {
+      if (!matchesTrashMoveSnapshot(identity, tombstoneStat)) {
+        this.ctx.logger?.warn(
+          `sessionDelete: the tombstone of interrupted move "${path}" changed before removal; it was preserved`,
+        )
+        return false
+      }
       await this.removeWithRetries(tombstone, manifest.sessionId)
     }
 
