@@ -93,6 +93,9 @@ function harness(options = {}) {
     },
   }
 
+  if (options.rootContext !== undefined) {
+    Object.defineProperty(ctx, Symbol.for('cordis.root'), { value: options.rootContext })
+  }
   apply(ctx, options.config ?? {})
   const service = extra.__provided.get('sessionDelete')
   assert.ok(service, 'apply() must provide the sessionDelete service')
@@ -2203,6 +2206,39 @@ test('an explicit trash root is honoured', async () => {
 
   assert.ok((await stat(join(custom, outcome.trashId))).isDirectory())
   await assert.rejects(stat(store.trashRoot), (error) => error.code === 'ENOENT')
+})
+
+test('Remote binding provides the root invocation accessor required by Cordis', () => {
+  const registrations = []
+  const props = {}
+  const rootContext = {
+    reflect: { props },
+    accessor(name, options) {
+      registrations.push({ name, options })
+      props[name] = { type: 'accessor', ...options }
+    },
+  }
+
+  harness({ rootContext })
+
+  assert.deepEqual(registrations.map((item) => item.name), ['invocation'])
+  assert.equal(registrations[0].options.get(), undefined)
+  assert.equal(props.invocation.type, 'accessor')
+})
+
+test('Remote binding preserves an invocation accessor already owned by another provider', () => {
+  let registrations = 0
+  const existing = { type: 'accessor', get: () => 'other-provider' }
+  const rootContext = {
+    reflect: { props: { invocation: existing } },
+    accessor() { registrations += 1 },
+  }
+
+  harness({ rootContext })
+
+  assert.equal(registrations, 0)
+  assert.strictEqual(rootContext.reflect.props.invocation, existing)
+  assert.equal(rootContext.reflect.props.invocation.get(), 'other-provider')
 })
 
 test('Remote marker exposes a resources reader that receives the id itself', async () => {

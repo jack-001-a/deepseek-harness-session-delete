@@ -3270,11 +3270,36 @@ Object.defineProperty(SessionDeleteService.prototype, REMOTE_METHODS, {
 })
 
 /**
+ * Provide the Cordis root accessor expected by Typert's source-mode Gateway.
+ *
+ * A Remote call shadows this accessor with its invocation Context; outside a
+ * Remote call it must resolve to undefined. The accessor is root-scoped so it
+ * remains available for the lifetime of the Host, even if this plugin unloads.
+ * Existing accessors belong to other Remote providers and must be preserved.
+ *
+ * This mirrors bindTypertRemote() without importing the runtime protocol
+ * package, keeping the published Host bundle dependency-free.
+ * @param ctx - the owning Cordis plugin context.
+ */
+function provideInvocationAccessor(ctx) {
+  const root = ctx?.[Symbol.for('cordis.root')]
+  const props = root?.reflect?.props
+  if (
+    root === undefined
+    || props === undefined
+    || Object.hasOwn(props, 'invocation')
+    || typeof root.accessor !== 'function'
+  ) return
+  root.accessor('invocation', { get: () => undefined })
+}
+
+/**
  * Register the deletion service and let the browser reach it.
  * @param ctx - the owning plugin context.
  * @param config - the plugin's configuration.
  */
 export function apply(ctx, config = {}) {
+  provideInvocationAccessor(ctx)
   if (config?.mode !== undefined && config.mode !== 'trash' && config.mode !== 'permanent') {
     ctx.logger?.warn(
       `sessionDelete: unknown mode "${String(config.mode)}"; the trash mode is used instead`,

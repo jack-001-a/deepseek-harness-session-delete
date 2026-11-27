@@ -27,6 +27,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Register Cordis's root `invocation` accessor required by the Typert source-mode Gateway, while preserving an accessor already installed by another Remote provider.
 - Keep the close control aligned to the first title line when long chat titles wrap on narrow screens.
 - Fail closed when Host deletion capabilities cannot be verified or the Session cannot be safely located; no destructive action is rendered or dispatched.
 - Link the Host Modal's portaled dialog root to its actual heading and description for screen-reader context.
