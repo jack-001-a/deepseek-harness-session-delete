@@ -1254,6 +1254,9 @@ test('the Host Modal receives an accessible name and description relationship', 
     removeAttribute: (name) => attributes.delete(name),
   }
   globalThis.document = {
+    // The bundle checks for its stylesheet at module initialization.
+    // Pretend the style tag already exists; this test only exercises ARIA.
+    querySelector: () => ({}),
     querySelectorAll: (selector) => {
       assert.equal(selector, '.dshSessionDelete_modalCard[role="dialog"]')
       return [dialog]
