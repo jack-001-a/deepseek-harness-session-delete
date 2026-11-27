@@ -2073,7 +2073,7 @@ test('audit append and retention trimming are serialized across Harness processe
       waterfall: async (_name, _payload, base) => base(),
       parallel: async () => {},
       emit: () => {},
-      logger: { warn: () => {} },
+      logger: { warn: (message) => console.error('sessionDelete audit worker: ' + message) },
     }
     apply(ctx)
     const service = provided.get('sessionDelete')
@@ -2085,20 +2085,36 @@ test('audit append and retention trimming are serialized across Harness processe
     const child = spawn(
       process.execPath,
       ['--input-type=module', '-e', worker, moduleUrl, store.root, prefix, '15'],
-      { stdio: 'ignore' },
+      { stdio: ['ignore', 'ignore', 'pipe'] },
     )
+    let stderr = ''
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', (chunk) => { stderr += chunk })
     child.once('error', reject)
-    child.once('exit', (code) => code === 0 ? resolve() : reject(new Error('audit worker exited with ' + code)))
+    child.once('close', (code) => {
+      if (code === 0) resolve({ prefix, stderr })
+      else reject(new Error('audit worker ' + prefix + ' exited with ' + code + (stderr ? '\\n' + stderr : '')))
+    })
   })
 
-  await Promise.all([launch('worker-a'), launch('worker-b')])
+  const workers = await Promise.all([launch('worker-a'), launch('worker-b')])
+  const diagnostics = workers.map((worker) => worker.stderr).filter(Boolean).join('\\n')
 
   const lines = (await readFile(file, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
   const workerIds = new Set(lines
     .filter((line) => line.action === 'worker-audit')
     .map((line) => line.sessionId))
   assert.ok(lines.length <= 1000, 'cross-process trimming must keep the audit trail bounded')
-  assert.equal(workerIds.size, 30, 'no concurrent audit record may be lost during trimming')
+  assert.equal(diagnostics, '', 'audit workers reported write/lock failures:\\n' + diagnostics)
+  const expectedWorkerIds = ['worker-a', 'worker-b'].flatMap((prefix) =>
+    Array.from({ length: 15 }, (_, index) => prefix + '-' + index),
+  )
+  const missingWorkerIds = expectedWorkerIds.filter((id) => !workerIds.has(id))
+  assert.equal(
+    workerIds.size,
+    30,
+    'no concurrent audit record may be lost during trimming; missing: ' + missingWorkerIds.join(', '),
+  )
   for (const prefix of ['worker-a-', 'worker-b-']) {
     for (let index = 0; index < 15; index += 1) {
       assert.ok(workerIds.has(prefix + index), 'missing audit record: ' + prefix + index)
