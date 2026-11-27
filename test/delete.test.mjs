@@ -2735,3 +2735,36 @@ test('independent plugin instances serialize restore and purge for the same sess
   assert.equal((await stat(store.dir)).isDirectory(), true)
   assert.deepEqual((await purging.service.listTrash()).entries, [])
 });
+
+test('artifact operations stay on the canonical parent when a project symlink is replaced', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+
+  const alias = join(store.root, 'project-alias')
+  await symlink(store.project, alias, 'dir')
+  const outsideProject = join(store.base, 'outside-project')
+  const outsideSession = join(outsideProject, SESSION_ID)
+  await mkdir(outsideSession, { recursive: true })
+  await writeFile(join(outsideSession, 'session.4.jsonl'), 'outside sentinel\\n')
+
+  const h = harness({
+    root: store.root,
+    locate: () => ({ kind: 'jsonl', path: join(alias, SESSION_ID, 'session.4.jsonl') }),
+  })
+  const artifact = await h.service.resolveArtifact({ id: SESSION_ID }, SESSION_ID)
+
+  assert.equal(artifact.target, store.dir, 'the operation path must use the canonical project parent')
+
+  // Simulate an attacker replacing the original project alias after the
+  // safety check but before the destructive operation.
+  await rm(alias)
+  await symlink(outsideProject, alias, 'dir')
+  await h.service.removeArtifact(artifact.target)
+
+  assert.equal(
+    await readFile(join(outsideSession, 'session.4.jsonl'), 'utf8'),
+    'outside sentinel\\n',
+    'replacing the locator alias must not redirect removal outside the store',
+  )
+  await assert.rejects(stat(store.dir), (error) => error?.code === 'ENOENT')
+})
