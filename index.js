@@ -2473,6 +2473,17 @@ class SessionDeleteService {
    * @returns the restore outcome.
    */
   async runRestore(sessionId) {
+    // Preserve the stable unsafe-path contract when the Host cannot expose
+    // the store root. Do this before reading the Trash index, whose safe
+    // resolver intentionally refuses to inspect entries without that anchor.
+    const root = this.storeRoot()
+    if (root === undefined) {
+      throw new SessionDeleteError(
+        'session-delete/unsafe-path',
+        `sessionDelete: this session store does not expose its storage root, so the original path of "${sessionId}" cannot be verified; nothing was restored`,
+        { sessionId, reason: 'no-store-root' },
+      )
+    }
     const entry = await this.trashEntryFor(sessionId)
     if (entry === undefined) {
       throw new SessionDeleteError(
@@ -2494,19 +2505,11 @@ class SessionDeleteService {
       )
     }
     let target = entry.originalPath
-    const root = this.storeRoot()
     if (typeof target !== 'string' || target.length === 0) {
       throw new SessionDeleteError(
         'session-delete/unsafe-path',
         `sessionDelete: the trash entry of session "${sessionId}" names no path; nothing was restored`,
         { sessionId, reason: 'invalid-path' },
-      )
-    }
-    if (root === undefined) {
-      throw new SessionDeleteError(
-        'session-delete/unsafe-path',
-        `sessionDelete: this session store does not expose its storage root, so the original path of "${sessionId}" cannot be verified; nothing was restored`,
-        { sessionId, reason: 'no-store-root' },
       )
     }
     // Do not compare the manifest path lexically with the configured root:
