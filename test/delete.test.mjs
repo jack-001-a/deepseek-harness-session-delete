@@ -13,6 +13,7 @@ import { spawn } from 'node:child_process'
 import { appendFile, link, mkdtemp, mkdir, readFile, readlink, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { apply } from '../index.js'
 
@@ -3047,4 +3048,63 @@ test('artifact operations stay on the canonical parent when a project symlink is
     'replacing the locator alias must not redirect removal outside the store',
   )
   await assert.rejects(stat(store.dir), (error) => error?.code === 'ENOENT')
+})
+
+
+test('process crash after the Trash move is recovered by a fresh process', { timeout: 30000 }, async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+  const workerPath = fileURLToPath(new URL('../scripts/fixtures/session-delete-crash-recovery.mjs', import.meta.url))
+
+  const runWorker = (mode) => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [workerPath, mode, store.root, SESSION_ID], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    child.once('error', reject)
+    child.once('close', (code, signal) => resolve({ code, signal, stdout, stderr }))
+  })
+
+  // The worker exits from inside releaseWorkspaceAccounting, after the
+  // artifact and manifest have reached Trash but before membership/pin/cache
+  // cleanup or the normal operation-lock finally block can run.
+  const crashed = await runWorker('crash')
+  assert.equal(crashed.code, 86, crashed.stderr)
+
+  await assert.rejects(stat(store.log), (error) => error.code === 'ENOENT')
+  await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
+  const entryIds = (await readdir(store.trashRoot)).filter((name) => name !== 'audit.jsonl')
+  assert.equal(entryIds.length, 1, 'the durable Trash entry must survive process termination')
+  const entry = trashEntry(store, entryIds[0])
+  assert.equal((await stat(join(entry, 'artifact'))).isDirectory(), true)
+  const manifest = JSON.parse(await readFile(join(entry, 'meta.json'), 'utf8'))
+  assert.deepEqual(manifest.accounting, {
+    member: true,
+    pinned: true,
+    archived: true,
+    workspaceId: 'workspace-process-crash',
+    beforeSessionId: 'session-older',
+  })
+
+  // This is a separate Node process with fresh in-memory Registry state. It
+  // must reclaim the dead process's filesystem lock and replay cleanup from
+  // the durable Trash manifest.
+  const recovered = await runWorker('recover')
+  assert.equal(recovered.code, 0, recovered.stderr)
+  const report = JSON.parse(recovered.stdout.trim())
+  assert.deepEqual(report.result, { deleted: 1, restored: 0, preserved: 0 })
+  assert.deepEqual(report.sessionIds, ['session-older'])
+  assert.deepEqual(report.pinned, [])
+  assert.deepEqual(report.archived, [])
+  await assert.rejects(stat(report.lockPath), (error) => error.code === 'ENOENT')
+
+  // Recovery is bookkeeping-only: it must not move, purge or rewrite the
+  // trashed artifact, so the user can still restore it later.
+  assert.equal((await stat(join(entry, 'artifact'))).isDirectory(), true)
+  await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
 })
