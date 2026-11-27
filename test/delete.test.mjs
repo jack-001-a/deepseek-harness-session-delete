@@ -2668,3 +2668,48 @@ test('independent plugin instances serialize delete and restore for the same ses
   await assert.rejects(stat(trashEntry(store, deleted.trashId)), (error) => error.code === 'ENOENT')
   assert.deepEqual((await restoring.service.listTrash()).entries, [])
 })
+
+
+test('independent plugin instances serialize restore and purge for the same session', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true }))
+  const initial = harness({ ...storedTarget(store) })
+  const restoring = harness({ ...storedTarget(store) })
+  const purging = harness({ ...storedTarget(store) })
+  await initial.service.delete(SESSION_ID)
+
+  const originalMove = restoring.service.moveArtifact.bind(restoring.service)
+  let announceMove
+  const moveStarted = new Promise((resolve) => { announceMove = resolve })
+  let releaseMove
+  const moveGate = new Promise((resolve) => { releaseMove = resolve })
+  restoring.service.moveArtifact = async (...args) => {
+    announceMove()
+    await moveGate
+    return originalMove(...args)
+  }
+
+  const restorePromise = restoring.service.restore(SESSION_ID)
+  await moveStarted
+
+  const originalAcquire = purging.service.acquireProcessLock.bind(purging.service)
+  let announceLockAttempt
+  const lockAttempt = new Promise((resolve) => { announceLockAttempt = resolve })
+  purging.service.acquireProcessLock = async (...args) => {
+    announceLockAttempt()
+    return originalAcquire(...args)
+  }
+  const purgePromise = purging.service.purge(SESSION_ID).then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  )
+  await lockAttempt
+  releaseMove()
+
+  const restored = await restorePromise
+  const purge = await purgePromise
+  assert.equal(restored.restored, true)
+  assert.equal(purge.error?.code, 'session-delete/not-found')
+  assert.equal((await stat(store.dir)).isDirectory(), true)
+  assert.deepEqual((await purging.service.listTrash()).entries, [])
+});
