@@ -344,6 +344,41 @@ async function assertSafeTrashEntryDirectory(root, entry) {
   }
 }
 
+/**
+ * Create or validate the Trash root without following a final symlink.
+ * Resolve its parent first so later operations do not traverse a replaceable
+ * alias in the configured path.
+ */
+async function prepareSafeTrashRoot(root) {
+  const absolute = resolve(root)
+  const name = basename(absolute)
+  if (!name) throw new Error('Refusing to use a filesystem root as the Trash directory.')
+  const requestedParent = dirname(absolute)
+  await mkdir(requestedParent, { recursive: true })
+  const canonicalParent = await realpath(requestedParent)
+  const canonicalRoot = join(canonicalParent, name)
+  try {
+    // A non-recursive mkdir treats an existing symlink as a collision rather
+    // than succeeding by traversing it.
+    await mkdir(canonicalRoot)
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error
+  }
+  const rootStat = await lstat(canonicalRoot)
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error('Refusing to use a non-directory or symbolic-link Trash root.')
+  }
+  const [verifiedParent, verifiedRoot] = await Promise.all([
+    realpath(canonicalParent),
+    realpath(canonicalRoot),
+  ])
+  const expectedRoot = join(verifiedParent, name)
+  if (!samePath(verifiedRoot, expectedRoot)) {
+    throw new Error('The Trash root changed while it was being verified.')
+  }
+  return expectedRoot
+}
+
 /** Atomically replace one bounded metadata file without following its path. */
 async function writeAtomicTransactionFile(file, text, label, maxBytes) {
   if (Buffer.byteLength(text, 'utf8') > maxBytes) {
@@ -1846,12 +1881,13 @@ class SessionDeleteService {
         { sessionId, reason: 'no-trash-root' },
       )
     }
+    let safeRoot
     try {
-      await mkdir(root, { recursive: true })
+      safeRoot = await prepareSafeTrashRoot(root)
     } catch (error) {
       throw new SessionDeleteError(
         'session-delete/trash-unavailable',
-        `sessionDelete: the trash directory "${root}" could not be created; nothing was removed`,
+        `sessionDelete: the trash directory "${root}" could not be created or verified; nothing was removed`,
         { sessionId, path: root, reason: error instanceof Error ? error.message : String(error) },
       )
     }
@@ -1864,7 +1900,7 @@ class SessionDeleteService {
       await this.discardTrashEntry(pending.path)
     }
     const stamp = this.nextStamp()
-    const entry = await this.createTrashEntry(root, sessionId, stamp)
+    const entry = await this.createTrashEntry(safeRoot, sessionId, stamp)
     const { trashId, path: entryPath } = entry
     const manifest = {
       sessionId,
