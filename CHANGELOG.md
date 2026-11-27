@@ -15,6 +15,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Update the architecture guide's transaction sequence and ownership table to document projection-cache retention during recoverable Trash.
 - Reuse the complete CI and CodeQL workflows as release prerequisites, so npm publication runs the same cross-platform, Chromium and pinned Harness compatibility gates instead of a weaker duplicate matrix.
 - Correct the Trash lifecycle documentation: recoverable sessions retain their list projection and title until irreversible deletion; update the Host module summary to match.
 - Await the Client Sessions catalog refresh after Restore settles, so the restored conversation is visible in the sidebar before the UI acknowledges completion.

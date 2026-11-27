@@ -13,6 +13,7 @@ reviewable before either side is changed.
 | Trash manager | client.js | Lists Host Trash entries from the sidebar footer, searches session IDs, restores entries, and guards permanent purge with exact-ID confirmation |
 | Persistence mutation | index.js | Locates and moves/removes the session artifact; coordinates the Host write lease |
 | Workspace state | index.js | Captures and releases membership, order, pin and archive state; replays it on restore |
+| Session-list projection | index.js | Retains cached row/title metadata while Trash is recoverable; clears it only after irreversible removal |
 | Recovery | index.js | Reconciles interrupted Trash/restore transactions at startup and on later operations |
 | Audit | index.js | Appends bounded metadata-only JSONL records; conversation content is not copied into the audit trail |
 
@@ -94,10 +95,14 @@ operation lock. The operation follows this order:
    changes that complete during the stop/lease steps.
 6. Move the session artifact to Trash, or remove its durable log in permanent
    mode.
-7. Release the Host write lease, workspace membership/pin/archive state and
-   projection-cache entry. Notify the browser when the Host does not already
-   emit the live-session removal event.
-8. Append a metadata-only audit record and return the actual outcome.
+7. Release the Host write lease and workspace membership/pin/archive
+   state. Retain the session-list projection (including the title) while the
+   artifact is recoverable in Trash, so Restore can rebuild the original row.
+   Clear the projection and re-check for late checkpoint writes only after
+   permanent deletion, manual Purge or retention expiry.
+8. Notify the browser when the Host does not already emit the live-session
+   removal event.
+9. Append a metadata-only audit record and return the actual outcome.
 
 The artifact move is the durable commit point. A failure before it must leave
 workspace accounting untouched. Once the artifact has moved, later cleanup is
