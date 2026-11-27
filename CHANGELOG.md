@@ -6,6 +6,17 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## Unreleased
 
+### Changed
+
+- Refine the plain-element delete confirmation into a responsive, theme-aware card with safe-area spacing, bounded scrolling and reduced-motion support.
+- Make delete, restore and purge actions single-flight at the UI boundary so rapid repeated clicks cannot dispatch duplicate Host mutations.
+
+### Fixed
+
+- Handle synchronous exceptions from Host adapters through the same localized, retryable error path as rejected promises.
+- Keep the confirmation open when a close or Escape action arrives before React has committed the in-flight state.
+- Render an explicit fallback for malformed Trash timestamps instead of exposing the raw manifest value.
+
 ## [0.7.0] — 2026-11-27
 
 ### Added

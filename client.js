@@ -489,19 +489,53 @@ window.__ModuleLoader__.load({
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 24px;
   background: var(--dsw-alias-bg-mask-1);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
 }
 .dshSessionDelete_dialog {
   box-sizing: border-box;
-  width: calc(100% - 32px);
-  max-width: 480px;
-  max-height: 80vh;
+  width: min(100%, 440px);
+  max-height: min(80vh, 720px);
+  max-height: min(80dvh, 720px);
   overflow: auto;
-  padding: 20px;
+  overscroll-behavior: contain;
+  padding: 24px;
+  border: 1px solid var(--dsw-alias-border-l2);
   border-radius: var(--dsw-radius-lg);
   background: var(--dsw-alias-bg-layer-3);
   color: var(--dsw-alias-label-primary);
   box-shadow: var(--dsw-shadow-lv3);
+  animation: dshSessionDelete_dialog-enter 160ms cubic-bezier(.2, .8, .2, 1) both;
+}
+@keyframes dshSessionDelete_dialog-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@media (max-width: 520px) {
+  .dshSessionDelete_overlay {
+    align-items: flex-end;
+    padding: 12px 12px max(12px, env(safe-area-inset-bottom));
+  }
+  .dshSessionDelete_dialog {
+    width: 100%;
+    max-height: min(85vh, 720px);
+    max-height: min(85dvh, 720px);
+    padding: 20px;
+    border-radius: var(--dsw-radius-lg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dshSessionDelete_dialog {
+    animation: none;
+  }
 }
 .dshSessionDelete_header {
   display: flex;
@@ -531,6 +565,10 @@ window.__ModuleLoader__.load({
 .dshSessionDelete_close:hover {
   color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-interactive-bg-hover);
+}
+.dshSessionDelete_close:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color);
+  outline-offset: 1px;
 }
 .dshSessionDelete_footer {
   margin-top: 20px;
@@ -1130,6 +1168,10 @@ window.__ModuleLoader__.load({
       const [restored, setRestored] = React.useState(false)
       const inputRef = React.useRef(null)
       const confirmRef = React.useRef(null)
+      // State updates render asynchronously. This ref closes the gap between
+      // the first click and the next render, preventing duplicate mutations
+      // and an early dismissal while the Host is already working.
+      const actionInFlightRef = React.useRef(false)
 
       React.useEffect(() => {
         // The mode decides the whole shape of the dialog, so it is asked for
@@ -1162,7 +1204,7 @@ window.__ModuleLoader__.load({
       const info = describeState.info ?? FALLBACK_DESCRIBE
       const mode = loading ? 'unknown' : resolveMode(info)
       const unsupported = !loading && info.supported === false
-      const busy = deleting || pendingAction !== undefined
+      const busy = deleting || pendingAction !== undefined || actionInFlightRef.current
       const expected = confirmationToken(request.displayTitle)
       const typedMatches = normalizeTyped(typed) === normalizeTyped(expected)
 
@@ -1210,15 +1252,16 @@ window.__ModuleLoader__.load({
 
       const close = () => {
         // A request in flight must not be abandoned: the Host may already
-        // have removed the conversation.
-        if (busy) return
+        // have removed the conversation. Check the ref as well as rendered
+        // state because a click can arrive before React commits the update.
+        if (busy || actionInFlightRef.current) return
         restoreFocus(request.opener)
         settleDelete()
       }
 
       const onKeyDownCapture = (event) => {
         if (event.key !== 'Escape') return
-        if (!busy) return
+        if (!busy && !actionInFlightRef.current) return
         // The host Modal closes on ESC; swallow the key while a request is
         // in flight so the dialog cannot vanish mid-deletion.
         event.preventDefault()
@@ -1226,70 +1269,87 @@ window.__ModuleLoader__.load({
       }
 
       const confirm = () => {
-        if (busy || outcome !== undefined) return
+        if (busy || actionInFlightRef.current || outcome !== undefined) return
         if (typeof confirmDelete !== 'function') return
         if (mode === 'permanent' && !typedMatches) return
+        actionInFlightRef.current = true
         setDeleting(true)
         setError(undefined)
-        confirmDelete(request).then(
-          (result) => {
-            setDeleting(false)
-            setOutcome(result ?? {})
-          },
-          (failure) => {
-            setDeleting(false)
-            setError(describeFailure(t, failure))
-          },
-        )
+        // Promise.resolve also captures synchronous throws from injected Host
+        // adapters, keeping the dialog retryable instead of leaking an error.
+        Promise.resolve()
+          .then(() => confirmDelete(request))
+          .then(
+            (result) => {
+              actionInFlightRef.current = false
+              setDeleting(false)
+              setOutcome(result ?? {})
+            },
+            (failure) => {
+              actionInFlightRef.current = false
+              setDeleting(false)
+              setError(describeFailure(t, failure))
+            },
+          )
       }
 
       const restore = () => {
-        if (busy || typeof restoreSession !== 'function') return
+        if (busy || actionInFlightRef.current || typeof restoreSession !== 'function') return
+        actionInFlightRef.current = true
         setPendingAction('restore')
         setActionResult(undefined)
-        restoreSession(request.sessionId).then(
-          (result) => {
-            setPendingAction(undefined)
-            if (result?.restored === true) {
-              setRestored(true)
-              // Only an explicit false is a partial restore: an older Host
-              // that does not report the field has done its whole job.
-              setActionResult({
-                ok: result.reattached !== false,
-                key: result.reattached === false ? 'dialog.restoredPartial' : 'dialog.restored',
-              })
-              return
-            }
-            setActionResult({ ok: false, key: 'dialog.restoreFailed' })
-          },
-          (failure) => {
-            setPendingAction(undefined)
-            setActionResult(undefined)
-            setError(describeActionFailure(t, failure, 'dialog.restoreFailed'))
-          },
-        )
+        Promise.resolve()
+          .then(() => restoreSession(request.sessionId))
+          .then(
+            (result) => {
+              actionInFlightRef.current = false
+              setPendingAction(undefined)
+              if (result?.restored === true) {
+                setRestored(true)
+                // Only an explicit false is a partial restore: an older Host
+                // that does not report the field has done its whole job.
+                setActionResult({
+                  ok: result.reattached !== false,
+                  key: result.reattached === false ? 'dialog.restoredPartial' : 'dialog.restored',
+                })
+                return
+              }
+              setActionResult({ ok: false, key: 'dialog.restoreFailed' })
+            },
+            (failure) => {
+              actionInFlightRef.current = false
+              setPendingAction(undefined)
+              setActionResult(undefined)
+              setError(describeActionFailure(t, failure, 'dialog.restoreFailed'))
+            },
+          )
       }
 
       const purge = () => {
-        if (busy || typeof purgeSession !== 'function') return
+        if (busy || actionInFlightRef.current || typeof purgeSession !== 'function') return
+        actionInFlightRef.current = true
         setPendingAction('purge')
         setActionResult(undefined)
-        purgeSession(request.sessionId).then(
-          (result) => {
-            setPendingAction(undefined)
-            if (result?.purged === true) {
-              setActionResult({ ok: true, key: 'dialog.purged' })
-              setOutcome((previous) => ({ ...(previous ?? {}), purged: true, trashed: false }))
-              return
-            }
-            setActionResult({ ok: false, key: 'dialog.purgeFailed' })
-          },
-          (failure) => {
-            setPendingAction(undefined)
-            setActionResult(undefined)
-            setError(describeActionFailure(t, failure, 'dialog.purgeFailed'))
-          },
-        )
+        Promise.resolve()
+          .then(() => purgeSession(request.sessionId))
+          .then(
+            (result) => {
+              actionInFlightRef.current = false
+              setPendingAction(undefined)
+              if (result?.purged === true) {
+                setActionResult({ ok: true, key: 'dialog.purged' })
+                setOutcome((previous) => ({ ...(previous ?? {}), purged: true, trashed: false }))
+                return
+              }
+              setActionResult({ ok: false, key: 'dialog.purgeFailed' })
+            },
+            (failure) => {
+              actionInFlightRef.current = false
+              setPendingAction(undefined)
+              setActionResult(undefined)
+              setError(describeActionFailure(t, failure, 'dialog.purgeFailed'))
+            },
+          )
       }
 
       const titleKey = mode === 'trash' ? 'dialog.title.trash' : mode === 'permanent' ? 'dialog.title.permanent' : 'dialog.title'
@@ -1496,7 +1556,7 @@ window.__ModuleLoader__.load({
     function formatTrashDate(value, t) {
       if (typeof value !== 'string' || value.length === 0) return t('trash.unknownDate')
       const date = new Date(value)
-      return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+      return Number.isNaN(date.getTime()) ? t('trash.unknownDate') : date.toLocaleString()
     }
 
     /**

@@ -1291,6 +1291,66 @@ test('the module still loads and the action still works without the host primiti
   assert.ok(findByRole(form, 'status'), 'the plain overlay reports the outcome as well')
 })
 
+test('delete confirmation ignores rapid duplicate clicks and cannot close while the Host request is pending', async () => {
+  const { plugin, React } = await loadPlugin()
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  let calls = 0
+  let settled = 0
+  let release
+  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+    describeDeletion: async () => DESCRIBE_TRASH,
+    settleDelete: () => {
+      settled += 1
+    },
+    confirmDelete: () => {
+      calls += 1
+      return new Promise((resolve) => {
+        release = resolve
+      })
+    },
+  })
+  await settle()
+
+  const buttons = footerButtons(form)
+  buttons[1].props.onClick()
+  buttons[1].props.onClick()
+  await settle()
+
+  assert.equal(calls, 1, 'two clicks in the same render only start one Host request')
+  footerButtons(form)[0].props.onClick()
+  assert.equal(settled, 0, 'the dialog cannot close before the Host answers')
+
+  release({ mode: 'trash', trashed: true, children: [], childrenCount: 0 })
+  await settle()
+  assert.ok(findByRole(form, 'status'), 'the completed request reports its outcome')
+  footerButtons(form)[0].props.onClick()
+  assert.equal(settled, 1, 'the dialog can close after the Host answers')
+})
+
+test('a synchronous Host adapter failure is shown and leaves deletion retryable', async () => {
+  const { plugin, React } = await loadPlugin()
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  let attempts = 0
+  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+    describeDeletion: async () => DESCRIBE_TRASH,
+    confirmDelete: () => {
+      attempts += 1
+      if (attempts === 1) throw new Error('synchronous adapter failure')
+      return { mode: 'trash', trashed: true, children: [], childrenCount: 0 }
+    },
+  })
+  await settle()
+
+  footerButtons(form)[1].props.onClick()
+  await settle()
+  assert.equal(text(findByRole(form, 'alert')), 'synchronous adapter failure')
+
+  footerButtons(form)[1].props.onClick()
+  await settle()
+  assert.equal(attempts, 2, 'a failed synchronous call does not leave the action locked')
+  assert.ok(findByRole(form, 'status'))
+})
+
 test('the plain overlay cancels on ESC and traps the focus', async () => {
   const { plugin, React } = await loadPlugin({ primitives: false })
   const { registrations, dictionaries } = applyPlugin(plugin)
