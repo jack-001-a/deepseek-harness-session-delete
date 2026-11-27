@@ -1057,7 +1057,7 @@ test('a directory artifact is refused when the store has no root, including perm
 
 test('trash listing refuses a symlinked manifest without reading its target', async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const h = harness({ ...storedTarget(store) })
   const deleted = await h.service.delete(SESSION_ID)
   const entry = trashEntry(store, deleted.trashId)
@@ -1079,7 +1079,7 @@ test('trash listing refuses a symlinked manifest without reading its target', as
 
 test('restore-pending metadata refuses to replace an unreadable or linked manifest', async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const h = harness({ ...storedTarget(store) })
   const deleted = await h.service.delete(SESSION_ID)
   const entry = await h.service.trashEntryFor(SESSION_ID)
@@ -1100,7 +1100,7 @@ test('restore-pending metadata refuses to replace an unreadable or linked manife
 
 test('restore refuses a symlinked restore marker without following it', async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const h = harness({ ...storedTarget(store) })
   const deleted = await h.service.delete(SESSION_ID)
   const entry = trashEntry(store, deleted.trashId)
@@ -1120,7 +1120,7 @@ test('restore refuses a symlinked restore marker without following it', async (t
 
 test('trash manifests above the byte limit are rejected before parsing', async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const h = harness({ ...storedTarget(store) })
   const deleted = await h.service.delete(SESSION_ID)
   const entry = trashEntry(store, deleted.trashId)
@@ -1133,7 +1133,7 @@ test('trash manifests above the byte limit are rejected before parsing', async (
 
 test('recovery markers refuse symbolic links without touching their targets', async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const h = harness({ ...storedTarget(store) })
   const deleted = await h.service.delete(SESSION_ID)
   const entryPath = trashEntry(store, deleted.trashId)
@@ -1154,7 +1154,7 @@ test('recovery markers refuse symbolic links without touching their targets', as
 
 test('process lock owner metadata is bounded before JSON parsing', async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const h = harness({ ...storedTarget(store) })
   const lockPath = join(store.base, '.process-lock-owner-test')
   const ownerPath = join(lockPath, '.owner.json')
@@ -1245,7 +1245,7 @@ test('trash refresh completes a promoted cross-device copy after a simulated cra
 
 test('trash recovery preserves a same-content replacement source with a different inode', async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const entryPath = join(store.trashRoot, 'interrupted-replaced-source')
   const artifactPath = join(entryPath, 'artifact')
   await mkdir(artifactPath, { recursive: true })
@@ -1292,7 +1292,7 @@ test('trash recovery preserves a same-content replacement source with a differen
 
 test('trash recovery keeps its source anchored when a project alias is replaced after comparison', async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const alias = join(store.root, 'project-alias')
   try {
     await symlink(store.project, alias, process.platform === 'win32' ? 'junction' : 'dir')
@@ -1358,7 +1358,7 @@ test('trash recovery keeps its source anchored when a project alias is replaced 
 
 test('trash recovery preserves a replacement tombstone whose inode differs from the recorded source', async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const entryPath = join(store.trashRoot, 'interrupted-replaced-tombstone')
   const artifactPath = join(entryPath, 'artifact')
   await mkdir(artifactPath, { recursive: true })
@@ -1766,7 +1766,7 @@ test('deleting a trashed session again reports the same trash entry', async () =
 
 test('trash listing examines at most its bounded number of raw directory entries', { timeout: 15000 }, async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   await mkdir(store.trashRoot, { recursive: true })
   for (let index = 0; index < 501; index += 1) {
     const entryName = 'bounded-entry-' + String(index).padStart(4, '0')
@@ -1865,7 +1865,7 @@ test('every mutation is recorded in the audit trail without any content', async 
 
 test('the audit trail refuses a symbolic-link file without modifying its target', async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const target = join(store.base, 'outside-audit-target.txt')
   const file = join(store.trashRoot, 'audit.jsonl')
   await writeFile(target, 'preserve this file\n')
@@ -1890,7 +1890,7 @@ test('the audit trail refuses a symbolic-link file without modifying its target'
 
 test('deletion refuses a symbolic-link Trash root before moving the artifact', async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const outside = join(store.base, 'outside-trash-root')
   await mkdir(outside)
   try {
@@ -1917,7 +1917,7 @@ test('deletion refuses a symbolic-link Trash root before moving the artifact', a
 
 test('the audit trail does not create the target of a symbolic-link Trash root', async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const outside = join(store.base, 'missing-outside-trash', 'nested')
   try {
     await symlink(outside, store.trashRoot, process.platform === 'win32' ? 'junction' : 'dir')
@@ -1939,7 +1939,7 @@ test('the audit trail does not create the target of a symbolic-link Trash root',
 
 test('the audit trail refuses a symbolic-link Trash root without writing into its target', async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const outside = join(store.base, 'outside-trash-root')
   await mkdir(outside)
   try {
@@ -1962,7 +1962,7 @@ test('the audit trail refuses a symbolic-link Trash root without writing into it
 
 test('the audit trail refuses a hard-linked file without modifying either name', async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const target = join(store.base, 'outside-audit-target.txt')
   const file = join(store.trashRoot, 'audit.jsonl')
   await writeFile(target, 'preserve this file\n')
@@ -1995,7 +1995,7 @@ test('a refused deletion is recorded with its code', async () => {
 
 test('the audit trail refuses an oversized existing file without reading or growing it', async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const file = join(store.trashRoot, 'audit.jsonl')
   await mkdir(store.trashRoot, { recursive: true })
   await writeFile(file, Buffer.alloc(1024 * 1024 + 1, 0x61))
@@ -2015,7 +2015,7 @@ test('the audit trail refuses an oversized existing file without reading or grow
 
 test('the audit trail refuses one oversized record before creating its file', async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const h = harness({ ...storedTarget(store), config: { trashRoot: store.trashRoot } })
 
   await h.service.audit('delete', 'x'.repeat(9000), true, { mode: 'trash' })
@@ -2850,7 +2850,7 @@ test('filesystem session locks serialize two independent Node processes', async 
 
 test('lock release preserves a directory after its owner token is replaced', async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const h = harness({ ...storedTarget(store) })
   const lockPath = await h.service.processLockPath(SESSION_ID)
   const release = await h.service.acquireProcessLock(SESSION_ID)
@@ -2932,7 +2932,7 @@ test('a dead same-host lock owner is reclaimed after process exit', async () => 
 
 test('independent plugin instances serialize delete and restore for the same session', async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const deleting = harness({ ...storedTarget(store) })
   const restoring = harness({ ...storedTarget(store) })
 
@@ -2974,7 +2974,7 @@ test('independent plugin instances serialize delete and restore for the same ses
 
 test('independent plugin instances serialize restore and purge for the same session', async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
   const initial = harness({ ...storedTarget(store) })
   const restoring = harness({ ...storedTarget(store) })
   const purging = harness({ ...storedTarget(store) })
@@ -3018,7 +3018,7 @@ test('independent plugin instances serialize restore and purge for the same sess
 
 test('artifact operations stay on the canonical parent when a project symlink is replaced', async (t) => {
   const store = await makeStore()
-  t.after(() => rm(store.base, { recursive: true, force: true }))
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
 
   const alias = join(store.root, 'project-alias')
   await symlink(store.project, alias, 'dir')
