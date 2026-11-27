@@ -197,10 +197,12 @@ slot, which renders above Settings. It is hidden unless describe() reports
 canListTrash: true. The count comes from the Host's refreshed Trash index and
 is resynchronized after deletes and manager refreshes.
 
-The manager reads listTrash() and displays only the session ID, deletion
-timestamp and restore state. It does not display originalPath, and it cannot
-show a title because the manifest deliberately stores only the reduced session
-header. Search is client-side over the session ID. Restore reuses the same
+The manager reads listTrash(), whose browser-facing projection contains
+only the session ID, deletion timestamp and restore state. The Host never sends
+originalPath across the Gateway: that filesystem path remains private
+transaction metadata. The manager also cannot show a title because the manifest
+deliberately stores only the reduced session header. Search is client-side over
+the session ID. Restore reuses the same
 Host endpoint and refreshes the session catalog; an accounting-pending entry
 can retry the workspace attachment without moving its artifact again.
 

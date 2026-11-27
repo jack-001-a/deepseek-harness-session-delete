@@ -2807,11 +2807,13 @@ class SessionDeleteService {
     await this.sweepTrash()
     const entries = await this.refreshTrash()
     return {
+      // Keep the RPC projection deliberately path-free. The browser needs
+      // only identity, time and recovery state; originalPath is Host-private
+      // transaction metadata and must never cross the Gateway boundary.
       entries: entries.map((entry) => ({
         trashId: entry.trashId,
         sessionId: entry.sessionId,
         deletedAt: entry.deletedAt,
-        originalPath: entry.originalPath,
         // Present only for an entry whose files are already restored but whose
         // workspace accounting still has to be replayed; such an entry holds no
         // artifact and a restore (or a launch) finishes it.

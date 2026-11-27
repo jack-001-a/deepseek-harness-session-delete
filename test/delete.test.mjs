@@ -1828,7 +1828,8 @@ test('the trash listing reports every entry, newest first', async () => {
   assert.equal(listed.entries[0].trashId, other.trashId)
   assert.equal(listed.entries[1].trashId, first.trashId)
   assert.equal(listed.entries[0].sessionId, second.id)
-  assert.equal(listed.entries[0].originalPath, canonicalSecondDir)
+  assert.equal(Object.hasOwn(listed.entries[0], 'originalPath'), false, 'filesystem paths stay inside the Host')
+  assert.equal(JSON.stringify(listed).includes(canonicalSecondDir), false, 'the RPC projection must not leak the stored path')
   assert.equal(typeof listed.entries[0].deletedAt, 'string')
 })
 

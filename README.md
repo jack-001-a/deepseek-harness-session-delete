@@ -96,8 +96,8 @@ is gone from the trash, so restoring it again reports `not-found`.
 Open **Trash** from the sidebar footer (above Settings). Its count reflects the
 Host's current Trash inventory. Search filters by session ID. Each row shows
 only the session ID and deletion time: the Trash manifest intentionally does
-not persist a display title or transcript content, and the manager does not
-show the original filesystem path. **Restore** returns the conversation to its
+not persist a display title or transcript content, and the Host keeps the
+original filesystem path private rather than sending it to the browser. **Restore** returns the conversation to its
 recorded workspace; entries marked `accounting-pending` offer **Finish restore**
 to retry only the workspace reattachment. **Delete permanently** first asks
 you to type the complete session ID exactly. The Trash is available only when
