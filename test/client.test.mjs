@@ -285,7 +285,8 @@ function renderDialog(registrations, dictionaries, React, locale, options = {}) 
   const request = Object.prototype.hasOwnProperty.call(options, 'request') ? options.request : REQUEST
   pending.set(request)
   const trashOpen = injected.hooks.trashManagerOpen
-  trashOpen.set(options.trashManagerOpen === true)
+  if (options.openTrashManager === true) injected.openTrashManager()
+  else trashOpen.set(options.trashManagerOpen === true ? { opener: options.trashOpener } : null)
   const outer = mount(registrations['shell.overlay'].component, {
     // The slot framework turns these injected observables into selector hooks;
     // this is the test adapter, reading the same snapshots.
@@ -535,6 +536,30 @@ test('the sidebar Trash action appears only when the Host supports recoverable T
   })
   await settle()
   assert.equal(unsupported.tree, null, 'permanent-only stores must not show a dead Trash entry')
+})
+
+test('the plain Trash manager restores focus to its opener when closed', async () => {
+  const { plugin, React } = await loadPlugin({ primitives: false })
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  const previousDocument = globalThis.document
+  let focusRestored = 0
+  const opener = { focus: () => { focusRestored += 1 } }
+  globalThis.document = { activeElement: opener, body: {} }
+  try {
+    const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+      request: null,
+      openTrashManager: true,
+      listTrash: async () => ({ entries: [] }),
+    })
+    await settle()
+
+    assert.equal(typeof form.tree.props.onClose, 'function')
+    form.tree.props.onClose()
+    assert.equal(focusRestored, 1, 'closing the fallback Trash manager returns focus to its opener')
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document
+    else globalThis.document = previousDocument
+  }
 })
 
 test('the Trash manager lists sessions without exposing filesystem paths', async () => {

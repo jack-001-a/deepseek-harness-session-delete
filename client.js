@@ -1671,7 +1671,7 @@ window.__ModuleLoader__.load({
      * Trash manifest stores no display title and the plugin does not persist
      * conversation content just to make this list friendlier.
      */
-    function TrashManagerDialog({ settleTrashManager, listTrash, restoreSession, purgeSession, describeDeletion, updateTrashCount, t }) {
+    function TrashManagerDialog({ opener, settleTrashManager, listTrash, restoreSession, purgeSession, describeDeletion, updateTrashCount, t }) {
       const [entries, setEntries] = React.useState([])
       const [loading, setLoading] = React.useState(true)
       const [loadError, setLoadError] = React.useState(undefined)
@@ -1714,7 +1714,9 @@ window.__ModuleLoader__.load({
       }, [])
 
       const close = () => {
-        if (busySessionId === undefined) settleTrashManager()
+        if (busySessionId !== undefined) return
+        restoreFocus(opener)
+        settleTrashManager()
       }
       const runRestore = (entry) => {
         setBusySessionId(entry.sessionId)
@@ -1962,6 +1964,7 @@ window.__ModuleLoader__.load({
       }
       if (trashOpen) {
         return h(TrashManagerDialog, {
+          opener: trashOpen.opener,
           settleTrashManager,
           listTrash,
           restoreSession,
@@ -1985,11 +1988,11 @@ window.__ModuleLoader__.load({
           ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ybbmm.dsh-session-delete: dictionaries')
 
           const pending = createObservable(null)
-          const trashManagerOpen = createObservable(false)
+          const trashManagerOpen = createObservable(null)
           const trashCount = createObservable(undefined)
           const updateTrashCount = (count) => trashCount.set(count)
-          const openTrashManager = () => trashManagerOpen.set(true)
-          const settleTrashManager = () => trashManagerOpen.set(false)
+          const openTrashManager = () => trashManagerOpen.set({ opener: focusedElement() })
+          const settleTrashManager = () => trashManagerOpen.set(null)
 
           const requestDelete = (sessionId, displayTitle) => {
             pending.set({
