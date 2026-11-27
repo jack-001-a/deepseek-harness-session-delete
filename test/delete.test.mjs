@@ -3073,7 +3073,7 @@ test('process crash after the Trash move is recovered by a fresh process', { tim
   // The worker exits from inside releaseWorkspaceAccounting, after the
   // artifact and manifest have reached Trash but before membership/pin/cache
   // cleanup or the normal operation-lock finally block can run.
-  const crashed = await runWorker('crash')
+  const crashed = await runWorker('crash-delete')
   assert.equal(crashed.code, 86, crashed.stderr)
 
   await assert.rejects(stat(store.log), (error) => error.code === 'ENOENT')
@@ -3086,7 +3086,7 @@ test('process crash after the Trash move is recovered by a fresh process', { tim
   assert.deepEqual(manifest.accounting, {
     member: true,
     pinned: true,
-    archived: true,
+    archived: false,
     workspaceId: 'workspace-process-crash',
     beforeSessionId: 'session-older',
   })
@@ -3094,7 +3094,7 @@ test('process crash after the Trash move is recovered by a fresh process', { tim
   // This is a separate Node process with fresh in-memory Registry state. It
   // must reclaim the dead process's filesystem lock and replay cleanup from
   // the durable Trash manifest.
-  const recovered = await runWorker('recover')
+  const recovered = await runWorker('recover-delete')
   assert.equal(recovered.code, 0, recovered.stderr)
   const report = JSON.parse(recovered.stdout.trim())
   assert.deepEqual(report.result, { deleted: 1, restored: 0, preserved: 0 })
@@ -3107,4 +3107,68 @@ test('process crash after the Trash move is recovered by a fresh process', { tim
   // trashed artifact, so the user can still restore it later.
   assert.equal((await stat(join(entry, 'artifact'))).isDirectory(), true)
   await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
+})
+
+
+test('process crash after a restore move is recovered by a fresh process', { timeout: 30000 }, async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+  const registry = accountingRegistry(store, {
+    pinned: false,
+    archived: true,
+    sessionIds: [SESSION_ID, 'session-older'],
+  })
+  const h = harness({ ...storedTarget(store), registry })
+  const deleted = await h.service.delete(SESSION_ID)
+  assert.equal(deleted.trashed, true)
+
+  const entry = trashEntry(store, deleted.trashId)
+  const manifest = JSON.parse(await readFile(join(entry, 'meta.json'), 'utf8'))
+  assert.deepEqual(manifest.accounting, {
+    member: true,
+    pinned: false,
+    archived: true,
+    workspaceId: 'ws-1',
+    beforeSessionId: 'session-older',
+  })
+
+  const workerPath = fileURLToPath(new URL('../scripts/fixtures/session-delete-crash-recovery.mjs', import.meta.url))
+  const runWorker = (mode) => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [workerPath, mode, store.root, SESSION_ID], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    child.once('error', reject)
+    child.once('close', (code, signal) => resolve({ code, signal, stdout, stderr }))
+  })
+
+  // The child performs the real move from Trash to the session store, then
+  // exits before marker removal, Registry reattachment or Trash cleanup.
+  const crashed = await runWorker('crash-restore')
+  assert.equal(crashed.code, 87, crashed.stderr)
+  await assert.equal((await stat(store.dir)).isDirectory(), true)
+  assert.equal(await readFile(store.log, 'utf8'), '{"seq":0}\n')
+  await assert.rejects(stat(join(entry, 'artifact')), (error) => error.code === 'ENOENT')
+  assert.equal((await stat(join(entry, '.restoring'))).isFile(), true)
+
+  // A new process sees the restore marker and the already-promoted artifact.
+  // It must reclaim the dead lock, reattach the saved workspace slot/archive
+  // mark, and remove only the now-obsolete Trash transaction.
+  const recovered = await runWorker('recover-restore')
+  assert.equal(recovered.code, 0, recovered.stderr)
+  const report = JSON.parse(recovered.stdout.trim())
+  assert.deepEqual(report.result, { deleted: 0, restored: 1, preserved: 0 })
+  assert.deepEqual(report.sessionIds, [SESSION_ID, 'session-older'])
+  assert.deepEqual(report.pinned, [])
+  assert.deepEqual(report.archived, [SESSION_ID])
+  assert.equal(report.trashEntry, false)
+  await assert.rejects(stat(report.lockPath), (error) => error.code === 'ENOENT')
+  assert.equal((await stat(store.dir)).isDirectory(), true)
+  assert.equal(await readFile(store.log, 'utf8'), '{"seq":0}\n')
+  await assert.rejects(stat(entry), (error) => error.code === 'ENOENT')
 })
