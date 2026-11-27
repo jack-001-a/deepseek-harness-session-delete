@@ -285,7 +285,7 @@ function renderDialog(registrations, dictionaries, React, locale, options = {}) 
   const request = Object.prototype.hasOwnProperty.call(options, 'request') ? options.request : REQUEST
   pending.set(request)
   const trashOpen = injected.hooks.trashManagerOpen
-  if (options.openTrashManager === true) injected.openTrashManager()
+  if (options.openTrashManager === true) registrations['sidebar.footer.action'].spec.inject().openTrashManager()
   else trashOpen.set(options.trashManagerOpen === true ? { opener: options.trashOpener } : null)
   const outer = mount(registrations['shell.overlay'].component, {
     // The slot framework turns these injected observables into selector hooks;
