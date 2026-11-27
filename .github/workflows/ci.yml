@@ -205,6 +205,7 @@ jobs:
           name: session-delete-real-harness-web-ui
           path: deepseek-harness/.artifacts/session-delete-real-ui.png
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 30
 
       - name: Upload two-process compatibility evidence
