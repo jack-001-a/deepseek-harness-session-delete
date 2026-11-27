@@ -6,6 +6,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## Unreleased
 
+## [0.7.0] — 2026-11-27
+
 ### Added
 
 - Add an optional Host attachment-owner release notification after a Session artifact is permanently removed. Trash and Restore preserve owners; permanent-mode deletion, explicit purge, and retention sweep notify only after artifact removal.
