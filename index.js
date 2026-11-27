@@ -93,6 +93,10 @@ const TRASH_MARKER_MAX_BYTES = 16 * 1024
 const ARTIFACT_DIR_NAME = 'artifact'
 /** Marker for a trash move that may need crash recovery. */
 const COPYING_MARKER_FILE_NAME = '.copying'
+/** Manifest state before the durable Trash move starts. */
+const TRASH_MOVE_PREPARING = 'preparing'
+/** Manifest state after the durable Trash move starts. */
+const TRASH_MOVE_IN_PROGRESS = 'moving'
 /** Marker for a restore move that may need crash recovery. */
 const RESTORING_MARKER_FILE_NAME = '.restoring'
 /** Suffix for an incomplete cross-device copy, never exposed as the artifact. */
@@ -2084,6 +2088,9 @@ class SessionDeleteService {
       children,
       childrenCount,
       mode: this.mode,
+      // This state distinguishes durable entry preparation from a move that
+      // may already have changed the source/destination filesystem state.
+      moveState: TRASH_MOVE_PREPARING,
       // Presence marks "captured": a manifest without this field predates
       // 0.4.0 and is restored with a best-effort workspace inference instead.
       ...(accounting === undefined ? {} : { accounting }),
@@ -2112,6 +2119,14 @@ class SessionDeleteService {
         }),
         { encoding: 'utf8', flag: 'wx' },
       )
+      const movingManifest = { ...manifest, moveState: TRASH_MOVE_IN_PROGRESS }
+      await writeAtomicTransactionFile(
+        join(entryPath, MANIFEST_FILE_NAME),
+        JSON.stringify(movingManifest, null, 2) + '\n',
+        'trash manifest',
+        TRASH_MANIFEST_MAX_BYTES,
+      )
+      Object.assign(manifest, movingManifest)
       const tombstone = join(dirname(artifact.target), `.session-delete-${trashId}.moving`)
       await this.moveArtifact(artifact.target, join(entryPath, ARTIFACT_DIR_NAME), {
         afterPromote: async (source) => {
@@ -2160,6 +2175,7 @@ class SessionDeleteService {
       deletedAt: manifest.deletedAt,
       originalPath: artifact.target,
       path: entryPath,
+      moveState: manifest.moveState,
       children,
       childrenCount,
       header: manifest.header,
@@ -2450,11 +2466,29 @@ class SessionDeleteService {
     const task = Promise.resolve().then(() => this.withProcessLock(sessionId, async () => {
       // Each process has its own index. Refresh from disk after acquiring the
       // shared lock so decisions cannot rely on another process's stale view.
-      const entries = await this.refreshTrash({ recoverMoves: false, force: true })
+      let entries = await this.refreshTrash({ recoverMoves: false, force: true })
+      const preparingEntry = entries.find((entry) => entry.sessionId === sessionId && entry.moveState === TRASH_MOVE_PREPARING)
+      if (preparingEntry !== undefined) {
+        const markerPath = join(preparingEntry.path, COPYING_MARKER_FILE_NAME)
+        const markerPresent = await lstat(markerPath)
+          .then(() => true)
+          .catch((error) => error?.code === 'ENOENT' ? false : true)
+        if (!markerPresent) {
+          if (!(await this.discardUnstartedTrashEntry(preparingEntry))) {
+            throw new SessionDeleteError(
+              'session-delete/recovery-pending',
+              `sessionDelete: the unstarted Trash entry for "${sessionId}" could not be verified; its original and Trash paths were preserved`,
+              { sessionId, trashId: preparingEntry.trashId, reason: 'unstarted-trash-entry-unverifiable' },
+            )
+          }
+          entries = await this.refreshTrash({ recoverMoves: false, force: true })
+        }
+      }
       const interruptedMove = entries.find((entry) => entry.sessionId === sessionId)
       if (action !== 'move-recovery' && interruptedMove !== undefined && await this.pathExists(join(interruptedMove.path, COPYING_MARKER_FILE_NAME))) {
         const manifest = await this.readManifest(interruptedMove.path)
-        if (manifest === undefined || !(await this.recoverTrashMove(interruptedMove.path, manifest))) {
+        const recovered = manifest !== undefined && await this.recoverTrashMove(interruptedMove.path, manifest)
+        if (!recovered && await this.pathExists(interruptedMove.path)) {
           throw new SessionDeleteError(
             'session-delete/recovery-pending',
             `sessionDelete: the interrupted trash move for "${sessionId}" could not be verified; both paths were preserved and no further operation was attempted`,
@@ -2471,6 +2505,85 @@ class SessionDeleteService {
       return await task
     } finally {
       if (this.trashOps.get(sessionId) === operation) this.trashOps.delete(sessionId)
+    }
+  }
+
+  /**
+   * Discard a Trash entry whose durable manifest proves the move never started.
+   *
+   * This runs under the per-session operation lock. The original path is
+   * checked through its canonical parent and is never removed or modified.
+   * Any marker, Trash artifact, missing source, unsafe path or unreadable
+   * state causes a fail-closed refusal.
+   *
+   * @param entry - the preparing Trash entry from the Host-side index.
+   * @returns whether the uncommitted entry was safely discarded.
+   */
+  async discardUnstartedTrashEntry(entry) {
+    if (entry?.moveState !== TRASH_MOVE_PREPARING || typeof entry.path !== 'string') return false
+    const manifest = await this.readManifest(entry.path)
+    if (
+      manifest === undefined ||
+      manifest.sessionId !== entry.sessionId ||
+      manifest.moveState !== TRASH_MOVE_PREPARING ||
+      typeof manifest.originalPath !== 'string' ||
+      manifest.originalPath.length === 0
+    ) return false
+
+    const exists = async (path) => {
+      try {
+        await lstat(path)
+        return true
+      } catch (error) {
+        if (error?.code === 'ENOENT') return false
+        // An unreadable path is not proof of absence.
+        return true
+      }
+    }
+    const [copying, restoring, artifact] = await Promise.all([
+      exists(join(entry.path, COPYING_MARKER_FILE_NAME)),
+      exists(join(entry.path, RESTORING_MARKER_FILE_NAME)),
+      exists(join(entry.path, ARTIFACT_DIR_NAME)),
+    ])
+    if (copying || restoring || artifact) return false
+
+    const storeRoot = this.storeRoot()
+    if (storeRoot === undefined) return false
+    let canonicalRoot
+    let canonicalParent
+    try {
+      canonicalRoot = await realpath(storeRoot)
+      canonicalParent = await resolveThroughExistingAncestors(dirname(manifest.originalPath))
+    } catch {
+      return false
+    }
+    const name = basename(manifest.originalPath)
+    if (!name || !isInside(canonicalRoot, canonicalParent)) return false
+    const original = join(canonicalParent, name)
+    if (!isInside(canonicalRoot, original)) return false
+    try {
+      await lstat(original)
+    } catch {
+      // Only a positively observed original path is sufficient to discard
+      // its preparation metadata; inaccessible and missing sources are kept.
+      return false
+    }
+
+    try {
+      const trashRoot = await this.resolveTrashRoot()
+      if (trashRoot === undefined) return false
+      await assertSafeTrashEntryDirectory(trashRoot, entry.path)
+      await rm(entry.path, { recursive: true, force: true })
+      this.forgetTrashEntry(entry.trashId)
+      this[OWNER_SERVICES].logger?.warn(
+        `sessionDelete: discarded unstarted Trash entry "${entry.trashId}"; the original artifact was left in place`,
+      )
+      return true
+    } catch (error) {
+      this[OWNER_SERVICES].logger?.warn(
+        `sessionDelete: discarding unstarted Trash entry "${entry.trashId}" failed; both paths were preserved: ${String(error)}`,
+      )
+      return false
     }
   }
 
@@ -3057,6 +3170,28 @@ class SessionDeleteService {
         manifestBytes += manifestStat.size
       }
       if (manifest === undefined) continue
+      if (recoverMoves && manifest.moveState === TRASH_MOVE_PREPARING) {
+        const sessionId = typeof manifest.sessionId === 'string' ? manifest.sessionId : ''
+        if (sessionId.length === 0) continue
+        const settled = await this.runTrashOperation(
+          'move-preparation-recovery',
+          sessionId,
+          async () => {
+            const current = await this.readManifest(path)
+            if (current === undefined) return !(await this.pathExists(path))
+            if (current.moveState !== TRASH_MOVE_PREPARING) return true
+            const [artifactExists, sourceExists] = await Promise.all([
+              this.pathExists(join(path, ARTIFACT_DIR_NAME)),
+              this.pathExists(current.originalPath),
+            ])
+            return artifactExists && !sourceExists
+          },
+        )
+        if (!settled) continue
+        const current = await this.readManifest(path)
+        if (current === undefined) continue
+        Object.assign(manifest, current)
+      }
       if (recoverMoves && (await this.pathExists(join(path, COPYING_MARKER_FILE_NAME)))) {
         const sessionId = typeof manifest.sessionId === 'string' ? manifest.sessionId : ''
         if (sessionId.length === 0) continue
@@ -3075,6 +3210,7 @@ class SessionDeleteService {
         sessionId: typeof manifest.sessionId === 'string' ? manifest.sessionId : '',
         deletedAt: typeof manifest.deletedAt === 'string' ? manifest.deletedAt : '',
         originalPath: typeof manifest.originalPath === 'string' ? manifest.originalPath : '',
+        ...(typeof manifest.moveState === 'string' ? { moveState: manifest.moveState } : {}),
         path,
         children: Array.isArray(manifest.children) ? manifest.children : [],
         childrenCount:

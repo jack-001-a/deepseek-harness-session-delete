@@ -53,6 +53,16 @@ platform supports it, verify a regular single-link file through its descriptor,
 and read with a fixed buffer plus a one-byte growth sentinel. The Trash entry
 itself must be a real direct child of the configured Trash root.
 
+Trash manifests begin in a durable `preparing` state. The source snapshot and
+`.copying` marker are written before the manifest is atomically advanced to
+`moving`; artifact relocation cannot begin before that transition. A crash in
+the earlier gap is therefore distinguishable from a committed Trash move:
+recovery discards only a preparing entry with no restore marker, no Trash-side
+artifact, and a still-existing original path verified inside the Session Store.
+If `.copying` exists but the original is still authoritative and no artifact
+was promoted, recovery discards only the uncommitted Trash entry. Unverifiable
+states remain preserved.
+
 Restore-pending metadata is written through an exclusively created temporary
 file and an atomic rename. An unreadable, oversized, linked or otherwise
 unsafe existing manifest is preserved rather than treated as missing and

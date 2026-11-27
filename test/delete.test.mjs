@@ -2700,6 +2700,63 @@ test('restore retries after an interrupted partial cross-device copy', async () 
   await assert.rejects(stat(store.dir + '.partial'), (error) => error.code === 'ENOENT')
 })
 
+test('Trash listing discards an unstarted preparation and a retry performs the move', { timeout: 10000 }, async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+  const h = harness(storedTarget(store))
+  await mkdir(store.trashRoot, { recursive: true })
+
+  const trashId = 'uncommitted-trash-preparation'
+  const entry = join(store.trashRoot, trashId)
+  await mkdir(entry)
+  await writeFile(join(entry, 'meta.json'), JSON.stringify({
+    sessionId: SESSION_ID,
+    originalPath: store.dir,
+    deletedAt: new Date().toISOString(),
+    moveState: 'preparing',
+  }))
+
+  const listed = await h.service.listTrash()
+
+  assert.deepEqual(listed.entries, [], 'an uncommitted preparation must not appear as a deleted conversation')
+  assert.equal(await readFile(store.log, 'utf8'), '{"seq":0}\n', 'the original artifact must remain untouched')
+  await assert.rejects(stat(entry), (error) => error.code === 'ENOENT', 'the uncommitted Trash entry is discarded')
+
+  // A crash can also occur after .copying is written but before the atomic
+  // "moving" transition. Recovery must recognize that the original is still
+  // authoritative and discard only the metadata/staging directory.
+  const markerEntry = join(store.trashRoot, 'uncommitted-trash-with-marker')
+  await mkdir(markerEntry)
+  const sourceStat = await stat(store.dir)
+  await writeFile(join(markerEntry, 'meta.json'), JSON.stringify({
+    sessionId: SESSION_ID,
+    originalPath: store.dir,
+    deletedAt: new Date().toISOString(),
+    moveState: 'preparing',
+  }))
+  await writeFile(join(markerEntry, '.copying'), JSON.stringify({
+    dev: sourceStat.dev,
+    ino: sourceStat.ino,
+    isDirectory: sourceStat.isDirectory(),
+    size: sourceStat.size,
+    mtimeMs: sourceStat.mtimeMs,
+  }))
+
+  const listedAfterMarker = await h.service.listTrash()
+
+  assert.deepEqual(listedAfterMarker.entries, [], 'a marker without a promoted artifact is not a completed Trash move')
+  assert.equal(await readFile(store.log, 'utf8'), '{"seq":0}\n')
+  await assert.rejects(stat(markerEntry), (error) => error.code === 'ENOENT')
+
+  const deleted = await h.service.delete(SESSION_ID)
+  assert.equal(deleted.trashed, true, 'a retry must perform a real Trash move instead of treating preparation as committed')
+  const committedEntry = trashEntry(store, deleted.trashId)
+  const manifest = JSON.parse(await readFile(join(committedEntry, 'meta.json'), 'utf8'))
+  assert.equal(manifest.moveState, 'moving')
+  assert.equal((await stat(join(committedEntry, 'artifact'))).isDirectory(), true)
+  await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
+})
+
 test('startup recovery releases stale workspace accounting while retaining the Trash projection', async () => {
   const store = await makeStore()
   const options = { pinned: true, archived: false }
