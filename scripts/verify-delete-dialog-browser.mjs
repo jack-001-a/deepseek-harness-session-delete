@@ -123,6 +123,9 @@ try {
 
   const dialog = page.getByRole('dialog', { name: '删除聊天？' })
   await dialog.waitFor()
+  // The card has a short scale-in animation. Measure only its settled layout,
+  // not the transient bounding box from the first rendered frame.
+  await dialog.evaluate((element) => Promise.all(element.getAnimations().map((animation) => animation.finished)))
   const bounds = await dialog.boundingBox()
   assert.ok(bounds, 'the Host Modal card must be visible')
   assert.ok(Math.abs(bounds.width - 420) <= 1, 'desktop dialog width should match the 420px card contract')
