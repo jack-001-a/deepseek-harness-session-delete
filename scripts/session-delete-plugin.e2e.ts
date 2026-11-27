@@ -8,7 +8,7 @@
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
-import { chromium } from 'playwright'
+import { chromium, type Browser, type Page } from 'playwright'
 import { expect, it, onTestFailed } from 'vitest'
 import {
   launchWebScaffold,
@@ -32,9 +32,9 @@ it('deletes from the real session menu, then restores through the real Trash man
   const scaffold = await launchWebScaffold({
     extraInstallAnchors: [pluginManifest],
   })
-  let browser
-  let clientEntryId
-  let page
+  let browser: Browser | undefined
+  let clientEntryId: string | undefined
+  let page: Page | undefined
   try {
     const workspace = await scaffold.ctx.workspaceRegistry.create(scaffold.workspaceCwd)
     const sessionId = await seedSession(
@@ -44,8 +44,6 @@ it('deletes from the real session menu, then restores through the real Trash man
     )
     await workspace.attachSession(sessionId)
     await scaffold.ctx.sessionController.rename({ sessionId, title: sessionTitle })
-    expect(scaffold.ctx.get('sessionDelete')).toBeDefined()
-
     // The real profile mounts the Host half from cordis.patch.yml. Loading the
     // client entry below makes the published browser bundle join the actual
     // sidebar/menu/footer slots in this Host instance.

@@ -167,7 +167,7 @@ exclusion from this change.
 
 CI runs the plugin and the real Harness JSONL persistence provider in two
 independent Node processes sharing one store (Linux, Node 24), against pinned
-Harness **0.2.2-rc.4** and **0.2.2-rc.5**. The tests verify that a peer-held
+Harness **0.2.2-rc.4**, **0.2.2-rc.5** and **0.2.3-alpha.2**. The tests verify that a peer-held
 native write lease blocks deletion without damaging the session, that deletion
 succeeds after the peer releases the lease while moving `session.lock` with
 the artifact, and that a Restore/create race refuses atomic promotion when the
