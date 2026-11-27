@@ -1839,6 +1839,18 @@ class SessionDeleteService {
     }
   }
 
+  /** Whether the store root exists and resolves to a directory the plugin can verify. */
+  async hasVerifiableStoreRoot() {
+    const root = this.storeRoot()
+    if (root === undefined) return false
+    try {
+      const canonical = await realpath(root)
+      return (await stat(canonical)).isDirectory()
+    } catch {
+      return false
+    }
+  }
+
   /**
    * The directory that holds trashed artifacts and the audit trail.
    *
@@ -2344,10 +2356,11 @@ class SessionDeleteService {
   async describe() {
     const persistence = this[OWNER_SERVICES].sessionPersistence
     const canLocate = typeof persistence?.locate === 'function'
+    const canVerifyStoreRoot = await this.hasVerifiableStoreRoot()
     // A custom Trash root is usable only if its canonical location is outside
     // the Session Store and its final component is not a symlink.
     let hasTrash = false
-    if (this.mode === 'trash' && canLocate) {
+    if (this.mode === 'trash' && canLocate && canVerifyStoreRoot) {
       try {
         hasTrash = (await this.resolveTrashRoot()) !== undefined
       } catch (error) {
@@ -2365,7 +2378,7 @@ class SessionDeleteService {
     return {
       // The store can name its artifacts, and the trash the mode needs is
       // derivable: otherwise a deletion could not be performed here at all.
-      supported: canLocate && (this.mode === 'permanent' || hasTrash),
+      supported: canLocate && canVerifyStoreRoot && (this.mode === 'permanent' || hasTrash),
       mode: this.mode,
       // A store without a trash keeps nothing, so it has no retention window
       // to report; the browser must not offer the user a promise it cannot keep.

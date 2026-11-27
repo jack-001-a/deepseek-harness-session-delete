@@ -33,6 +33,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Report permanent deletion as unsupported when the Host has no existing verifiable Session Store directory, matching the runtime path-safety guard instead of showing an action that must fail.
 - Reject custom Trash roots that resolve inside the Session Store, including symlinked-parent aliases; validate the Trash root before listing, restoring, purging, sweeping or appending audit records.
 - Keep Session-list projection metadata (including titles) while a conversation is in recoverable Trash; remove it only on permanent deletion, manual Purge, or retention expiry so Restore can rebuild the original sidebar row.
 - Snapshot the injected persistence, session, workspace and optional Host services at plugin construction under a private Symbol, so Gateway call-context re-tracing cannot replace the dependencies used by Host operations.

@@ -2225,6 +2225,26 @@ test('describe reports a permanent store without a trash', async () => {
   })
 })
 
+test('describe does not advertise permanent deletion without a verifiable Session Store root', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+  const h = harness({
+    ...storedTarget(store),
+    root: undefined,
+    config: { mode: 'permanent' },
+  })
+
+  assert.deepEqual(await h.service.describe(), {
+    supported: false,
+    mode: 'permanent',
+    retentionDays: 0,
+    canRestore: false,
+    canListTrash: false,
+    trashCount: 0,
+    canLocate: true,
+  })
+})
+
 test('the trash lives beside the session store, never inside it', async () => {
   const store = await makeStore()
   const h = harness({ ...storedTarget(store) })
