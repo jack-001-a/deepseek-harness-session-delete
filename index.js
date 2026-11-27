@@ -2293,20 +2293,9 @@ class SessionDeleteService {
         { sessionId, reason: 'no-store-root' },
       )
     }
-    if (!isInside(root, target)) {
-      throw new SessionDeleteError(
-        'session-delete/unsafe-path',
-        `sessionDelete: the trash entry of session "${sessionId}" names a path outside the session store; nothing was restored`,
-        { sessionId, path: target, root, reason: 'outside-store' },
-      )
-    }
-    if (root !== undefined && samePath(dirname(target), root)) {
-      throw new SessionDeleteError(
-        'session-delete/unsafe-path',
-        `sessionDelete: the trash entry of session "${sessionId}" names a path that is not a session directory; nothing was restored`,
-        { sessionId, path: target, root, reason: 'unexpected-layout' },
-      )
-    }
+    // Do not compare the manifest path lexically with the configured root:
+    // either side may use a filesystem alias (for example /var vs /private/var
+    // or a Windows 8.3 path). The canonical checks below are authoritative.
     if (root !== undefined) {
       try {
         const canonicalRoot = await realpath(root)
