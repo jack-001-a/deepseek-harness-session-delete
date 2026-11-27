@@ -6,6 +6,11 @@ name: publish
 # The trusted publisher is bound to this exact workflow filename and repository.
 on:
   push:
+    branches:
+      - main
+    paths:
+      - package.json
+      - .github/workflows/publish.yml
     tags:
       - 'v*'
 
