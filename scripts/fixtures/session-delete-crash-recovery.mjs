@@ -42,7 +42,7 @@ const workspace = {
 }
 const registry = {
   list: () => [workspace],
-  get: (id) => (id === workspace.id ? workspace : undefined),
+  get: (id) => (id === workspace.id || id === 'ws-1' ? workspace : undefined),
   get pinnedSessionIds() { return [...pinned] },
   get archivedSessionIds() { return [...archived] },
   unpinSession: async (id) => { pinned.delete(id) },
