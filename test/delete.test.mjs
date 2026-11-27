@@ -10,7 +10,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { appendFile, link, mkdtemp, mkdir, readFile, readlink, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { appendFile, link, mkdtemp, mkdir, readFile, readlink, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -2753,7 +2753,7 @@ test('artifact operations stay on the canonical parent when a project symlink is
   })
   const artifact = await h.service.resolveArtifact({ id: SESSION_ID }, SESSION_ID)
 
-  assert.equal(artifact.target, store.dir, 'the operation path must use the canonical project parent')
+  assert.equal(artifact.target, await realpath(store.dir), 'the operation path must use the canonical project parent')
 
   // Simulate an attacker replacing the original project alias after the
   // safety check but before the destructive operation.
