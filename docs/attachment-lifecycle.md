@@ -37,9 +37,9 @@ Session Delete now recognizes an optional Host callback and invokes it only
 after the Session artifact has been irreversibly removed. That callback can release the
 Session's durable owner rows; it does not remove any image object, generic-file
 object, alias, or workspace file. The corresponding Harness implementation is
-being proposed in [Harness PR #1](https://github.com/jack-001-a/deepseek-harness/pull/1)
-and is not part of the pinned/released baseline yet. The plugin remains unable
-to infer reference ownership or collect provider objects from one Session log.
+still has no corresponding provider-ledger/owner-release implementation in
+the inspected Harness upstream baseline. The plugin remains unable to infer
+reference ownership or collect provider objects from one Session log.
 
 ## Current Host capability gap
 

@@ -178,9 +178,9 @@ delete, explicit Trash purge, or retention sweep has removed the Session
 artifact. Trash and Restore preserve owners. If the callback fails, the plugin
 logs the failure and leaves a conservative stale owner; the already-completed
 Session deletion remains successful. The callback releases ownership records
-only; it does not unlink provider objects. The matching SQLite ledger work is
-tracked separately in [Harness PR #1](https://github.com/jack-001-a/deepseek-harness/pull/1)
-and is not yet in the pinned baseline. See [Attachment lifecycle](attachment-lifecycle.md),
+only; it does not unlink provider objects. The inspected Harness upstream
+baseline does not include the matching SQLite ledger or owner-release adapter,
+so the optional callback is a no-op there. See [Attachment lifecycle](attachment-lifecycle.md),
 the [reference-aware GC RFC](attachment-gc-rfc.md), and the [Host Attachment
 Reference API Proposal](host-attachment-reference-api-proposal.md).
 

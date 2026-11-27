@@ -62,15 +62,15 @@ window.__ModuleLoader__.load({
     })
 
     /**
-     * The mode this bundle assumes when the Host cannot describe its store.
+     * The capability answer used when the Host cannot describe its store.
      *
-     * Permanent is the cautious assumption: it is the only mode that cannot
-     * be undone, so a dialog that guesses wrong must ask for a typed
-     * confirmation rather than deleting on a single click.
+     * An unavailable or malformed answer is not evidence that this Session
+     * can be safely located. Fail closed: the dialog may explain the problem
+     * and close, but it must not offer a destructive action.
      */
     const FALLBACK_DESCRIBE = Object.freeze({
-      supported: true,
-      mode: 'permanent',
+      supported: false,
+      mode: 'unknown',
       retentionDays: 0,
       canRestore: false,
       canListTrash: false,
@@ -84,12 +84,18 @@ window.__ModuleLoader__.load({
       'dialog.title': 'Delete chat?',
       'dialog.title.trash': 'Move chat to Trash?',
       'dialog.title.permanent': 'Delete chat?',
+      'dialog.title.unsupported': 'Delete chat unavailable',
+      'dialog.title.describeFailed': 'Could not verify deletion',
       'dialog.description':
         'This will permanently delete “{title}”. This action cannot be undone.',
       'dialog.description.trash':
         'This will move “{title}” to Trash. You can restore it for the next {days} days.',
       'dialog.description.permanent':
         'This will permanently delete “{title}”. This action cannot be undone.',
+      'dialog.description.unsupported':
+        'This Harness version cannot verify a safe deletion path for this chat. Nothing has been changed.',
+      'dialog.description.describeFailed':
+        'The Host could not confirm that this chat can be safely deleted. Reconnect and try again. Nothing has been changed.',
       'dialog.confirm': 'Delete chat',
       'dialog.confirm.trash': 'Move to Trash',
       'dialog.confirm.permanent': 'Delete chat',
@@ -162,9 +168,13 @@ window.__ModuleLoader__.load({
       'dialog.title': '删除聊天？',
       'dialog.title.trash': '将聊天移入回收站？',
       'dialog.title.permanent': '删除聊天？',
+      'dialog.title.unsupported': '当前无法删除聊天',
+      'dialog.title.describeFailed': '无法确认删除条件',
       'dialog.description': '这将永久删除“{title}”。此操作无法撤销。',
       'dialog.description.trash': '这将把“{title}”移入回收站，你可以在 {days} 天内恢复。',
       'dialog.description.permanent': '这将永久删除“{title}”。此操作无法撤销。',
+      'dialog.description.unsupported': '当前 Harness 版本无法确认此聊天的安全删除路径，本次未进行任何更改。',
+      'dialog.description.describeFailed': '宿主未能确认此聊天是否可以安全删除。请重新连接后重试，本次未进行任何更改。',
       'dialog.confirm': '删除聊天',
       'dialog.confirm.trash': '移入回收站',
       'dialog.confirm.permanent': '删除聊天',
@@ -903,15 +913,27 @@ window.__ModuleLoader__.load({
     /**
      * The dialog, rendered by the host's own Modal.
      *
-     * The host Modal owns the chrome, the focus trap and the ESC key, so
-     * this path only has to hand it the content. The host renders the
-     * description as a paragraph, so the description is passed as a node
-     * carrying an id: the controls below can then point at it with
-     * `aria-describedby`.
+     * The Host owns its portal, focus trap and Escape handling. Its Modal API
+     * does not expose aria-describedby, so this adapter links the portaled
+     * dialog to the rendered heading and description after the portal mounts.
      * @param props - the dialog contract.
      * @returns the host modal.
      */
     function HostDialog({ title, titleId, description, descriptionId, describedBy, busy, closeLabel, onClose, onKeyDownCapture, children, footer }) {
+      React.useEffect(() => {
+        if (typeof document === 'undefined') return
+        const dialogs = document.querySelectorAll('.dshSessionDelete_modalCard[role="dialog"]')
+        for (const dialog of dialogs) {
+          const heading = dialog.querySelector('h2')
+          if (heading) heading.id = titleId
+          dialog.setAttribute('aria-labelledby', titleId)
+          if (describedBy) dialog.setAttribute('aria-describedby', describedBy)
+          else dialog.removeAttribute('aria-describedby')
+          if (busy) dialog.setAttribute('aria-busy', 'true')
+          else dialog.removeAttribute('aria-busy')
+        }
+      }, [titleId, describedBy, busy])
+
       return h(adapter.Modal, {
         open: true,
         onClose,
@@ -1267,7 +1289,7 @@ window.__ModuleLoader__.load({
           },
           () => {
             if (cancelled) return
-            setDescribeState({ status: 'ready', info: FALLBACK_DESCRIBE })
+            setDescribeState({ status: 'failed', info: FALLBACK_DESCRIBE })
           },
         )
         return () => {
@@ -1281,7 +1303,9 @@ window.__ModuleLoader__.load({
       const loading = describeState.status === 'loading'
       const info = describeState.info ?? FALLBACK_DESCRIBE
       const mode = loading ? 'unknown' : resolveMode(info)
-      const unsupported = !loading && info.supported === false
+      const unsupported = !loading && (
+        info.supported !== true || info.canLocate !== true || mode === 'unknown'
+      )
       const busy = deleting || pendingAction !== undefined || actionInFlightRef.current
       // The element ids the dialog wires its text with; they are unique per
       // request so two dialogs can never point at each other's text.
@@ -1317,7 +1341,7 @@ window.__ModuleLoader__.load({
       }
 
       const confirm = () => {
-        if (busy || actionInFlightRef.current || outcome !== undefined) return
+        if (busy || loading || unsupported || mode === 'unknown' || actionInFlightRef.current || outcome !== undefined) return
         if (typeof confirmDelete !== 'function') return
         actionInFlightRef.current = true
         setDeleting(true)
@@ -1399,9 +1423,12 @@ window.__ModuleLoader__.load({
           )
       }
 
-      const titleKey = mode === 'trash' ? 'dialog.title.trash' : mode === 'permanent' ? 'dialog.title.permanent' : 'dialog.title'
-      const descriptionKey =
-        mode === 'trash' ? 'dialog.description.trash' : mode === 'permanent' ? 'dialog.description.permanent' : 'dialog.description'
+      const titleKey = unsupported
+        ? describeState.status === 'failed' ? 'dialog.title.describeFailed' : 'dialog.title.unsupported'
+        : mode === 'trash' ? 'dialog.title.trash' : mode === 'permanent' ? 'dialog.title.permanent' : 'dialog.title'
+      const descriptionKey = unsupported
+        ? describeState.status === 'failed' ? 'dialog.description.describeFailed' : 'dialog.description.unsupported'
+        : mode === 'trash' ? 'dialog.description.trash' : mode === 'permanent' ? 'dialog.description.permanent' : 'dialog.description'
       const confirmKey = mode === 'trash' ? 'dialog.confirm.trash' : mode === 'permanent' ? 'dialog.confirm.permanent' : 'dialog.confirm'
       const pendingKey = mode === 'trash' ? 'dialog.pending.trash' : mode === 'permanent' ? 'dialog.pending.permanent' : 'dialog.pending'
 
@@ -1417,9 +1444,6 @@ window.__ModuleLoader__.load({
         body.push(
           h('div', { role: 'status', className: 'dshSessionDelete_status', key: 'checking' }, t('dialog.checking')),
         )
-      }
-      if (unsupported) {
-        body.push(h('div', { className: 'dshSessionDelete_note', key: 'unsupported' }, t('dialog.unsupported')))
       }
       if (mode === 'trash' && !unsupported && outcome === undefined) {
         body.push(h('div', { className: 'dshSessionDelete_note', key: 'trashNotice' }, t('dialog.trashNotice', { days: info.retentionDays })))

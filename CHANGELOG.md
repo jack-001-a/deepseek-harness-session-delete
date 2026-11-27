@@ -6,6 +6,12 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## Unreleased
 
+### Fixed
+
+- Fail closed when Host deletion capabilities cannot be verified or the Session cannot be safely located; no destructive action is rendered or dispatched.
+- Link the Host Modal's portaled dialog root to its actual heading and description for screen-reader context.
+- Align the npm package description with the explicit permanent-delete confirmation now shipped.
+
 ### Changed
 
 - Rebuild the delete confirmation around the reference card: native Modal skin, compact heading/description, checked file-retention status, and aligned pill actions.

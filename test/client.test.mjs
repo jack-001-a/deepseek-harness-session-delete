@@ -448,6 +448,8 @@ test('registers the menu row, hover button and dialog on the shipped slots', asy
 test('publishes the sidebar dependency and the linked project documents', async () => {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
   assert.ok(manifest.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-sidebar'))
+  assert.match(manifest.description, /explicit permanent-delete confirmation/)
+  assert.doesNotMatch(manifest.description, /typed permanent-delete confirmation|输入会话 ID 二次确认永久删除/)
   for (const file of ['CONTRIBUTING.md', 'SECURITY.md', 'docs/**']) {
     assert.ok(manifest.files.includes(file), 'the npm package must include ' + file)
   }
@@ -1075,6 +1077,49 @@ test('a permanently deleted conversation is reported as permanent', async () => 
   )
 })
 
+test('a failed capability query fails closed and never calls the delete endpoint', async () => {
+  const { plugin, React } = await loadPlugin()
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  let deleteCalls = 0
+  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+    describeDeletion: async () => {
+      throw new Error('Host temporarily unavailable')
+    },
+    confirmDelete: async () => {
+      deleteCalls += 1
+      return { mode: 'permanent', trashed: false, purged: true }
+    },
+  })
+  await settle()
+
+  const dialog = dialogElement(form)
+  assert.equal(dialog.props.title, 'Could not verify deletion')
+  assert.match(text(dialog.props.description), /Reconnect and try again/)
+  assert.deepEqual(footerButtons(form).map((button) => text(button)), ['Close'])
+  assert.equal(findByType(form, 'input'), undefined)
+  assert.equal(deleteCalls, 0, 'a failed capability query never dispatches a destructive request')
+})
+
+test('a supported store without a safe locator is also read-only', async () => {
+  const { plugin, React } = await loadPlugin()
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  let deleteCalls = 0
+  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+    describeDeletion: async () => ({ ...DESCRIBE_PERMANENT, canLocate: false }),
+    confirmDelete: async () => {
+      deleteCalls += 1
+      return { mode: 'permanent', trashed: false, purged: true }
+    },
+  })
+  await settle()
+
+  const dialog = dialogElement(form)
+  assert.equal(dialog.props.title, 'Delete chat unavailable')
+  assert.match(text(dialog.props.description), /cannot verify a safe deletion path/)
+  assert.deepEqual(footerButtons(form).map((button) => text(button)), ['Close'])
+  assert.equal(deleteCalls, 0)
+})
+
 test('an unsupported store offers no destructive action at all', async () => {
   const { plugin, React } = await loadPlugin()
   const { registrations, dictionaries } = applyPlugin(plugin)
@@ -1083,13 +1128,10 @@ test('an unsupported store offers no destructive action at all', async () => {
   })
   await settle()
 
-  const labels = footerButtons(form).map((button) => text(button))
-  assert.deepEqual(labels, ['Close'])
-  const notes = []
-  walk(form.tree, (node) => {
-    if (node.props?.className === 'dshSessionDelete_note') notes.push(text(node))
-  })
-  assert.ok(notes.some((note) => note.includes('cannot locate')))
+  const dialog = dialogElement(form)
+  assert.equal(dialog.props.title, 'Delete chat unavailable')
+  assert.match(text(dialog.props.description), /cannot verify a safe deletion path/)
+  assert.deepEqual(footerButtons(form).map((button) => text(button)), ['Close'])
 })
 
 test('every host failure code is localized in both locales', async () => {
@@ -1197,6 +1239,44 @@ test('ESC is swallowed while a deletion is in flight and cancels otherwise', asy
   await settle()
   dialogElement(form).props.onClose()
   assert.equal(settled, 1, 'ESC outside a request closes the dialog')
+})
+
+test('the Host Modal receives an accessible name and description relationship', async () => {
+  const previousDocument = globalThis.document
+  const attributes = new Map()
+  const heading = { id: '' }
+  const dialog = {
+    querySelector: (selector) => {
+      assert.equal(selector, 'h2')
+      return heading
+    },
+    setAttribute: (name, value) => attributes.set(name, value),
+    removeAttribute: (name) => attributes.delete(name),
+  }
+  globalThis.document = {
+    querySelectorAll: (selector) => {
+      assert.equal(selector, '.dshSessionDelete_modalCard[role="dialog"]')
+      return [dialog]
+    },
+  }
+  try {
+    const { plugin, React } = await loadPlugin()
+    const { registrations, dictionaries } = applyPlugin(plugin)
+    const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+      describeDeletion: async () => DESCRIBE_TRASH,
+    })
+    await settle()
+    const renderedDialog = dialogElement(form)
+
+    assert.equal(heading.id, form.tree.props.titleId)
+    assert.equal(attributes.get('aria-labelledby'), form.tree.props.titleId)
+    assert.equal(attributes.get('aria-describedby'), form.tree.props.descriptionId)
+    assert.equal(attributes.has('aria-busy'), false)
+    assert.equal(text(renderedDialog.props.description), 'This will move “Deploy notes” to Trash. You can restore it for the next 7 days.')
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document
+    else globalThis.document = previousDocument
+  }
 })
 
 test('the focus goes back to the control that opened the dialog', async () => {

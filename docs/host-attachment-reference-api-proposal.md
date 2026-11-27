@@ -1,7 +1,7 @@
 
 # Host Attachment Reference API Proposal
 
-**Status:** Session Delete's owner-release notification is merged; the Harness-side provider ledger/adapter remains open in PR #1. The Host implementation is not yet in the pinned baseline, and no physical garbage collection is enabled.
+**Status:** Session Delete's optional owner-release notification is implemented. The Harness-side provider ledger/adapter remains a proposal; the inspected Harness upstream baseline does not ship it, and no physical garbage collection is enabled.
 
 **Research baseline:** `deepseek-ai/deepseek-harness` `master` at `4b399c39a6d1479cd84ca591b4d7c88e24d38a96` (released as `dsh-v0.2.3-alpha.2`, 2026-11-26).
 
@@ -16,7 +16,7 @@ Introduce two cooperating Host capabilities:
 
 The existing `ctx.attachments` service remains the only owner of attachment bytes and filesystem paths. A new Host lifecycle service may coordinate Session ownership, but it must call provider methods rather than deriving paths or unlinking files itself.
 
-GC stays disabled until the provider reports a complete, reconciled reference index. A missing event, unknown event shape, unreadable Session, unavailable Trash manifest, legacy writer, or untracked upload must cause a fail-closed result. Session Delete now recognizes an optional `fileUploads.onSessionPermanentlyPurged(sessionId)` callback after successful irreversible artifact removal; Trash and Restore do not call it, and callback failures leave a safe stale owner. The Harness-side ledger and adapter are in [Harness PR #1](https://github.com/jack-001-a/deepseek-harness/pull/1) and remain open. This is owner release, not provider object collection.
+GC stays disabled until the provider reports a complete, reconciled reference index. A missing event, unknown event shape, unreadable Session, unavailable Trash manifest, legacy writer, or untracked upload must cause a fail-closed result. Session Delete now recognizes an optional `fileUploads.onSessionPermanentlyPurged(sessionId)` callback after successful irreversible artifact removal; Trash and Restore do not call it, and callback failures leave a safe stale owner. The Harness-side ledger and adapter are not present in the inspected upstream baseline; this proposal remains a prerequisite for any safe owner release. This is owner release, not provider object collection.
 
 ## 2. Source-grounded constraints
 
