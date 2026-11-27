@@ -2236,6 +2236,85 @@ test('the trash lives beside the session store, never inside it', async () => {
   assert.ok((await stat(trashEntry(store, outcome.trashId))).isDirectory())
 })
 
+test('a configured Trash root inside the Session Store is rejected before creation', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+  const custom = join(store.root, 'plugin-trash')
+  const h = harness({ ...storedTarget(store), config: { trashRoot: custom } })
+  const original = await readFile(store.log, 'utf8')
+
+  await assert.rejects(
+    h.service.delete(SESSION_ID),
+    (error) => error.code === 'session-delete/trash-unavailable',
+  )
+
+  await assert.rejects(stat(custom), (error) => error.code === 'ENOENT',
+    'an unsafe Trash path must be rejected before a directory is created')
+  assert.equal(await readFile(store.log, 'utf8'), original)
+  assert.equal((await h.service.describe()).supported, false)
+})
+
+test('a symlinked parent cannot redirect a custom Trash root into the Session Store', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+  const alias = join(store.base, 'sessions-alias')
+  const custom = join(alias, 'plugin-trash')
+  try {
+    await symlink(store.root, alias, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP', 'EOPNOTSUPP'].includes(error?.code)) {
+      t.skip('the current platform does not permit directory symbolic links')
+      return
+    }
+    throw error
+  }
+  const h = harness({ ...storedTarget(store), config: { trashRoot: custom } })
+  const original = await readFile(store.log, 'utf8')
+
+  await assert.rejects(
+    h.service.delete(SESSION_ID),
+    (error) => error.code === 'session-delete/trash-unavailable',
+  )
+
+  await assert.rejects(stat(join(store.root, 'plugin-trash')), (error) => error.code === 'ENOENT')
+  assert.equal(await readFile(store.log, 'utf8'), original)
+})
+
+test('Trash listing refuses an in-store directory and a symlinked Trash root', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+  const inside = join(store.root, 'plugin-trash')
+  await mkdir(inside)
+  const h = harness({ ...storedTarget(store), config: { trashRoot: inside } })
+
+  assert.deepEqual(await h.service.listTrash(), { entries: [] })
+  assert.equal((await h.service.describe()).supported, false)
+  assert.ok(h.calls.warnings.some((message) => message.includes('unsafe Trash location')))
+
+  const outside = join(store.base, 'outside-trash')
+  await mkdir(outside)
+  const linkedEntry = join(outside, 'linked-entry')
+  await mkdir(linkedEntry)
+  await writeFile(join(linkedEntry, 'meta.json'), JSON.stringify({
+    sessionId: 'outside-session',
+    originalPath: store.log,
+    deletedAt: new Date().toISOString(),
+  }))
+  await rm(inside, { recursive: true, force: true })
+  try {
+    await symlink(outside, inside, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP', 'EOPNOTSUPP'].includes(error?.code)) {
+      t.skip('the current platform does not permit directory symbolic links')
+      return
+    }
+    throw error
+  }
+  assert.deepEqual(await h.service.listTrash(), { entries: [] })
+  assert.ok(h.calls.warnings.some((message) => message.includes('unsafe Trash location')))
+  assert.ok(await stat(join(linkedEntry, 'meta.json')), 'the linked target must remain untouched')
+})
+
 test('an explicit trash root is honoured', async () => {
   const store = await makeStore()
   const custom = join(store.base, 'custom-trash')

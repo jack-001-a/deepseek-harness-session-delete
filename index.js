@@ -403,6 +403,34 @@ async function prepareSafeTrashRoot(root) {
   return expectedRoot
 }
 
+/**
+ * Resolve a Trash root through existing filesystem aliases and prove that it
+ * is outside the canonical Session Store. A custom path inside the store
+ * would be scanned as a live project; a symlink must not bypass that rule.
+ */
+async function validateTrashRootOutsideStore(root, storeRoot) {
+  const absoluteRoot = resolve(root)
+  const rootStat = await lstat(absoluteRoot).catch((error) => {
+    if (error?.code === 'ENOENT') return undefined
+    throw error
+  })
+  if (rootStat && (!rootStat.isDirectory() || rootStat.isSymbolicLink())) {
+    throw new Error('Refusing to use a non-directory or symbolic-link Trash root.')
+  }
+
+  const [canonicalStoreRoot, canonicalTrashRoot] = await Promise.all([
+    resolveThroughExistingAncestors(storeRoot),
+    resolveThroughExistingAncestors(absoluteRoot),
+  ])
+  if (
+    samePath(canonicalTrashRoot, canonicalStoreRoot) ||
+    isInside(canonicalStoreRoot, canonicalTrashRoot)
+  ) {
+    throw new Error('The Trash root must be outside the Session Store.')
+  }
+  return canonicalTrashRoot
+}
+
 /** Atomically replace one bounded metadata file without following its path. */
 async function writeAtomicTransactionFile(file, text, label, maxBytes) {
   if (Buffer.byteLength(text, 'utf8') > maxBytes) {
@@ -1829,6 +1857,31 @@ class SessionDeleteService {
   }
 
   /**
+   * Resolve the configured Trash location without trusting lexical paths.
+   * Reads validate an existing root without creating it; mutations may create
+   * it only after the canonical outside-the-store check has succeeded.
+   * @param options.create - whether the root should be created when missing.
+   * @returns the canonical Trash root, or undefined when the store is unknown.
+   */
+  async resolveTrashRoot({ create = false } = {}) {
+    const root = this.trashRoot()
+    const storeRoot = this.storeRoot()
+    if (root === undefined || storeRoot === undefined) return undefined
+
+    const validated = await validateTrashRootOutsideStore(root, storeRoot)
+    if (!create) return validated
+
+    // Use the canonical candidate, not the configured alias, so a symlinked
+    // parent cannot be swapped between validation and directory creation.
+    const prepared = await prepareSafeTrashRoot(validated)
+    const verified = await validateTrashRootOutsideStore(prepared, storeRoot)
+    if (!samePath(prepared, verified)) {
+      throw new Error('The Trash root changed while it was being created.')
+    }
+    return verified
+  }
+
+  /**
    * Remove one session's stored artifact.
    *
    * The removal is the one irreversible step of a deletion. In trash mode the
@@ -1985,7 +2038,8 @@ class SessionDeleteService {
     }
     let safeRoot
     try {
-      safeRoot = await prepareSafeTrashRoot(root)
+      safeRoot = await this.resolveTrashRoot({ create: true })
+      if (safeRoot === undefined) throw new Error('The Session Store root is unavailable.')
     } catch (error) {
       throw new SessionDeleteError(
         'session-delete/trash-unavailable',
@@ -2290,10 +2344,18 @@ class SessionDeleteService {
   async describe() {
     const persistence = this[OWNER_SERVICES].sessionPersistence
     const canLocate = typeof persistence?.locate === 'function'
-    const trashRoot = this.trashRoot()
-    // Without a store that can name its artifacts the plugin can offer no
-    // action here at all, not even the reversible ones.
-    const hasTrash = this.mode === 'trash' && trashRoot !== undefined && canLocate
+    // A custom Trash root is usable only if its canonical location is outside
+    // the Session Store and its final component is not a symlink.
+    let hasTrash = false
+    if (this.mode === 'trash' && canLocate) {
+      try {
+        hasTrash = (await this.resolveTrashRoot()) !== undefined
+      } catch (error) {
+        this[OWNER_SERVICES].logger?.warn(
+          `sessionDelete: the Trash location is unavailable: ${String(error)}`,
+        )
+      }
+    }
     let trashCount = 0
     if (hasTrash) {
       // The index is refreshed rather than trusted: the browser asks what is
@@ -2417,6 +2479,18 @@ class SessionDeleteService {
         'session-delete/not-found',
         `sessionDelete: session "${sessionId}" is not in the trash`,
         { sessionId },
+      )
+    }
+    let trashRoot
+    try {
+      trashRoot = await this.resolveTrashRoot()
+      if (trashRoot === undefined) throw new Error('The Session Store root is unavailable.')
+      await assertSafeTrashEntryDirectory(trashRoot, entry.path)
+    } catch (error) {
+      throw new SessionDeleteError(
+        'session-delete/trash-unavailable',
+        `sessionDelete: the Trash entry for "${sessionId}" is no longer in a verified Trash directory; nothing was restored`,
+        { sessionId, reason: error instanceof Error ? error.message : String(error) },
       )
     }
     let target = entry.originalPath
@@ -2653,8 +2727,8 @@ class SessionDeleteService {
     }
     const next = { ...previous, restoreState: RESTORE_PENDING, restoredAt: new Date().toISOString() }
     try {
-      const root = this.trashRoot()
-      if (root === undefined) throw new Error('The trash root is unavailable.')
+      const root = await this.resolveTrashRoot()
+      if (root === undefined) throw new Error('The verified trash root is unavailable.')
       await assertSafeTrashEntryDirectory(root, entry.path)
       await writeAtomicTransactionFile(
         join(entry.path, MANIFEST_FILE_NAME),
@@ -2684,6 +2758,18 @@ class SessionDeleteService {
         'session-delete/not-found',
         `sessionDelete: session "${sessionId}" is not in the trash`,
         { sessionId },
+      )
+    }
+    let trashRoot
+    try {
+      trashRoot = await this.resolveTrashRoot()
+      if (trashRoot === undefined) throw new Error('The Session Store root is unavailable.')
+      await assertSafeTrashEntryDirectory(trashRoot, entry.path)
+    } catch (error) {
+      throw new SessionDeleteError(
+        'session-delete/trash-unavailable',
+        `sessionDelete: the Trash entry for "${sessionId}" is no longer in a verified Trash directory; nothing was purged`,
+        { sessionId, reason: error instanceof Error ? error.message : String(error) },
       )
     }
     await this.removeWithRetries(entry.path, sessionId)
@@ -2873,7 +2959,15 @@ class SessionDeleteService {
    * @returns the trash entries, newest first.
    */
   async readTrashEntries({ recoverMoves = true } = {}) {
-    const root = this.trashRoot()
+    let root
+    try {
+      root = await this.resolveTrashRoot()
+    } catch (error) {
+      this[OWNER_SERVICES].logger?.warn(
+        `sessionDelete: refusing to read an unsafe Trash location: ${String(error)}`,
+      )
+      return []
+    }
     if (root === undefined) return []
     const candidates = []
     try {
@@ -2938,7 +3032,7 @@ class SessionDeleteService {
    */
   async readManifest(path) {
     try {
-      const root = this.trashRoot()
+      const root = await this.resolveTrashRoot()
       if (root === undefined) return undefined
       await assertSafeTrashEntryDirectory(root, path)
       const text = await readBoundedTransactionFile(
@@ -3153,6 +3247,9 @@ class SessionDeleteService {
           if (current === undefined || current.trashId !== entry.trashId) return false
           const currentDeletedAt = Date.parse(current.deletedAt)
           if (!Number.isFinite(currentDeletedAt) || currentDeletedAt >= cutoff) return false
+          const trashRoot = await this.resolveTrashRoot()
+          if (trashRoot === undefined) throw new Error('The Session Store root is unavailable.')
+          await assertSafeTrashEntryDirectory(trashRoot, current.path)
           await this.removeWithRetries(current.path, current.sessionId)
           await this.removeProjectionCache(current.sessionId)
           await this.releaseAttachmentOwnersAfterPurge(current.sessionId)
@@ -3217,7 +3314,8 @@ class SessionDeleteService {
         if (recordBytes > AUDIT_MAX_RECORD_BYTES) {
           throw new Error('Refusing an audit record larger than 8 KiB.')
         }
-        const safeRoot = await prepareSafeTrashRoot(root)
+        const safeRoot = await this.resolveTrashRoot({ create: true })
+        if (safeRoot === undefined) throw new Error('The Session Store root is unavailable.')
         const file = join(safeRoot, AUDIT_FILE_NAME)
         await assertSafeAuditPath(safeRoot, file)
         const flags = fsConstants.O_WRONLY | fsConstants.O_APPEND |
