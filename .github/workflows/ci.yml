@@ -166,12 +166,19 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build the upstream native system addon
+        if: matrix.harness.version != '0.2.3-alpha.2'
         working-directory: deepseek-harness
         run: pnpm run build:native-system
 
       - name: Build the upstream Host libraries
+        if: matrix.harness.version != '0.2.3-alpha.2'
         working-directory: deepseek-harness
         run: pnpm exec tsx scripts/compile-referenced-projects.ts host-libraries
+
+      - name: Build the official Host, Client and Web artifact graph
+        if: matrix.harness.version == '0.2.3-alpha.2'
+        working-directory: deepseek-harness
+        run: pnpm run build:artifacts
 
       - name: Exercise session leases with two real Harness processes
         env:
@@ -179,11 +186,6 @@ jobs:
           DSH_HARNESS_VERSION: ${{ matrix.harness.version }}
           DSH_E2E_MANIFEST: ${{ github.workspace }}/artifacts/session-delete-harness-e2e.json
         run: node scripts/run-harness-session-delete-e2e.mjs
-
-      - name: Build the real Harness Web frontend
-        if: matrix.harness.version == '0.2.3-alpha.2'
-        working-directory: deepseek-harness
-        run: pnpm run build:web
 
       - name: Install Chromium for the real Harness Web UI
         if: matrix.harness.version == '0.2.3-alpha.2'
