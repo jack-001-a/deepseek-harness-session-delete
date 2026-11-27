@@ -1,13 +1,14 @@
 name: ci
 
-# Runs the test suite on every push and pull request, on the platforms the
-# plugin claims to support. The publish workflow stays separate: it only runs
-# for a release tag and only after this workflow is green.
+# Runs the complete test suite on every push and pull request, across the
+# platforms the plugin claims to support. The tag-only publish workflow calls
+# this same workflow, so release validation cannot drift from normal CI.
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call: {}
 
 # Keep main-branch runs alive: the pinned Harness builds and two-process
 # integration jobs are intentionally expensive and should finish with evidence.

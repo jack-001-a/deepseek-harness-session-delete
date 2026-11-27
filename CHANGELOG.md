@@ -15,6 +15,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Reuse the complete CI and CodeQL workflows as release prerequisites, so npm publication runs the same cross-platform, Chromium and pinned Harness compatibility gates instead of a weaker duplicate matrix.
+- Correct the Trash lifecycle documentation: recoverable sessions retain their list projection and title until irreversible deletion; update the Host module summary to match.
 - Await the Client Sessions catalog refresh after Restore settles, so the restored conversation is visible in the sidebar before the UI acknowledges completion.
 - Preserve the owner Context's bound `waterfall`, `parallel` and `emit` operations alongside captured Host services, so lifecycle hooks keep their original receiver after Gateway rebinding.
 - Add path-redacted, length-bounded Gateway error messages and details-key metadata to real-Harness RPC diagnostics, preserving privacy while making `gateway/internal` actionable.

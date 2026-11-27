@@ -1,8 +1,9 @@
 name: publish
 
 # Publishes through npm Trusted Publishing (OIDC): no long-lived token, no
-# one-time password. The trusted publisher is bound to this exact workflow
-# filename and repository, so neither may be renamed without reconfiguring it.
+# one-time password. Release publishing reuses the complete CI and CodeQL
+# workflows so tag builds cannot silently skip browser or Harness integration gates.
+# The trusted publisher is bound to this exact workflow filename and repository.
 on:
   push:
     tags:
@@ -16,39 +17,24 @@ permissions:
   contents: read
 
 jobs:
+  # Reuse the exact CI and security workflows instead of maintaining a weaker,
+  # separately drifting release-only test matrix.
   validate:
-    # Run the same complete platform/runtime matrix as ci.yml before any release action.
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        node-version: [22, 24, 26]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
+    name: Full cross-platform, browser and Harness CI
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
 
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ matrix.node-version }}
-
-      - name: Check JavaScript syntax
-        run: npm run check
-
-      - name: Run the test suite
-        run: npm test
-
-      - name: Verify the package manifest
-        run: |
-          node -e "const p=require('./package.json'); if (p.private) throw new Error('package.json must not be private'); if (!p.repository?.url) throw new Error('repository.url is required for trusted publishing'); if (!p.engines?.node) throw new Error('engines.node is required'); if (!p.engines?.dsh) throw new Error('engines.dsh is required'); console.log(p.name, p.version)"
-
-      - name: Inspect the tarball contents
-        run: npm pack --dry-run
+  codeql:
+    name: CodeQL security analysis
+    uses: ./.github/workflows/codeql.yml
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
 
   publish:
-    needs: validate
+    needs: [validate, codeql]
     # Release tags must point to a commit reachable from main.
     runs-on: ubuntu-latest
     timeout-minutes: 15

@@ -70,9 +70,10 @@ The default mode is `trash`:
    workspace, display-slot anchor, pin and archive marks. That snapshot is
    taken after the stop/lease steps, immediately before the manifest is written,
    so registry changes that finish while the Host is stopping are included.
-3. The row leaves the sidebar, workspace accounting is released and the
-   projection cache is dropped.
-3. **Restore** moves the artifact back, **reattaches the conversation to the
+3. The row leaves the sidebar and workspace accounting is released. The
+   session-list projection (including its title) is retained while the artifact
+   remains recoverable, so Restore can rebuild the original row.
+4. **Restore** moves the artifact back, **reattaches the conversation to the
    workspace accounting recorded in the manifest**, puts it back in its
    recorded display slot, replays a pin or archive mark, and announces the row
    to the browser — no restart needed. Reattachment is best-effort: if it
@@ -80,9 +81,10 @@ The default mode is `trash`:
    false`, `needsRestart: true`), keeps the files in place, and leaves a
    marked trash entry so a later Restore finishes the accounting without
    moving anything twice.
-4. **Delete permanently** removes the trashed artifact for good.
-5. Anything still in the trash after `retentionDays` (default 7) is purged
-   automatically.
+5. **Delete permanently** removes the trashed artifact and its retained
+   projection metadata.
+6. Anything still in the trash after `retentionDays` (default 7) is purged
+   automatically, including its projection metadata.
 
 Restore is idempotent: an entry whose files are already back (a failed
 reattachment, or a process that stopped mid-restore) is completed by the next
@@ -208,7 +210,7 @@ file-retention row also makes clear that attachments and workspace files remain.
 | Artifact | Effect |
 |---|---|
 | Session log artifact (`~/.dsh/sessions/<project-key>/<session-id>/`, log + lock file) | moved to the trash with its lock file, or the log contents are removed permanently; POSIX keeps the empty `session.lock` inode for future writer exclusion |
-| Projection cache record (`~/.dsh/storages/session_projcache/sessions/<id>.json`) | dropped, then re-checked against a late checkpoint write |
+| Session-list projection (`~/.dsh/storages/session_projcache/sessions/<id>.json`) | retained while the artifact is recoverable in Trash; removed and re-checked against late checkpoint writes only after permanent deletion, manual Purge or retention expiry |
 | Workspace accounting — membership, saved order, pin, archive mark | released |
 | Live session and agent store entries | detached *before* the files are moved, so no writer re-creates the log |
 | Attachments (`~/.dsh/attachments`) | **kept** — content-addressed and shared between sessions |
@@ -220,10 +222,14 @@ file-retention row also makes clear that attachments and workspace files remain.
 Deletion is a transaction with one irreversible step, and that step runs
 before anything becomes user-visible:
 
-1. resolve the target (live or stored), 2. refuse while work is running,
-3. stop and detach a live session, 4. **move the log artifact out of the
-   store**, 5. release workspace accounting, 6. drop the projection cache,
-7. announce the removal.
+1. Resolve the target (live or stored), and refuse while work is running.
+2. Stop and detach a live session.
+3. **Move the log artifact out of the store.**
+4. Release workspace accounting.
+5. Retain the session-list projection while the artifact is recoverable in
+   Trash; remove it, with a late-checkpoint re-check, only after irreversible
+   deletion (permanent mode, manual Purge or retention expiry).
+6. Announce the removal.
 
 - **A failed removal changes nothing.** If the artifact cannot be moved
   (typically a writer still closing), the request fails with
@@ -479,11 +485,11 @@ DeepSeek Harness 只能归档会话、无法真正删除，日志会一直堆积
 
 **新增内容**：会话「…」菜单里的**红色「删除聊天」**、会话行悬停时的垃圾桶按钮，以及一个参考原生桌面体验的确认卡片，显示聊天标题、是否可恢复和文件保留状态；永久删除通过明确的最终确认按钮执行。删除后确认框会原地显示结果，并提供**还原**与**彻底删除**两个后续操作。删除当前正在看的对话后，会在同一工作区重新打开一个新会话。侧边栏「设置」上方新增**回收站管理入口**，显示回收站数量，可按会话 ID 搜索；随时恢复会话，或输入完整会话 ID 后永久删除。列表只显示会话 ID 与删除时间，不保存也不展示对话标题或原始文件路径。
 
-**删除顺序是事务式的**：解析目标 → 拒绝运行中的工作 → 停并将活跃会话摘除 → 在支持新式持久化接口的 Harness 上取得宿主原生写租约 → **把日志移出存储**（移出前先把工作区记账写入回收站清单：所属工作区、显示位置锚点、置顶/归档标记）→ 释放宿主租约 → 释放工作区记账 → 删除投影缓存 → 广播移除事件。若另一个 Harness 写入者仍持有会话租约，会返回 `session-delete/locked`，本次不移动文件。
+**删除顺序是事务式的**：解析目标 → 拒绝运行中的工作 → 停止并摘除活跃会话 → 在支持新式持久化接口的 Harness 上取得宿主原生写租约 → **把日志移出存储**（移出前先把工作区记账写入回收站清单：所属工作区、显示位置锚点、置顶/归档标记）→ 释放宿主租约 → 释放工作区记账 → 在可恢复回收站模式下保留会话列表投影（包括标题），以便还原时重建原始列表行；仅永久删除、手动彻底清除或保留期清扫后才删除该投影 → 广播移除事件。若另一个 Harness 写入者仍持有会话租约，会返回 `session-delete/locked`，本次不移动文件。
 
 **还原是完整的**：文件移回后，插件会按清单重新挂回工作区、回复到原来的显示位置（锚点仍存在时）、重新置顶或归档，并向界面广播 `api-session/added`，所以**不必重启就能在侧边栏重新看到**。重新挂接失败时不会假装成功：结果会给出 `reattached: false` 与 `needsRestart: true`，文件保持在原位，回收站条目保留为 `accounting-pending`，再点一次「恢复」只补做记账、不会重复移动文件。旧版本（0.3.0 及更早）写入的条目没有记账信息，只会尽力按 `cwd` 推断工作区，必要时仍需重启。
 
-**会被处理的**：会话日志目录（日志 + 锁文件，移入回收站）、投影缓存记录、工作区记账（成员关系/排序/置顶/归档标记）。
+**状态变更**：会话日志目录（日志 + 锁文件，移入回收站）、工作区记账（成员关系/排序/置顶/归档标记）；会话列表投影（包含原始标题）在回收站可恢复期间保留，仅在永久删除、手动彻底清除或保留期清扫后删除。
 
 **不会删的**：附件目录（按内容寻址、可能被多个会话共享）、工作区中由对话上传或创建的文件、临时 spill 文件、由该对话分叉出的子会话（确认框会提示数量）。当前插件版本支持可选 Host 回调 `fileUploads.onSessionPermanentlyPurged(sessionId)`：仅在永久删除模式、手动永久清除或回收站保留期清理真正移除 Session artifact 后调用；移入回收站和还原都保留附件 owner。回调失败会记录警告并保留过量引用，不会把已经成功的日志删除报告成失败。该回调只释放引用记录，不会 unlink 附件；本次核对的 Harness 上游版本尚未包含 Provider 引用账本或 owner 释放实现，因此该可选回调在该版本中不会实际释放 owner。当前尚未开放物理 GC。详见 [附件生命周期说明](docs/attachment-lifecycle.md)、[安全 GC 设计 RFC](docs/attachment-gc-rfc.md) 和 [Host 附件引用 API 提案](docs/host-attachment-reference-api-proposal.md)。
 

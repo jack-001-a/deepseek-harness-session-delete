@@ -3,10 +3,10 @@
  *
  * Owns one operation: delete a stored conversation. The session's durable
  * log artifact leaves its location — into a recoverable trash by default, or
- * off the disk entirely in permanent mode — its workspace accounting
- * (membership, pin, archive) is released, and the browser is told the row is
- * gone. Recoverable Trash retains its list projection (including the title)
- * until an irreversible purge.
+ * off the disk entirely in permanent mode — and its workspace accounting
+ * (membership, pin, archive) is released. Recoverable Trash retains its list
+ * projection (including the title); only irreversible deletion removes that
+ * metadata before the browser is told the row is gone.
  *
  * The browser half calls `sessionDelete/delete` over the shared Remote
  * carrier. The endpoint is reachable through the API Gateway's runtime "SRC"
