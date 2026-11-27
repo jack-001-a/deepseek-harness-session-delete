@@ -8,7 +8,7 @@
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
-import { chromium, type Browser, type Page } from 'playwright'
+import { chromium, type Browser, type Locator, type Page } from 'playwright'
 import { expect, it, onTestFailed } from 'vitest'
 import {
   launchWebScaffold,
@@ -27,6 +27,16 @@ if (pluginRoot === undefined || pluginRoot.length === 0) {
 const pluginManifest = join(pluginRoot, 'package.json')
 const sessionSeed = fileURLToPath(new URL('../../../snapshots/web/seeded-history/session.v3.jsonl', import.meta.url))
 const sessionTitle = 'Session Delete real UI'
+
+/** Wait for a browser locator without relying on Playwright's optional expect matchers. */
+async function expectVisible(locator: Locator, timeout = 10_000): Promise<void> {
+  await locator.waitFor({ state: 'visible', timeout })
+}
+
+/** Poll a locator count through Vitest's built-in polling assertion. */
+async function expectCount(locator: Locator, count: number, timeout = 10_000): Promise<void> {
+  await expect.poll(() => locator.count(), { timeout }).toBe(count)
+}
 
 it('deletes from the real session menu, then restores through the real Trash manager', async () => {
   const scaffold = await launchWebScaffold({
@@ -66,20 +76,20 @@ it('deletes from the real session menu, then restores through the real Trash man
     // the durable Session and its workspace membership untouched.
     await row.hover()
     const hoverDelete = row.getByRole('button', { name: 'Delete chat', exact: true })
-    await expect(hoverDelete).toBeVisible()
+    await expectVisible(hoverDelete)
     await hoverDelete.click()
 
     let dialog = page.getByRole('dialog', { name: 'Move chat to Trash?', exact: true })
-    await expect(dialog).toBeVisible()
-    await expect(dialog).toHaveAttribute('aria-modal', 'true')
+    await expectVisible(dialog)
+    expect(await dialog.getAttribute('aria-modal')).toBe('true')
     const labelledBy = await dialog.getAttribute('aria-labelledby')
     const describedBy = await dialog.getAttribute('aria-describedby')
     expect(labelledBy).toBeTruthy()
     expect(describedBy).toBeTruthy()
-    await expect(page.locator('[id="' + labelledBy + '"]')).toHaveText('Move chat to Trash?')
-    await expect(page.locator('[id="' + describedBy + '"]')).toContainText('7 days')
+    expect(await page.locator('[id="' + labelledBy + '"]').textContent()).toBe('Move chat to Trash?')
+    expect(await page.locator('[id="' + describedBy + '"]').textContent()).toContain('7 days')
     await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
-    await expect(dialog).toHaveCount(0)
+    await expectCount(dialog, 0)
     expect((await scaffold.ctx.sessionPersistence.stat(sessionId))?.header?.id).toBe(sessionId)
     expect(workspace.record.sessionIds).toContain(sessionId)
 
@@ -92,38 +102,38 @@ it('deletes from the real session menu, then restores through the real Trash man
     await menu.getByRole('menuitem', { name: 'Delete chat', exact: true }).click()
 
     dialog = page.getByRole('dialog', { name: 'Move chat to Trash?', exact: true })
-    await expect(dialog).toBeVisible()
+    await expectVisible(dialog)
     await dialog.getByRole('button', { name: 'Move to Trash', exact: true }).click()
-    await expect(dialog.getByRole('status').filter({
+    await expectVisible(dialog.getByRole('status').filter({
       hasText: 'Moved to Trash. The conversation is out of the sidebar.',
-    })).toBeVisible({ timeout: 15_000 })
+    }), 15_000)
     await expect.poll(async () => {
       const stored = await scaffold.ctx.sessionPersistence.stat(sessionId)
       return stored?.header?.id
     }, { timeout: 15_000 }).toBeUndefined()
     await expect.poll(() => workspace.record.sessionIds.includes(sessionId)).toBe(false)
-    await expect(row).toHaveCount(0)
+    await expectCount(row, 0, 15_000)
 
     // The real sidebar footer action opens the Host-backed Trash index. Restore
     // must put the log and its workspace membership back, not just hide a row.
     await dialog.getByRole('button', { name: 'Close', exact: true }).last().click()
-    await expect(dialog).toHaveCount(0)
+    await expectCount(dialog, 0)
     const openTrash = page.getByRole('button', { name: /Open Trash/ })
-    await expect(openTrash).toBeVisible()
+    await expectVisible(openTrash)
     await openTrash.click()
 
     const trashDialog = page.getByRole('dialog', { name: 'Trash', exact: true })
-    await expect(trashDialog).toBeVisible()
+    await expectVisible(trashDialog)
     const trashRow = trashDialog.getByRole('listitem').filter({ hasText: sessionId })
-    await expect(trashRow).toBeVisible()
+    await expectVisible(trashRow)
     await trashRow.getByRole('button', { name: 'Restore', exact: true }).click()
-    await expect(trashRow).toHaveCount(0, { timeout: 15_000 })
+    await expectCount(trashRow, 0, 15_000)
     await expect.poll(async () => {
       const stored = await scaffold.ctx.sessionPersistence.stat(sessionId)
       return stored?.header?.id
     }, { timeout: 15_000 }).toBe(sessionId)
     await expect.poll(() => workspace.record.sessionIds.includes(sessionId)).toBe(true)
-    await expect(row).toHaveCount(1, { timeout: 20_000 })
+    await expectCount(row, 1, 20_000)
 
     expect(tripwire.pageErrors).toEqual([])
     expect(tripwire.warnings).toEqual([])

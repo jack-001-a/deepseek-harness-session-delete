@@ -199,12 +199,12 @@ jobs:
         run: node scripts/run-harness-session-delete-ui-e2e.mjs
 
       - name: Upload real Harness Web UI failure screenshot
-        if: always() && hashFiles('deepseek-harness/.artifacts/session-delete-real-ui.png') != ''
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: session-delete-real-harness-web-ui
           path: deepseek-harness/.artifacts/session-delete-real-ui.png
-          if-no-files-found: error
+          if-no-files-found: ignore
           include-hidden-files: true
           retention-days: 30
 
