@@ -65,9 +65,12 @@ async function inspectUi(page: Page): Promise<string> {
       heading: element.querySelector('h1, h2, h3')?.textContent?.trim() ?? '',
       text: element.innerText.slice(0, 1_000),
     })),
-    sessionRows: [...document.querySelectorAll<HTMLElement>('[role="treeitem"]')]
+    sessionRows: [...document.querySelectorAll<HTMLElement>('[data-row-key^="session:"]')]
       .slice(0, 30)
-      .map((element) => element.innerText.trim().slice(0, 160)),
+      .map((element) => ({
+        key: element.getAttribute('data-row-key'),
+        text: element.innerText.trim().slice(0, 160),
+      })),
     liveRegions: [...document.querySelectorAll<HTMLElement>('[role="alert"], [role="status"]')]
       .map((element) => element.innerText.trim().slice(0, 500)),
   }))
@@ -189,11 +192,10 @@ it('deletes from the real session menu, then restores through the real Trash man
     stage = 'loading the real Harness Web UI'
     await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
     await page.locator('[class*="frame"]').waitFor({ timeout: 30_000 })
-    const row = page.getByRole('treeitem').filter({
-      has: page.getByText(sessionTitle, { exact: true }),
-    })
+    const row = page.locator('[data-row-key="session:' + sessionId + '"]')
     stage = 'waiting for the seeded conversation in the sidebar'
-    await row.waitFor({ timeout: 20_000 })
+    await expectVisible(row, 20_000)
+    await expectVisible(row.getByText(sessionTitle, { exact: true }), 20_000)
 
     // First entry point: the dedicated hover action. Cancel must leave both
     // the durable Session and its workspace membership untouched.
@@ -263,6 +265,7 @@ it('deletes from the real session menu, then restores through the real Trash man
     }, { timeout: 15_000 }).toBe(sessionId)
     await expect.poll(() => workspace.record.sessionIds.includes(sessionId)).toBe(true)
     await expectCount(row, 1, 20_000)
+    await expectVisible(row.getByText(sessionTitle, { exact: true }), 20_000)
 
     const restoreResponse = remoteResponses.find((item) => item.path.endsWith('/api/sessionDelete/restore'))
     expect(restoreResponse?.ok).toBe(true)

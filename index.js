@@ -4,8 +4,9 @@
  * Owns one operation: delete a stored conversation. The session's durable
  * log artifact leaves its location — into a recoverable trash by default, or
  * off the disk entirely in permanent mode — its workspace accounting
- * (membership, pin, archive) is released, its projection-cache record is
- * dropped, and the browser is told the row is gone.
+ * (membership, pin, archive) is released, and the browser is told the row is
+ * gone. Recoverable Trash retains its list projection (including the title)
+ * until an irreversible purge.
  *
  * The browser half calls `sessionDelete/delete` over the shared Remote
  * carrier. The endpoint is reachable through the API Gateway's runtime "SRC"
@@ -1189,10 +1190,10 @@ class SessionDeleteService {
     const trashed = this.mode === 'trash' ? await this.trashEntryFor(sessionId) : undefined
     if (trashed !== undefined && trashed.restoreState === undefined) {
       // The artifact move is the durable commit point. If the process stopped
-      // immediately afterwards, a retry must finish the idempotent side effects
-      // instead of returning early and leaving stale workspace/cache records.
+      // immediately afterwards, a retry must finish the idempotent workspace
+      // cleanup. The projection cache is intentionally retained: this entry is
+      // recoverable and Restore needs its title/list hints.
       await this.releaseWorkspaceAccounting(sessionId)
-      await this.removeProjectionCache(sessionId)
       const children = Array.isArray(trashed.children) ? trashed.children : []
       return {
         sessionId,
@@ -1302,10 +1303,12 @@ class SessionDeleteService {
       //    is already gone, so a stale membership must not fail the deletion.
       await this.releaseWorkspaceAccounting(sessionId)
 
-      // 7. Drop the projection-cache record so no stale hint survives. A live
-      //    session's disposal checkpoint may land after this call, so the row
-      //    is re-checked before the deletion reports success.
-      await this.removeProjectionCache(sessionId)
+      // 7. A recoverable Trash move retains the projection cache so a later
+      //    cold Session list can still show the original title after Restore.
+      //    Only irreversible removal may discard that metadata.
+      if (this.mode === 'permanent' || removal.purged === true) {
+        await this.removeProjectionCache(sessionId)
+      }
 
       // 8. A live session announces its own removal through `session/disposed`;
       //    a stored one has no such event, so announce it here.
@@ -2674,6 +2677,7 @@ class SessionDeleteService {
       )
     }
     await this.removeWithRetries(entry.path, sessionId)
+    await this.removeProjectionCache(sessionId)
     await this.releaseAttachmentOwnersAfterPurge(sessionId)
     this.forgetTrashEntry(entry.trashId)
     await this.audit('purge', sessionId, true, { mode: this.mode })
@@ -3068,8 +3072,9 @@ class SessionDeleteService {
             // idempotent, so replaying them closes the crash window between
             // moving the artifact and releasing the host-side records.
             const accountingComplete = await this.releaseWorkspaceAccounting(current.sessionId)
-            const cacheComplete = await this.removeProjectionCache(current.sessionId)
-            return accountingComplete && cacheComplete ? 'deleted' : 'preserved'
+            // A committed Trash move is still reversible. Keep its projection
+            // cache so the Session title remains available after a later Restore.
+            return accountingComplete ? 'deleted' : 'preserved'
           }
 
           this[OWNER_SERVICES].logger?.warn(
@@ -3139,6 +3144,7 @@ class SessionDeleteService {
           const currentDeletedAt = Date.parse(current.deletedAt)
           if (!Number.isFinite(currentDeletedAt) || currentDeletedAt >= cutoff) return false
           await this.removeWithRetries(current.path, current.sessionId)
+          await this.removeProjectionCache(current.sessionId)
           await this.releaseAttachmentOwnersAfterPurge(current.sessionId)
           this.forgetTrashEntry(current.trashId)
           await this.audit('purge', current.sessionId, true, { mode: this.mode })

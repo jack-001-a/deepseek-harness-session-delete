@@ -29,6 +29,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Keep Session-list projection metadata (including titles) while a conversation is in recoverable Trash; remove it only on permanent deletion, manual Purge, or retention expiry so Restore can rebuild the original sidebar row.
 - Snapshot the injected persistence, session, workspace and optional Host services at plugin construction under a private Symbol, so Gateway call-context re-tracing cannot replace the dependencies used by Host operations.
 - Treat Windows `EPERM` from a competing atomic lock-directory `mkdir` as contention only after `lstat` verifies the existing target is a real directory; permission failures and unsafe paths remain fail-closed.
 - Preserve the plugin's injected Host-service Context separately from the Gateway's per-call `ctx` shadow, so Remote methods retain access to scoped dependencies without losing invocation context.

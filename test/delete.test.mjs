@@ -288,7 +288,7 @@ function trashEntry(store, trashId) {
   return join(store.trashRoot, trashId)
 }
 
-test('stored session: moves the log into the trash, then releases accounting and cache', async () => {
+test('stored session: moves into recoverable Trash and retains its list projection', async () => {
   const store = await makeStore()
   const sequence = []
   const cache = new Map([[SESSION_ID, { rows: {} }]])
@@ -327,10 +327,28 @@ test('stored session: moves the log into the trash, then releases accounting and
   assert.equal(typeof outcome.trashId, 'string')
   await assert.rejects(stat(store.log), (error) => error.code === 'ENOENT')
   await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
-  assert.deepEqual(sequence, ['detach', 'unpin', 'unarchive', 'cache'])
-  assert.equal(cache.has(SESSION_ID), false)
+  assert.deepEqual(sequence, ['detach', 'unpin', 'unarchive'])
+  assert.equal(cache.has(SESSION_ID), true, 'Trash must retain the title projection for a later Restore')
   assert.deepEqual(h.calls.emitted, [['api-session/removed', SESSION_ID]])
   assert.deepEqual(h.calls.stopped, [SESSION_ID])
+})
+
+test('Trash and Restore preserve the session-list projection metadata', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+  const cache = new Map([[SESSION_ID, { rows: { title: 'Restorable title' } }]])
+  const registry = accountingRegistry(store)
+  const h = harness({
+    ...storedTarget(store),
+    registry,
+    services: cacheServices(cache),
+  })
+
+  await h.service.delete(SESSION_ID)
+  assert.equal(cache.has(SESSION_ID), true)
+  await h.service.restore(SESSION_ID)
+  assert.equal(cache.has(SESSION_ID), true, 'Restore must keep the projection used for the cold Session list')
+  assert.ok(await h.ctx.sessionPersistence.stat(SESSION_ID))
 })
 
 test('Trash captures the latest workspace accounting after stop hooks settle', async () => {
@@ -912,7 +930,7 @@ test('the child list is capped but the true count is reported', async () => {
   assert.equal(outcome.childrenCount, 150, 'the true count must survive the cap')
 })
 
-test('projection cache is re-checked when a disposal checkpoint recreates the row', async () => {
+test('permanent deletion re-checks projection cache when a disposal checkpoint recreates the row', async () => {
   const store = await makeStore()
   const cache = new Map([[SESSION_ID, { rows: {} }]])
   let deletes = 0
@@ -931,6 +949,7 @@ test('projection cache is re-checked when a disposal checkpoint recreates the ro
   }
   const h = harness({
     ...storedTarget(store),
+    config: { mode: 'permanent' },
     services: { storageDomain: { get: () => ({ table: () => table }) } },
   })
 
@@ -1743,14 +1762,17 @@ test('restore refuses an original path redirected outside the store by a symlink
   assert.ok((await stat(join(entry, 'artifact', 'session.4.jsonl'))).isFile(), 'the trashed artifact must remain intact')
   assert.equal(await h.service.pathExists(join(outsideProject, SESSION_ID)), false)
 })
-test('purge removes the trash entry for good', async () => {
+test('purge removes the Trash artifact and its retained projection cache', async () => {
   const store = await makeStore()
-  const h = harness({ ...storedTarget(store) })
+  const cache = new Map([[SESSION_ID, { rows: { title: 'Restorable title' } }]])
+  const h = harness({ ...storedTarget(store), services: cacheServices(cache) })
 
   const deleted = await h.service.delete(SESSION_ID)
+  assert.equal(cache.has(SESSION_ID), true, 'Trash must retain the cached title')
   const purged = await h.service.purge(SESSION_ID)
 
   assert.deepEqual(purged, { sessionId: SESSION_ID, purged: true })
+  assert.equal(cache.has(SESSION_ID), false, 'irreversible purge must remove the retained projection')
   await assert.rejects(stat(trashEntry(store, deleted.trashId)), (error) => error.code === 'ENOENT')
   await assert.rejects(h.service.purge(SESSION_ID), (error) => error.code === 'session-delete/not-found')
 })
@@ -1813,6 +1835,7 @@ test('the trash listing reports every entry, newest first', async () => {
 test('entries older than the retention window are purged lazily', async () => {
   const store = await makeStore()
   const released = []
+  const cache = new Map([[SESSION_ID, { rows: { title: 'Expired title' } }]])
   const h = harness({
     ...storedTarget(store),
     config: { retentionDays: 1 },
@@ -1823,10 +1846,12 @@ test('entries older than the retention window are purged lazily', async () => {
           return true
         },
       },
+      ...cacheServices(cache),
     },
   })
 
   await h.service.delete(SESSION_ID)
+  assert.equal(cache.has(SESSION_ID), true, 'an unexpired Trash entry must retain its title projection')
   const expired = trashEntry(store, h.service.trashIndex.keys().next().value)
   const manifest = JSON.parse(await readFile(join(expired, 'meta.json'), 'utf8'))
   manifest.deletedAt = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()
@@ -1836,6 +1861,7 @@ test('entries older than the retention window are purged lazily', async () => {
 
   assert.deepEqual(listed.entries, [], 'an expired entry must not survive the sweep')
   await assert.rejects(stat(expired), (error) => error.code === 'ENOENT')
+  assert.equal(cache.has(SESSION_ID), false, 'retention purge must remove the expired title projection')
   assert.deepEqual(released, [SESSION_ID], 'retention sweep releases owners only after the trash entry is removed')
 })
 
