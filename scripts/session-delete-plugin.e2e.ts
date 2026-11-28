@@ -207,6 +207,10 @@ it('deletes from the real session menu, then restores through the real Trash man
 
     let dialog = deleteDialog(page)
     await expectDialogTitle(dialog, 'Move chat to Trash?')
+    const initialFileCheckbox = dialog.getByRole('checkbox', {
+      name: 'Also delete files uploaded or created in this chat',
+    })
+    await expect.poll(() => initialFileCheckbox.isChecked()).toBe(true)
     expect(await dialog.getAttribute('aria-modal')).toBe('true')
     const labelledBy = await dialog.getAttribute('aria-labelledby')
     const describedBy = (await dialog.getAttribute('aria-describedby'))?.split(/\s+/).filter(Boolean) ?? []
@@ -235,7 +239,15 @@ it('deletes from the real session menu, then restores through the real Trash man
 
     dialog = deleteDialog(page)
     await expectDialogTitle(dialog, 'Move chat to Trash?')
-    stage = 'moving the conversation into Trash'
+    const fileCheckbox = dialog.getByRole('checkbox', {
+      name: 'Also delete files uploaded or created in this chat',
+    })
+    await expect.poll(() => fileCheckbox.isChecked()).toBe(true)
+    // This pinned Host has no reference-aware attachment garbage collector.
+    // Exercise the supported conversation-only path without bypassing the guard.
+    await fileCheckbox.uncheck()
+    await expect.poll(() => fileCheckbox.isChecked()).toBe(false)
+    stage = 'moving the conversation into Trash while retaining uploaded files'
     await dialog.getByRole('button', { name: 'Move to Trash', exact: true }).click()
     await expectVisible(dialog.getByRole('status').filter({
       hasText: 'Moved to Trash. The conversation is out of the sidebar.',
