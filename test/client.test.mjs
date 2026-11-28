@@ -733,7 +733,9 @@ test('permanent purge in the Trash manager needs only one explicit confirmation 
 
   assert.deepEqual(purged, ['session-to-purge'])
   assert.match(trashManagerText(form), /permanently deleted/i)
-})test('the Trash manager dispatches Purge only once for rapid repeated confirmations', async () => {
+})
+
+test('the Trash manager dispatches Purge only once for rapid repeated confirmations', async () => {
   const { plugin, React } = await loadPlugin()
   const { registrations, dictionaries } = applyPlugin(plugin)
   let attempts = 0
