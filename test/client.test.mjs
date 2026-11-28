@@ -1406,7 +1406,7 @@ test('a coded failure shows localized copy instead of the host diagnostic', asyn
   const alert = findByRole(form, 'alert')
   assert.equal(alert.props.role, 'alert')
   assert.equal(text(alert), '无法从磁盘移除该对话，本次未删除任何内容，请重试。')
-  assert.equal(footerButtons(form).length, 2, 'a failed request stays retryable')
+  assert.equal(footerButtons(form).length, 3, 'Cancel, Move to Trash and Delete chat remain available for retry')
 })
 
 test('an unknown failure falls back to the host message', async () => {
