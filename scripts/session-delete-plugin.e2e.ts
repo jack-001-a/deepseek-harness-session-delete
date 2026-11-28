@@ -209,11 +209,15 @@ it('deletes from the real session menu, then restores through the real Trash man
     await expectDialogTitle(dialog, 'Move chat to Trash?')
     expect(await dialog.getAttribute('aria-modal')).toBe('true')
     const labelledBy = await dialog.getAttribute('aria-labelledby')
-    const describedBy = await dialog.getAttribute('aria-describedby')
+    const describedBy = (await dialog.getAttribute('aria-describedby'))?.split(/\s+/).filter(Boolean) ?? []
     expect(labelledBy).toBeTruthy()
-    expect(describedBy).toBeTruthy()
+    expect(describedBy.length).toBeGreaterThan(0)
     expect(await page.locator('[id="' + labelledBy + '"]').textContent()).toBe('Move chat to Trash?')
-    expect(await page.locator('[id="' + describedBy + '"]').textContent()).toContain('7 days')
+    const descriptionText = (await Promise.all(
+      describedBy.map(id => page.locator('[id="' + id + '"]').textContent()),
+    )).join('\n')
+    expect(descriptionText).toContain('7 days')
+    expect(descriptionText).toContain('cannot safely delete chat files')
     stage = 'verifying that cancelling leaves the session untouched'
     await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
     await expectCount(dialog, 0)
@@ -252,9 +256,9 @@ it('deletes from the real session menu, then restores through the real Trash man
     await expectVisible(openTrash)
     await openTrash.click()
 
-    const trashDialog = page.getByRole('dialog', { name: 'Trash', exact: true })
-    await expectVisible(trashDialog)
-    const trashRow = trashDialog.getByRole('listitem').filter({ hasText: sessionId })
+    const trashPage = page.getByRole('main', { name: 'Trash', exact: true })
+    await expectVisible(trashPage)
+    const trashRow = trashPage.getByRole('listitem').filter({ hasText: sessionTitle })
     await expectVisible(trashRow)
     stage = 'restoring the trashed conversation'
     await trashRow.getByRole('button', { name: 'Restore', exact: true }).click()
