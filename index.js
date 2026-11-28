@@ -1206,14 +1206,53 @@ class SessionDeleteService {
    * @param sessionId - durable Session identity.
    * @returns the deleted identity, what was removed, and surviving children.
    */
-  async delete(sessionId) {
+  async delete(sessionId, displayTitle, deleteFiles) {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
       throw new SessionDeleteError(
         'session-delete/invalid-request',
         'sessionDelete: a session id is required',
       )
     }
-    return this.runTrashOperation('delete', sessionId, () => this.runDelete(sessionId))
+    if (deleteFiles === true) {
+      throw new SessionDeleteError(
+        'session-delete/files-unsupported',
+        'sessionDelete: this Host cannot safely delete chat files; uncheck the file deletion option to keep them',
+      )
+    }
+    return this.runTrashOperation('delete', sessionId, () => this.runDelete(sessionId, { displayTitle }))
+  }
+
+  /**
+   * Permanently remove a conversation even when the configured default is Trash.
+   * Existing Trash entries are purged; live/stored sessions use the permanent
+   * artifact-removal path. File deletion remains fail-closed until the Host
+   * exposes a reference-aware file cleanup capability.
+   */
+  async deletePermanently(sessionId, displayTitle, deleteFiles) {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) {
+      throw new SessionDeleteError(
+        'session-delete/invalid-request',
+        'sessionDelete: a session id is required',
+      )
+    }
+    if (deleteFiles === true) {
+      throw new SessionDeleteError(
+        'session-delete/files-unsupported',
+        'sessionDelete: this Host cannot safely delete chat files; uncheck the file deletion option to keep them',
+      )
+    }
+    return this.runTrashOperation('delete-permanently', sessionId, async () => {
+      const trashed = this.mode === 'trash' ? await this.trashEntryFor(sessionId) : undefined
+      if (trashed !== undefined && trashed.restoreState === undefined) {
+        return this.runPurge(sessionId)
+      }
+      const outcome = await this.runDelete(sessionId, { mode: 'permanent', displayTitle })
+      if (trashed?.restoreState !== undefined && outcome?.purged === true) {
+        this.forgetTrashEntry(trashed.trashId)
+        await this.discardTrashEntry(trashed.path)
+      }
+      return outcome
+    })
   }
 
   /**
@@ -1221,8 +1260,12 @@ class SessionDeleteService {
    * @param sessionId - durable Session identity.
    * @returns the deletion outcome.
    */
-  async runDelete(sessionId) {
+  async runDelete(sessionId, options = {}) {
     const ctx = this[OWNER_SERVICES]
+    const mode = options.mode === 'permanent' ? 'permanent' : this.mode
+    const displayTitle = typeof options.displayTitle === 'string'
+      ? options.displayTitle.trim().slice(0, 512)
+      : undefined
 
     // 0. A conversation that already sits in the trash is not an error:
     //    deleting it again reports the entry that already holds it, so a
@@ -1231,7 +1274,7 @@ class SessionDeleteService {
     //    on the disk, so the deletion below runs as usual. A permanent store
     //    never takes this path: it must not report a trashed artifact as
     //    deleted while leaving it on the disk.
-    const trashed = this.mode === 'trash' ? await this.trashEntryFor(sessionId) : undefined
+    const trashed = mode === 'trash' ? await this.trashEntryFor(sessionId) : undefined
     if (trashed !== undefined && trashed.restoreState === undefined) {
       // The artifact move is the durable commit point. If the process stopped
       // immediately afterwards, a retry must finish the idempotent workspace
@@ -1332,6 +1375,8 @@ class SessionDeleteService {
         children,
         childrenCount,
         hostWriteHandle,
+        mode,
+        displayTitle,
       )
       // The artifact has left its original path. Release the Host lease now;
       // on POSIX permanent JSONL deletion the empty directory retains only the
@@ -1350,7 +1395,7 @@ class SessionDeleteService {
       // 7. A recoverable Trash move retains the projection cache so a later
       //    cold Session list can still show the original title after Restore.
       //    Only irreversible removal may discard that metadata.
-      if (this.mode === 'permanent' || removal.purged === true) {
+      if (mode === 'permanent' || removal.purged === true) {
         await this.removeProjectionCache(sessionId)
       }
 
@@ -1358,7 +1403,7 @@ class SessionDeleteService {
       //    a stored one has no such event, so announce it here.
       if (!live) ctx.emit('api-session/removed', sessionId)
 
-      await this.audit('delete', sessionId, true, { children: childrenCount, mode: this.mode })
+      await this.audit('delete', sessionId, true, { children: childrenCount, mode })
 
       return {
         sessionId,
@@ -1367,7 +1412,7 @@ class SessionDeleteService {
         stored,
         children,
         childrenCount,
-        mode: this.mode,
+        mode,
         trashed: removal.trashed,
         ...(removal.trashId === undefined ? {} : { trashId: removal.trashId }),
         purged: removal.purged,
@@ -1377,7 +1422,7 @@ class SessionDeleteService {
       // see that a deletion was refused and why.
       await this.audit('delete', sessionId, false, {
         code: typeof error?.code === 'string' ? error.code : 'session-delete/io',
-        mode: this.mode,
+        mode,
       })
       throw error
     } finally {
@@ -1912,7 +1957,7 @@ class SessionDeleteService {
    * @param accounting - the workspace accounting captured before the release.
    * @returns what happened to the artifact.
    */
-  async removeStoredLog(header, sessionId, children = [], childrenCount = children.length, hostWriteHandle) {
+  async removeStoredLog(header, sessionId, children = [], childrenCount = children.length, hostWriteHandle, mode = this.mode, displayTitle) {
     const artifact = await this.resolveArtifact(header, sessionId)
     if (artifact === undefined) {
       return { removed: false, trashed: false, purged: false }
@@ -1933,8 +1978,8 @@ class SessionDeleteService {
         { sessionId, kind: artifact.kind, reason: 'unverified-host-lease-layout' },
       )
     }
-    if (this.mode === 'trash') {
-      const entry = await this.moveToTrash(artifact, sessionId, header, children, childrenCount)
+    if (mode === 'trash') {
+      const entry = await this.moveToTrash(artifact, sessionId, header, children, childrenCount, displayTitle)
       return { removed: true, trashed: true, trashId: entry.trashId, purged: false }
     }
     if (hostWriteHandle !== undefined && process.platform !== 'win32') {
@@ -2045,7 +2090,7 @@ class SessionDeleteService {
    * @param accounting - the captured workspace accounting, when there is any.
    * @returns the trash entry that now holds the artifact.
    */
-  async moveToTrash(artifact, sessionId, header, children, childrenCount) {
+  async moveToTrash(artifact, sessionId, header, children, childrenCount, displayTitle) {
     const root = this.trashRoot()
     if (root === undefined) {
       throw new SessionDeleteError(
@@ -2085,6 +2130,7 @@ class SessionDeleteService {
       originalPath: artifact.target,
       deletedAt: stamp.iso,
       header: reducedHeader(header),
+      ...(typeof displayTitle === 'string' && displayTitle.length > 0 ? { displayTitle } : {}),
       children,
       childrenCount,
       mode: this.mode,
@@ -2405,6 +2451,10 @@ class SessionDeleteService {
       canListTrash: hasTrash,
       trashCount,
       canLocate,
+      // This Host build has no reference-aware file deletion capability. The
+      // browser exposes the option but must require it to be unchecked before
+      // deleting a conversation, rather than unlinking potentially shared data.
+      canDeleteChatFiles: false,
     }
   }
 
@@ -2923,11 +2973,14 @@ class SessionDeleteService {
     const entries = await this.refreshTrash()
     return {
       // Keep the RPC projection deliberately path-free. The browser needs
-      // only identity, time and recovery state; originalPath is Host-private
-      // transaction metadata and must never cross the Gateway boundary.
+      // only the display title, identity, time and recovery state; originalPath
+      // remains Host-private transaction metadata and never crosses the Gateway.
       entries: entries.map((entry) => ({
         trashId: entry.trashId,
         sessionId: entry.sessionId,
+        ...(typeof entry.displayTitle === 'string' && entry.displayTitle.length > 0
+          ? { displayTitle: entry.displayTitle }
+          : {}),
         deletedAt: entry.deletedAt,
         // Present only for an entry whose files are already restored but whose
         // workspace accounting still has to be replayed; such an entry holds no
@@ -3208,6 +3261,9 @@ class SessionDeleteService {
       entries.push({
         trashId: item.name,
         sessionId: typeof manifest.sessionId === 'string' ? manifest.sessionId : '',
+        ...(typeof manifest.displayTitle === 'string' && manifest.displayTitle.length > 0
+          ? { displayTitle: manifest.displayTitle.slice(0, 512) }
+          : {}),
         deletedAt: typeof manifest.deletedAt === 'string' ? manifest.deletedAt : '',
         originalPath: typeof manifest.originalPath === 'string' ? manifest.originalPath : '',
         ...(typeof manifest.moveState === 'string' ? { moveState: manifest.moveState } : {}),
@@ -3633,6 +3689,13 @@ Object.defineProperty(SessionDeleteService.prototype, REMOTE_METHODS, {
     methods: Object.freeze([
       Object.freeze({
         method: 'delete',
+        invocation: Object.freeze({ kind: 'direct' }),
+        resources: Object.freeze({
+          session: (sessionId) => (typeof sessionId === 'string' ? sessionId : undefined),
+        }),
+      }),
+      Object.freeze({
+        method: 'deletePermanently',
         invocation: Object.freeze({ kind: 'direct' }),
         resources: Object.freeze({
           session: (sessionId) => (typeof sessionId === 'string' ? sessionId : undefined),

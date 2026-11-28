@@ -25,6 +25,7 @@ const DESCRIBE_TRASH = {
   canListTrash: true,
   trashCount: 3,
   canLocate: true,
+  canDeleteChatFiles: true,
 }
 
 /** The describe answer of a store that removes conversations for good. */
@@ -36,6 +37,7 @@ const DESCRIBE_PERMANENT = {
   canListTrash: false,
   trashCount: 0,
   canLocate: true,
+  canDeleteChatFiles: true,
 }
 
 /** The describe answer of a store that cannot find a conversation at all. */
@@ -61,6 +63,7 @@ const ERROR_CODES = {
   'session-delete/unsafe-path': 'error.unsafePath',
   'session-delete/trash-unavailable': 'error.trashUnavailable',
   'session-delete/conflict': 'error.conflict',
+  'session-delete/files-unsupported': 'error.filesUnsupported',
 }
 
 /** The mount whose render is in progress, read by the React stand-in. */
@@ -295,6 +298,7 @@ function renderDialog(registrations, dictionaries, React, locale, options = {}) 
     settleDelete: options.settleDelete ?? (() => {}),
     settleTrashManager: options.settleTrashManager ?? (() => {}),
     confirmDelete: options.confirmDelete ?? injected.confirmDelete,
+    confirmDeletePermanently: options.confirmDeletePermanently ?? injected.confirmDeletePermanently,
     restoreSession: options.restoreSession ?? injected.restoreSession,
     purgeSession: options.purgeSession ?? injected.purgeSession,
     describeDeletion: options.describeDeletion ?? (async () => DESCRIBE_TRASH),
@@ -309,7 +313,7 @@ function renderDialog(registrations, dictionaries, React, locale, options = {}) 
 
 /** Read the body/footer content supplied through the Host Modal's props. */
 function trashManagerText(form) {
-  return text({ children: [form.tree.props?.title, form.tree.props?.description, form.tree.props?.children, form.tree.props?.footer] })
+  return text(form.tree)
 }
 
 /**
@@ -573,6 +577,7 @@ test('the Trash manager lists sessions without exposing filesystem paths', async
       entries: [{
         trashId: 'trash-a',
         sessionId: 'session-a',
+        displayTitle: 'Deploy notes',
         deletedAt: '2026-11-25T10:00:00.000Z',
         originalPath: 'C:\\private\\workspace\\session-a',
       }],
@@ -582,7 +587,8 @@ test('the Trash manager lists sessions without exposing filesystem paths', async
 
   const managerText = trashManagerText(form)
   assert.match(managerText, /Trash/)
-  assert.match(managerText, /session-a/)
+  assert.match(managerText, /Deploy notes/)
+  assert.doesNotMatch(managerText, /session-a/)
   assert.match(managerText, /Deleted/)
   assert.doesNotMatch(managerText, /private.*workspace/)
   assert.match(managerText, /Restore/)
@@ -681,7 +687,7 @@ test('the Trash manager restores an entry and reloads its listing', async () => 
   assert.match(trashManagerText(form), /Trash is empty/)
 })
 
-test('permanent purge in the Trash manager requires the exact session id', async () => {
+test('permanent purge in the Trash manager needs only one explicit confirmation click', async () => {
   const { plugin, React } = await loadPlugin()
   const { registrations, dictionaries } = applyPlugin(plugin)
   const purged = []
@@ -693,6 +699,7 @@ test('permanent purge in the Trash manager requires the exact session id', async
       entries: listed ? [{
         trashId: 'trash-a',
         sessionId: 'session-to-purge',
+        displayTitle: 'Conversation to remove',
         deletedAt: '2026-11-25T10:00:00.000Z',
       }] : [],
     }),
@@ -713,36 +720,20 @@ test('permanent purge in the Trash manager requires the exact session id', async
   await settle()
 
   let confirmButton
-  let confirmationInput
+  let confirmationTextInput
   walk(form.tree, (node) => {
     if (node.type === 'Button' && text(node) === 'Permanently delete') confirmButton = node
-    if (node.type === 'input' && node.props.className === 'dshSessionDelete_trashConfirmInput') confirmationInput = node
+    if (node.type === 'input' && node.props.type === 'text') confirmationTextInput = node
   })
   assert.ok(confirmButton)
-  assert.ok(confirmationInput)
-  assert.equal(confirmButton.props.disabled, true)
-  confirmationInput.props.onChange({ target: { value: 'session-to-purg' } })
-  await settle()
-  assert.equal(confirmButton.props.disabled, true, 'a partial id must not enable the destructive action')
-
-  walk(form.tree, (node) => {
-    if (node.type === 'Button' && text(node) === 'Permanently delete') confirmButton = node
-    if (node.type === 'input' && node.props.className === 'dshSessionDelete_trashConfirmInput') confirmationInput = node
-  })
-  confirmationInput.props.onChange({ target: { value: 'session-to-purge' } })
-  await settle()
-  walk(form.tree, (node) => {
-    if (node.type === 'Button' && text(node) === 'Permanently delete') confirmButton = node
-  })
+  assert.equal(confirmationTextInput, undefined, 'permanent deletion does not ask for a session ID')
   assert.equal(confirmButton.props.disabled, false)
   confirmButton.props.onClick()
   await settle()
 
   assert.deepEqual(purged, ['session-to-purge'])
   assert.match(trashManagerText(form), /permanently deleted/i)
-})
-
-test('the Trash manager dispatches Purge only once for rapid repeated confirmations', async () => {
+})test('the Trash manager dispatches Purge only once for rapid repeated confirmations', async () => {
   const { plugin, React } = await loadPlugin()
   const { registrations, dictionaries } = applyPlugin(plugin)
   let attempts = 0
@@ -770,19 +761,10 @@ test('the Trash manager dispatches Purge only once for rapid repeated confirmati
   await settle()
 
   let confirmButton
-  let input
   walk(form.tree, (node) => {
     if (node.type === 'Button' && text(node) === 'Permanently delete') confirmButton = node
-    if (node.type === 'input' && node.props.className === 'dshSessionDelete_trashConfirmInput') input = node
   })
   assert.ok(confirmButton)
-  assert.ok(input)
-  input.props.onChange({ target: { value: 'session-to-purge' } })
-  await settle()
-
-  walk(form.tree, (node) => {
-    if (node.type === 'Button' && text(node) === 'Permanently delete') confirmButton = node
-  })
   confirmButton.props.onClick()
   confirmButton.props.onClick()
   await settle()
@@ -814,19 +796,10 @@ test('the Trash manager does not announce purge success for an invalid Host outc
   await settle()
 
   let confirmButton
-  let input
   walk(form.tree, (node) => {
     if (node.type === 'Button' && text(node) === 'Permanently delete') confirmButton = node
-    if (node.type === 'input' && node.props.className === 'dshSessionDelete_trashConfirmInput') input = node
   })
   assert.ok(confirmButton)
-  assert.ok(input)
-  input.props.onChange({ target: { value: 'session-to-purge' } })
-  await settle()
-
-  walk(form.tree, (node) => {
-    if (node.type === 'Button' && text(node) === 'Permanently delete') confirmButton = node
-  })
   confirmButton.props.onClick()
   await settle()
 
@@ -983,13 +956,70 @@ test('trash mode offers a reversible action and names the retention window', asy
   const dialog = dialogElement(form)
   assert.match(dialog.props.title, /Trash/)
   assert.match(text(dialog.props.description), /7 days/)
-  assert.match(text(findByRole(form, 'note')), /keep files uploaded or created.*chat/i)
-  const [cancel, confirm] = footerButtons(form)
+  assert.match(text(findByType(form, 'label')), /delete files uploaded or created.*chat/i)
+  const [cancel, confirm, deleteChat] = footerButtons(form)
   assert.equal(text(cancel), 'Cancel')
   assert.equal(text(confirm), 'Move to Trash')
   assert.equal(confirm.props.disabled, false)
+  assert.match(confirm.props.className, /trashButton/)
+  assert.equal(text(deleteChat), 'Delete chat')
+  assert.match(deleteChat.props.className, /deleteChatButton/)
   assert.equal(cancel.props['data-modal-autofocus'], 'true', 'the cancel control receives initial focus')
   assert.equal(cancel.props['data-session-delete-autofocus'], 'true', 'the plain dialog focuses the cancel control')
+})
+
+test('the red Delete chat action runs a direct permanent deletion beside Move to Trash', async () => {
+  const { plugin, React } = await loadPlugin()
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  const calls = []
+  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+    describeDeletion: async () => DESCRIBE_TRASH,
+    confirmDeletePermanently: async (request, deleteFiles) => {
+      calls.push({ request, deleteFiles })
+      return { removed: true, mode: 'permanent', purged: true, trashed: false, children: [], childrenCount: 0 }
+    },
+  })
+  await settle()
+
+  const [, moveToTrash, deleteChat] = footerButtons(form)
+  assert.equal(text(moveToTrash), 'Move to Trash')
+  assert.equal(text(deleteChat), 'Delete chat')
+  assert.match(deleteChat.props.className, /deleteChatButton/)
+  deleteChat.props.onClick()
+  await settle()
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].request.sessionId, REQUEST.sessionId)
+  assert.equal(calls[0].deleteFiles, true)
+  assert.match(text(findByRole(form, 'status')), /Deleted permanently/)
+})
+
+test('an unsupported file cleanup option must be unchecked before deleting a chat', async () => {
+  const { plugin, React } = await loadPlugin()
+  const { registrations, dictionaries } = applyPlugin(plugin)
+  const calls = []
+  const { form } = renderDialog(registrations, dictionaries, React, 'en', {
+    describeDeletion: async () => ({ ...DESCRIBE_TRASH, canDeleteChatFiles: false }),
+    confirmDelete: async () => {
+      calls.push('delete')
+      return { removed: true, mode: 'trash', trashed: true, purged: false, children: [] }
+    },
+  })
+  await settle()
+
+  let checkbox = findByType(form, 'input')
+  assert.equal(checkbox.props.checked, true)
+  footerButtons(form)[1].props.onClick()
+  await settle()
+  assert.deepEqual(calls, [])
+  assert.match(text(findByRole(form, 'alert')), /cannot safely delete chat files/i)
+
+  checkbox = findByType(form, 'input')
+  checkbox.props.onChange({ target: { checked: false } })
+  await settle()
+  footerButtons(form)[1].props.onClick()
+  await settle()
+  assert.deepEqual(calls, ['delete'])
 })
 
 test('permanent mode matches the one-step reference confirmation card', async () => {
@@ -1003,16 +1033,18 @@ test('permanent mode matches the one-step reference confirmation card', async ()
   const dialog = dialogElement(form)
   assert.equal(dialog.props.title, 'Delete chat?')
   assert.match(text(dialog.props.description), /This action cannot be undone/)
-  assert.match(text(findByRole(form, 'note')), /keep files uploaded or created in this chat/i)
+  assert.match(text(findByType(form, 'label')), /delete files uploaded or created in this chat/i)
   const [cancel, confirm] = footerButtons(form)
   assert.equal(text(cancel), 'Cancel')
   assert.equal(text(confirm), 'Delete chat')
   assert.equal(confirm.props.disabled, false, 'the final confirmation is a single explicit click')
-  assert.equal(findByType(form, 'input'), undefined, 'the reference card does not ask users to type the title')
+  const fileCheckbox = findByType(form, 'input')
+  assert.equal(fileCheckbox.props.type, 'checkbox')
+  assert.equal(fileCheckbox.props.checked, true, 'the file deletion option is checked by default')
   assert.match(dialog.props.className, /dshSessionDelete_modalCard/)
 })
 
-test('the file-retention status is localized in Chinese and uses a static check mark', async () => {
+test('the file-deletion checkbox uses the requested Chinese label and can be unchecked', async () => {
   const { plugin, React } = await loadPlugin()
   const { registrations, dictionaries } = applyPlugin(plugin)
   const { form } = renderDialog(registrations, dictionaries, React, 'zh', {
@@ -1020,10 +1052,13 @@ test('the file-retention status is localized in Chinese and uses a static check 
   })
   await settle()
 
-  const note = findByRole(form, 'note')
-  assert.match(text(note), /同时保留在此聊天中上传或创建的文件/)
-  assert.equal(note.children[0].props.className, 'dshSessionDelete_fileCheck')
-  assert.equal(note.children[0].props['aria-hidden'], 'true')
+  const checkbox = findByType(form, 'input')
+  assert.equal(checkbox.props.type, 'checkbox')
+  assert.equal(checkbox.props.checked, true)
+  assert.match(text(findByType(form, 'label')), /同时删除在此聊天中上传或创建的文件/)
+  checkbox.props.onChange({ target: { checked: false } })
+  await settle()
+  assert.equal(findByType(form, 'input').props.checked, false)
 })
 
 test('a trashed conversation is acknowledged and offers restore and purge', async () => {
@@ -1733,12 +1768,12 @@ test('confirmDelete calls the endpoint with the session id and replaces the open
   registrations['sidebar.workspaces.session.menu.item'].spec.inject().requestDelete('session-a', 'Deploy notes')
   assert.equal(services.rpcCall, undefined, 'opening the dialog must not call the host')
 
-  const outcome = await registrations['shell.overlay'].spec.inject().confirmDelete({ ...REQUEST })
+  const outcome = await registrations['shell.overlay'].spec.inject().confirmDelete({ ...REQUEST }, false)
 
   assert.deepEqual(services.rpcCall, [
     '/api',
     'sessionDelete/delete',
-    { args: { sessionId: 'session-a' } },
+    { args: { sessionId: 'session-a', displayTitle: 'Deploy notes', deleteFiles: false } },
   ])
   assert.deepEqual(outcome, { removed: true, children: [] })
   assert.deepEqual(services.started, ['ws-1'], 'the open conversation is replaced in the same workspace')

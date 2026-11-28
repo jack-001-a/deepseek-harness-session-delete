@@ -1141,6 +1141,48 @@ test('restore refuses a symlinked restore marker without following it', async (t
   await assert.rejects(stat(store.dir), (error) => error.code === 'ENOENT')
 })
 
+test('Trash keeps the conversation display title in its manifest and list projection', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+  const h = harness({ ...storedTarget(store) })
+
+  const deleted = await h.service.delete(SESSION_ID, 'A titled conversation', false)
+  const manifestPath = join(trashEntry(store, deleted.trashId), 'meta.json')
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
+  const listed = await h.service.listTrash()
+
+  assert.equal(manifest.displayTitle, 'A titled conversation')
+  assert.equal(listed.entries[0].displayTitle, 'A titled conversation')
+})
+
+test('direct permanent deletion bypasses the default Trash mode and stores no Trash entry', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+  const h = harness({ ...storedTarget(store) })
+
+  const outcome = await h.service.deletePermanently(SESSION_ID, 'Immediate delete', false)
+
+  assert.equal(outcome.sessionId, SESSION_ID)
+  assert.equal(outcome.mode, 'permanent')
+  assert.equal(outcome.purged, true)
+  assert.equal(outcome.trashed, false)
+  assert.deepEqual((await h.service.listTrash()).entries, [])
+  await assert.rejects(stat(store.log), (error) => error.code === 'ENOENT')
+})
+
+test('the Host rejects unsafe chat-file deletion before changing the conversation', async (t) => {
+  const store = await makeStore()
+  t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+  const h = harness({ ...storedTarget(store) })
+
+  await assert.rejects(
+    h.service.delete(SESSION_ID, 'Keep the files safe', true),
+    (error) => error.code === 'session-delete/files-unsupported',
+  )
+  assert.equal((await stat(store.log)).isFile(), true)
+  assert.equal((await h.service.listTrash()).entries.length, 0)
+})
+
 test('trash manifests above the byte limit are rejected before parsing', async (t) => {
   const store = await makeStore()
   t.after(() => rm(store.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
@@ -2228,6 +2270,7 @@ test('describe reports the capabilities of the store', async () => {
     canListTrash: true,
     trashCount: 0,
     canLocate: true,
+    canDeleteChatFiles: false,
   })
 
   const deleted = await h.service.delete(SESSION_ID)
@@ -2250,6 +2293,7 @@ test('describe reports a permanent store without a trash', async () => {
     canListTrash: false,
     trashCount: 0,
     canLocate: true,
+    canDeleteChatFiles: false,
   })
 })
 
@@ -2270,6 +2314,7 @@ test('describe does not advertise permanent deletion without a verifiable Sessio
     canListTrash: false,
     trashCount: 0,
     canLocate: true,
+    canDeleteChatFiles: false,
   })
 })
 
@@ -2451,6 +2496,7 @@ test('Remote marker exposes a resources reader that receives the id itself', asy
   assert.equal(marker.resources.session(undefined), undefined)
   assert.deepEqual(descriptor.value.methods.map((method) => method.method), [
     'delete',
+    'deletePermanently',
     'describe',
     'restore',
     'purge',
@@ -2459,6 +2505,9 @@ test('Remote marker exposes a resources reader that receives the id itself', asy
   for (const method of descriptor.value.methods) {
     assert.deepEqual(method.invocation, { kind: 'direct' })
   }
+  const permanent = descriptor.value.methods.find((method) => method.method === 'deletePermanently')
+  assert.equal(permanent.resources.session(SESSION_ID), SESSION_ID)
+  assert.equal(permanent.resources.session(undefined), undefined)
   for (const name of ['restore', 'purge']) {
     const remote = descriptor.value.methods.find((method) => method.method === name)
     assert.equal(remote.resources.session(SESSION_ID), SESSION_ID)
@@ -2471,7 +2520,7 @@ test('the Remote methods carry signatures the Gateway can parse', async () => {
   // The Gateway reads the parameter names out of the method's source text and
   // rejects a default, a destructuring or a rest parameter, so the signature
   // is part of the wire contract.
-  for (const name of ['delete', 'describe', 'restore', 'purge', 'listTrash']) {
+  for (const name of ['delete', 'deletePermanently', 'describe', 'restore', 'purge', 'listTrash']) {
     const implementation = Object.getOwnPropertyDescriptor(proto, name).value
     const source = Function.prototype.toString.call(implementation)
     const open = source.indexOf('(')
@@ -2498,6 +2547,7 @@ test('describe reports a store that cannot locate its artifacts', async () => {
   assert.equal(described.canRestore, false)
   assert.equal(described.canListTrash, false)
   assert.equal(described.trashCount, 0)
+  assert.equal(described.canDeleteChatFiles, false)
 })
 
 test('concurrent delete of one id shares a single run', async () => {

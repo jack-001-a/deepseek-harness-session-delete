@@ -6,6 +6,16 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## Unreleased
 
+### Added
+
+- Add a one-click permanent Delete chat action beside Move to Trash, store display titles in Trash manifests, and render Trash as a full-page view.
+- Add a default-checked file cleanup option. This Host build fails closed while the option is checked because it has no reference-aware file deletion capability; unchecking it safely deletes only the conversation and preserves shared files.
+- Remove the session-ID typing requirement from Trash permanent-delete confirmation.
+
+### Changed
+
+- Use black styling for Move to Trash and red styling for the adjacent permanent Delete chat action; search and display Trash entries by conversation name.
+
 ## [0.7.1] — 2026-11-27
 
 ### Added
